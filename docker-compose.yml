@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: 1patch
+      POSTGRES_PASSWORD: 1patch
+      POSTGRES_DB: 1patch_management
+    ports:
+      - "5432:5432"
+    volumes:
+      - management-postgres:/var/lib/postgresql/data
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    command: ["--logtostderr"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - management-dragonfly:/data
+
+volumes:
+  management-postgres:
+  management-dragonfly:

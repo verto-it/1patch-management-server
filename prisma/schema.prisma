@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  users     User[]
+  nodes     BackendNode[]
+  devices   Device[]
+}
+
+model User {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+  email              String   @unique
+  passwordHash       String
+  roles              String[]
+  mfaEnabled         Boolean  @default(false)
+  mfaSecretEncrypted String?
+  lockedUntil        DateTime?
+  createdAt          DateTime @default(now())
+}
+
+model BackendNode {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  tenant              Tenant   @relation(fields: [tenantId], references: [id])
+  name                String
+  publicUrl           String
+  region              String?
+  site                String?
+  status              String
+  enrollmentTokenHash String
+  lastSeenAt          DateTime?
+}
+
+model Device {
+  id             String   @id
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  hostname       String
+  os             String
+  publicKey      String
+  lastSeenAt     DateTime?
+  installedApps  InstalledApp[]
+}
+
+model InstalledApp {
+  id          String @id @default(uuid())
+  deviceId    String
+  device      Device @relation(fields: [deviceId], references: [id])
+  name        String
+  publisher   String
+  version     String
+  packageId   String?
+  productCode String?
+}
+
+model PackageArtifact {
+  id              String   @id @default(uuid())
+  name            String
+  publisher       String
+  version         String
+  architecture    String
+  platform        String
+  type            String
+  packageId       String?
+  fileName        String?
+  storagePath     String?
+  sourceUrl       String?
+  sha256          String
+  signatureStatus String
+  installArgs     String
+  uninstallArgs   String?
+  applicability   Json
+  createdAt       DateTime @default(now())
+}
+
+model PatchRule {
+  id            String   @id @default(uuid())
+  name          String
+  enabled       Boolean  @default(true)
+  property      String
+  operator      String
+  value         String
+  targetVersion String
+  maxVersion    String?
+  createdAt     DateTime @default(now())
+}
+
+model UpdateTask {
+  id            String   @id @default(uuid())
+  nodeId        String
+  deviceId      String
+  appName       String?
+  packageArtifactId String?
+  packageId     String?
+  productCode   String?
+  sourceUrl     String?
+  sha256        String?
+  installArgs   String?
+  targetVersion String
+  type          String
+  status        String
+  output        String?
+  createdAt     DateTime @default(now())
+  dispatchedAt  DateTime?
+  completedAt   DateTime?
+}
+
+model Alarm {
+  id         String   @id @default(uuid())
+  deviceId   String?
+  severity   String
+  message    String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  resolvedAt DateTime?
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid())
+  actor     String
+  action    String
+  target    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+}
