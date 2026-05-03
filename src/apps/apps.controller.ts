@@ -7,6 +7,7 @@ import { AuditService } from '../audit/audit.service';
 import { MemoryStore } from '../storage/memory.store';
 import { UpdateTask } from '../types';
 import { AdminApiGuard } from '../security/admin-api.guard';
+import { NodesService } from '../nodes/nodes.service';
 
 class CreateUpdateTaskDto {
   @IsString()
@@ -33,11 +34,11 @@ class CreateUpdateTaskDto {
 @UseGuards(AdminApiGuard)
 @Controller('/apps')
 export class AppsController {
-  constructor(private readonly store: MemoryStore, private readonly audit: AuditService) {}
+  constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
 
   @Get()
   list(@Query('q') q?: string) {
-    const apps = new Map<string, { id: string; name: string; publisher: string; deviceCount: number; versions: string[]; oldestVersion: string; newestInstalledVersion: string }>();
+    const apps = new Map<string, { id: string; name: string; publisher: string; deviceCount: number; versions: string[]; oldestVersion: string; latestVersion: string }>();
     for (const app of this.store.installedApps) {
       const key = `${app.name}|${app.publisher}`;
       const versions = apps.get(key)?.versions ?? [];
@@ -49,15 +50,23 @@ export class AppsController {
         deviceCount: 0,
         versions: [],
         oldestVersion: app.version,
-        newestInstalledVersion: app.version,
+        latestVersion: app.version,
       };
       current.deviceCount += 1;
       current.versions = nextVersions;
       current.oldestVersion = nextVersions[0] ?? app.version;
-      current.newestInstalledVersion = nextVersions[nextVersions.length - 1] ?? app.version;
+      current.latestVersion = nextVersions[nextVersions.length - 1] ?? app.version;
       apps.set(key, current);
     }
-    return [...apps.values()].filter((app) => !q || `${app.name} ${app.publisher}`.toLowerCase().includes(q.toLowerCase()));
+    return [...apps.values()]
+      .filter((app) => !q || `${app.name} ${app.publisher}`.toLowerCase().includes(q.toLowerCase()))
+      .map((app) => ({
+        ...app,
+        outdatedDeviceCount: this.store.installedApps.filter(
+          (a) => `${a.name}|${a.publisher}` === `${app.name}|${app.publisher}` &&
+            compareVersions(a.version, app.latestVersion) < 0,
+        ).length,
+      }));
   }
 
   @Get('/:name')
@@ -85,22 +94,30 @@ export class AppsController {
   @Post('/:name/update-all')
   updateAll(@Param('name') name: string, @Body() dto: Omit<CreateUpdateTaskDto, 'deviceId'>) {
     const installed = this.store.installedApps.filter((app) => app.name.toLowerCase() === name.toLowerCase());
-    return installed.map((app) => this.createTask(name, { ...dto, deviceId: app.deviceId, packageId: dto.packageId ?? app.packageId, productCode: dto.productCode ?? app.productCode }));
+    const latestVersion = installed.map((app) => app.version).sort(compareVersions).at(-1);
+    const outdated = latestVersion
+      ? installed.filter((app) => compareVersions(app.version, latestVersion) < 0)
+      : [];
+    const tasks = outdated.map((app) => this.createTask(name, {
+      ...dto,
+      deviceId: app.deviceId,
+      packageId: dto.packageId ?? safePackageId(app.packageId),
+      productCode: dto.productCode ?? app.productCode,
+    }));
+    return { tasks };
   }
 
   private createTask(appName: string, dto: CreateUpdateTaskDto) {
     const device = this.store.devices.find((candidate) => candidate.id === dto.deviceId);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = device.preferredNodeId
-      ? this.store.backendNodes.find((candidate) => candidate.id === device.preferredNodeId)
-      : this.store.backendNodes.find((candidate) => candidate.status === 'online');
+    const node = this.nodes.availableNode(device.preferredNodeId);
     if (!node) throw new BadRequestException('No backend node is available for this device');
     const task: UpdateTask = {
       id: uuid(),
       nodeId: node.id,
       deviceId: dto.deviceId,
       appName,
-      packageId: dto.packageId,
+      packageId: safePackageId(dto.packageId),
       productCode: dto.productCode,
       targetVersion: dto.targetVersion ?? 'latest',
       type: dto.type ?? 'update_package',
@@ -116,4 +133,9 @@ export class AppsController {
 
 function compareVersions(left: string, right: string) {
   return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function safePackageId(value?: string) {
+  const trimmed = (value ?? '').trim();
+  return /^[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : undefined;
 }

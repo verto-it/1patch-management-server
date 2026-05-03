@@ -11,7 +11,7 @@ services:
       - management-postgres:/var/lib/postgresql/data
   dragonfly:
     image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
-    command: ["--logtostderr"]
+    command: ["--logtostderr", "--proactor_threads=1"]
     ports:
       - "6379:6379"
     volumes:

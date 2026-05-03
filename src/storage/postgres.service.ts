@@ -1,10 +1,11 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
-import { Alarm, AuditEvent, BackendNode, Device, InstalledApp, PackageArtifact, PatchRule, UpdateTask, User } from '../types';
+import { Alarm, AuditEvent, BackendNode, ClientEnrollment, Device, InstalledApp, PackageArtifact, PatchRule, UpdateTask, User } from '../types';
 
 export interface StoreSnapshot {
   users: User[];
   backendNodes: BackendNode[];
+  clientEnrollments: ClientEnrollment[];
   devices: Device[];
   installedApps: InstalledApp[];
   packages: PackageArtifact[];
@@ -18,6 +19,8 @@ export interface StoreSnapshot {
 export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PostgresService.name);
   private readonly pool?: Pool;
+  private lastError?: string;
+  private saveQueue = Promise.resolve();
 
   constructor() {
     const connectionString = process.env.DATABASE_URL;
@@ -29,47 +32,93 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    await this.ensureSchema();
+    await this.ensureSchema({ throwOnError: false });
   }
 
   async onModuleDestroy() {
     await this.pool?.end();
   }
 
-  async ensureSchema() {
-    if (!this.pool) return;
-    await this.pool.query(phase3SchemaSql);
+  isConfigured() {
+    return Boolean(this.pool);
+  }
+
+  getStatus() {
+    return {
+      configured: this.isConfigured(),
+      available: this.isConfigured() && !this.lastError,
+      lastError: this.lastError,
+    };
+  }
+
+  async ensureSchema(options: { throwOnError?: boolean } = {}) {
+    if (!this.pool) {
+      if (options.throwOnError) throw new Error('DATABASE_URL is not configured');
+      return;
+    }
+    try {
+      await this.pool.query(phase3SchemaSql);
+      this.lastError = undefined;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`PostgreSQL is not available yet: ${this.lastError}`);
+      if (options.throwOnError) throw error;
+    }
   }
 
   async loadSnapshot(): Promise<StoreSnapshot | undefined> {
     if (!this.pool) return undefined;
-    const [users, nodes, devices, apps, packages, rules, tasks, alarms, audit] = await Promise.all([
-      this.pool.query('select * from users order by created_at asc'),
-      this.pool.query('select * from backend_nodes order by name asc'),
-      this.pool.query('select * from devices order by hostname asc'),
-      this.pool.query('select * from installed_apps order by name asc'),
-      this.pool.query('select * from package_artifacts order by name asc, version desc'),
-      this.pool.query('select * from patch_rules order by created_at asc'),
-      this.pool.query('select * from update_tasks order by created_at asc'),
-      this.pool.query('select * from alarms order by created_at desc'),
-      this.pool.query('select * from audit_events order by created_at desc limit 1000'),
-    ]);
-    return {
-      users: users.rows.map(rowToUser),
-      backendNodes: nodes.rows.map(rowToNode),
-      devices: devices.rows.map(rowToDevice),
-      installedApps: apps.rows.map(rowToInstalledApp),
-      packages: packages.rows.map(rowToPackage),
-      rules: rules.rows.map(rowToRule),
-      tasks: tasks.rows.map(rowToTask),
-      alarms: alarms.rows.map(rowToAlarm),
-      auditEvents: audit.rows.map(rowToAudit),
-    };
+    try {
+      const [users, nodes, clientEnrollments, devices, apps, packages, rules, tasks, alarms, audit] = await Promise.all([
+        this.pool.query('select * from users order by created_at asc'),
+        this.pool.query('select * from backend_nodes order by name asc'),
+        this.pool.query('select * from client_enrollments order by created_at desc'),
+        this.pool.query('select * from devices order by hostname asc'),
+        this.pool.query('select * from installed_apps order by name asc'),
+        this.pool.query('select * from package_artifacts order by name asc, version desc'),
+        this.pool.query('select * from patch_rules order by created_at asc'),
+        this.pool.query('select * from update_tasks order by created_at asc'),
+        this.pool.query('select * from alarms order by created_at desc'),
+        this.pool.query('select * from audit_events order by created_at desc limit 1000'),
+      ]);
+      this.lastError = undefined;
+      return {
+        users: users.rows.map(rowToUser),
+        backendNodes: nodes.rows.map(rowToNode),
+        clientEnrollments: clientEnrollments.rows.map(rowToClientEnrollment),
+        devices: devices.rows.map(rowToDevice),
+        installedApps: apps.rows.map(rowToInstalledApp),
+        packages: packages.rows.map(rowToPackage),
+        rules: rules.rows.map(rowToRule),
+        tasks: tasks.rows.map(rowToTask),
+        alarms: alarms.rows.map(rowToAlarm),
+        auditEvents: audit.rows.map(rowToAudit),
+      };
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not load PostgreSQL snapshot: ${this.lastError}`);
+      return undefined;
+    }
   }
 
   async saveSnapshot(snapshot: StoreSnapshot) {
     if (!this.pool) return;
-    const client = await this.pool.connect();
+    const durableSnapshot = normalizeSnapshot(snapshot);
+    this.saveQueue = this.saveQueue.then(
+      () => this.writeSnapshot(durableSnapshot),
+      () => this.writeSnapshot(durableSnapshot),
+    );
+    await this.saveQueue;
+  }
+
+  private async writeSnapshot(snapshot: StoreSnapshot) {
+    if (!this.pool) return;
+    const client = await this.pool.connect().catch((error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not persist PostgreSQL snapshot: ${this.lastError}`);
+      return undefined;
+    });
+    if (!client) return;
     try {
       await client.query('begin');
       await client.query('delete from installed_apps');
@@ -79,6 +128,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       await client.query('delete from update_tasks');
       await client.query('delete from patch_rules');
       await client.query('delete from devices');
+      await client.query('delete from client_enrollments');
       await client.query('delete from backend_nodes');
       await client.query('delete from users');
 
@@ -91,9 +141,16 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       }
       for (const node of snapshot.backendNodes) {
         await client.query(
-          `insert into backend_nodes (id, name, public_url, region, site, status, enrollment_token_hash, last_seen_at, version, capacity)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [node.id, node.name, node.publicUrl, node.region, node.site, node.status, node.enrollmentTokenHash, node.lastSeenAt, node.version, JSON.stringify(node.capacity ?? {})],
+          `insert into backend_nodes (id, name, public_url, region, site, status, enrollment_token_hash, enrollment_token_used_at, last_seen_at, version, capacity)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [node.id, node.name, node.publicUrl, node.region, node.site, node.status, node.enrollmentTokenHash, node.enrollmentTokenUsedAt, node.lastSeenAt, node.version, JSON.stringify(node.capacity ?? {})],
+        );
+      }
+      for (const enrollment of snapshot.clientEnrollments ?? []) {
+        await client.query(
+          `insert into client_enrollments (id, tenant_id, mode, enrollment_token_hash, max_uses, uses, used_device_ids, client_name, created_at)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [enrollment.id, enrollment.tenantId, enrollment.mode, enrollment.enrollmentTokenHash, enrollment.maxUses, enrollment.uses, enrollment.usedDeviceIds, enrollment.clientName, enrollment.createdAt],
         );
       }
       for (const device of snapshot.devices) {
@@ -185,7 +242,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       await client.query('commit');
     } catch (error) {
       await client.query('rollback');
-      throw error;
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not persist PostgreSQL snapshot: ${this.lastError}`);
     } finally {
       client.release();
     }
@@ -216,9 +274,22 @@ create table if not exists backend_nodes (
   site text,
   status text not null,
   enrollment_token_hash text not null,
+  enrollment_token_used_at timestamptz,
   last_seen_at timestamptz,
   version text,
   capacity jsonb not null default '{}',
+  created_at timestamptz not null default now()
+);
+alter table backend_nodes add column if not exists enrollment_token_used_at timestamptz;
+create table if not exists client_enrollments (
+  id text primary key,
+  tenant_id text not null,
+  mode text not null,
+  enrollment_token_hash text not null,
+  max_uses integer not null,
+  uses integer not null default 0,
+  used_device_ids text[] not null default '{}',
+  client_name text,
   created_at timestamptz not null default now()
 );
 create table if not exists devices (
@@ -340,9 +411,24 @@ function rowToNode(row: Record<string, any>): BackendNode {
     site: row.site,
     status: row.status,
     enrollmentTokenHash: row.enrollment_token_hash,
+    enrollmentTokenUsedAt: toIso(row.enrollment_token_used_at),
     lastSeenAt: toIso(row.last_seen_at),
     version: row.version,
     capacity: row.capacity ?? {},
+  };
+}
+
+function rowToClientEnrollment(row: Record<string, any>): ClientEnrollment {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    mode: row.mode,
+    enrollmentTokenHash: row.enrollment_token_hash,
+    maxUses: row.max_uses,
+    uses: row.uses,
+    usedDeviceIds: row.used_device_ids ?? [],
+    clientName: row.client_name,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString(),
   };
 }
 
@@ -454,4 +540,28 @@ function toIso(value: unknown) {
   if (!value) return undefined;
   if (value instanceof Date) return value.toISOString();
   return new Date(String(value)).toISOString();
+}
+
+export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {
+  return {
+    users: uniqueById(snapshot.users),
+    backendNodes: uniqueById(snapshot.backendNodes),
+    clientEnrollments: uniqueById(snapshot.clientEnrollments ?? []),
+    devices: uniqueById(snapshot.devices),
+    installedApps: [...snapshot.installedApps],
+    packages: uniqueById(snapshot.packages),
+    rules: uniqueById(snapshot.rules),
+    tasks: uniqueById(snapshot.tasks),
+    alarms: uniqueById(snapshot.alarms),
+    auditEvents: uniqueById(snapshot.auditEvents),
+  };
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }

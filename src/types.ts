@@ -41,9 +41,25 @@ export interface BackendNode {
   site?: string;
   status: 'pending' | 'online' | 'offline';
   enrollmentTokenHash: string;
+  enrollmentTokenUsedAt?: string;
+  firstSeenAt?: string;
   lastSeenAt?: string;
   version?: string;
   capacity?: Record<string, unknown>;
+  /** Serial number of the Vault-issued mTLS cert — used to revoke on decommission */
+  tlsCertSerial?: string;
+}
+
+export interface ClientEnrollment {
+  id: string;
+  tenantId: string;
+  mode: 'single' | 'batch';
+  enrollmentTokenHash: string;
+  maxUses: number;
+  uses: number;
+  usedDeviceIds: string[];
+  clientName?: string;
+  createdAt: string;
 }
 
 export interface Device {
@@ -88,7 +104,7 @@ export interface PackageArtifact {
   fileName?: string;
   storagePath?: string;
   sourceUrl?: string;
-  sha256: string;
+  sha256?: string;
   signatureStatus: 'unknown' | 'valid' | 'invalid' | 'unsigned';
   installArgs: string;
   uninstallArgs?: string;
@@ -114,7 +130,7 @@ export interface UpdateTask {
   installArgs?: string;
   targetVersion: 'latest' | string;
   type: 'update_package' | 'refresh_inventory';
-  status: 'pending' | 'dispatched' | 'completed' | 'failed' | 'rejected';
+  status: 'pending' | 'dispatched' | 'completed' | 'failed' | 'rejected' | 'cancelled';
   createdAt: string;
   dispatchedAt?: string;
   completedAt?: string;

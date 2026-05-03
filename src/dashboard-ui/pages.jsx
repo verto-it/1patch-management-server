@@ -1,0 +1,1188 @@
+// AGPL-3.0-only — Page components for the 1Patch management UI (live data, no mocks)
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+// ---------- Loader hook ----------
+function dataSignature(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function useResource(loader, deps = []) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const signatureRef = useRef("");
+  const requestRef = useRef(0);
+  const mountedRef = useRef(false);
+  const load = useCallback((silent = false) => {
+    if (!mountedRef.current) return Promise.resolve(null);
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    if (!silent) setLoading(true);
+    setError(null);
+    return Promise.resolve(loader())
+      .then(d => {
+        if (!mountedRef.current || requestId !== requestRef.current) return d;
+        const nextSignature = dataSignature(d);
+        if (nextSignature !== signatureRef.current) {
+          signatureRef.current = nextSignature;
+          setData(d);
+        }
+        return d;
+      })
+      .catch(e => { if (mountedRef.current && requestId === requestRef.current) setError(e); })
+      .finally(() => { if (mountedRef.current && requestId === requestRef.current) setLoading(false); });
+  }, deps);
+  const reload = useCallback((silent = false) => load(silent), [load]);
+  useEffect(() => {
+    mountedRef.current = true;
+    load(false);
+    return () => {
+      mountedRef.current = false;
+      requestRef.current += 1;
+    };
+    // eslint-disable-next-line
+  }, [load]);
+  return { data, error, loading, reload };
+}
+
+function useLiveResource(resource, intervalMs = 5_000) {
+  useEffect(() => {
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      Promise.resolve(resource.reload(true)).finally(() => { inFlight = false; });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    const id = setInterval(tick, intervalMs);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [resource.reload, intervalMs]);
+}
+
+function Skeleton({ w = "100%", h = 16, r = 4, style }) {
+  return <span className="skel" style={{ display:"inline-block", width:w, height:h, borderRadius:r, ...style }}/>;
+}
+function ErrorAlert({ error, onRetry }) {
+  return (
+    <div className="alert">
+      <strong>Couldn't load.</strong> <span className="muted">{error?.message || String(error)}</span>
+      {onRetry && <button className="btn sm" onClick={onRetry}>Retry</button>}
+    </div>
+  );
+}
+function SkeletonRows({ n = 6, cols = 6 }) {
+  return Array.from({ length: n }).map((_, i) => (
+    <tr key={i}>{Array.from({ length: cols }).map((_, j) => <td key={j}><Skeleton w={j === 0 ? 160 : 80}/></td>)}</tr>
+  ));
+}
+function fmtAgo(iso) {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+async function copyTextToClipboard(text) {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  if (!value) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {}
+  }
+
+  const active = document.activeElement;
+  const selection = document.getSelection();
+  const selectedRanges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i)) : [];
+  const el = document.createElement("textarea");
+  el.value = value;
+  el.readOnly = true;
+  el.setAttribute("aria-hidden", "true");
+  Object.assign(el.style, {
+    position: "fixed",
+    top: "0",
+    left: "0",
+    width: "1px",
+    height: "1px",
+    padding: "0",
+    border: "0",
+    opacity: "0",
+    pointerEvents: "none",
+  });
+  document.body.appendChild(el);
+  el.focus({ preventScroll: true });
+  el.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  document.body.removeChild(el);
+  if (active?.focus) active.focus({ preventScroll: true });
+  if (selection) {
+    try {
+      selection.removeAllRanges();
+      selectedRanges.forEach(range => selection.addRange(range));
+    } catch {}
+  }
+  return copied;
+}
+
+// ---------- Overview ----------
+function OverviewPage({ onNav, onOpenDevice }) {
+  const summary  = useResource(() => PatchAPI.summary());
+  const apps     = useResource(() => PatchAPI.apps());
+  const tasks    = useResource(() => PatchAPI.tasks());
+  const alarms   = useResource(() => PatchAPI.alarms());
+  const history  = useResource(() => PatchAPI.coverageHistory(30));
+  useLiveResource(summary, 5_000);
+  useLiveResource(apps, 5_000);
+  useLiveResource(tasks, 3_000);
+  useLiveResource(alarms, 5_000);
+  useLiveResource(history, 30_000);
+
+  const s = summary.data || {};
+  const trend = (history.data || []).map(p => p.value);
+  const coverage = trend.length ? trend[trend.length - 1] : (s.coverage ?? 0);
+  const trendStart = trend[0] ?? coverage;
+  const topApps = (apps.data || []).filter(a => (a.outdatedDeviceCount ?? a.outdated) > 0).slice(0, 6);
+  const recentTasks = sortTasksNewestFirst(tasks.data || []).slice(0, 7);
+  const recentAlarms = (alarms.data || []).slice(0, 5);
+  const compliantApps = s.compliantApps ?? Math.max(0, (apps.data || []).reduce((n,a) => n + (a.deviceCount - (a.outdatedDeviceCount ?? a.outdated ?? 0)), 0));
+  const outdatedApps  = s.outdatedApps  ?? (apps.data || []).reduce((n,a) => n + (a.outdatedDeviceCount ?? a.outdated ?? 0), 0);
+  const totalApps = compliantApps + outdatedApps;
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h2>Fleet overview</h2>
+          <p>Real-time patch coverage{summary.data && ` across ${s.managedDevices} devices`}</p>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="btn" onClick={() => { summary.reload(); apps.reload(); tasks.reload(); alarms.reload(); history.reload(); }}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.refresh}</span>Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-body fleet-pulse">
+          <div className="donut-wrap">
+            {history.loading || summary.loading ? <Skeleton w={140} h={140} r={70}/> : <Donut value={coverage}/>}
+          </div>
+          <div className="pulse-meta">
+            <div>
+              <div className="pulse-sub">Patch coverage</div>
+              <div className="pulse-headline">
+                {apps.loading
+                  ? <Skeleton w={280} h={28}/>
+                  : <span><span className="accent">{compliantApps}</span> of {totalApps} apps compliant</span>}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:18, flexWrap:"wrap" }}>
+              <Metric label="Outdated" value={apps.loading ? "—" : outdatedApps} tone="warn"/>
+              <Metric label="Critical CVEs" value={s.criticalCves ?? "—"} tone="crit"/>
+              <Metric label="Failed tasks" value={tasks.loading ? "—" : (tasks.data || []).filter(t => t.status === "failed").length} tone="crit"/>
+              <Metric label="Active rules" value={s.activeRules ?? "—"}/>
+            </div>
+          </div>
+          <div className="pulse-spark" style={{ display:"flex", flexDirection:"column", justifyContent:"space-between" }}>
+            <div className="pulse-sub" style={{ display:"flex", justifyContent:"space-between" }}>
+              <span>30-day trend</span>
+              {trend.length > 1 && <span style={{ color:"var(--ok)" }}>+{coverage - trendStart}%</span>}
+            </div>
+            {history.loading
+              ? <Skeleton w={260} h={64}/>
+              : trend.length > 1
+                ? <Sparkline data={trend} height={64} width={260}/>
+                : <div className="muted" style={{ fontSize:12 }}>Collecting history…</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="stats">
+        <Stat label="Devices" value={summary.loading ? "—" : s.managedDevices} sub={summary.loading ? "" : `${s.onlineDevices ?? 0} online · ${(s.managedDevices ?? 0) - (s.onlineDevices ?? 0)} offline`}/>
+        <Stat label="Pending tasks" value={tasks.loading ? "—" : (tasks.data || []).filter(t => ["pending","dispatched"].includes(t.status)).length}/>
+        <Stat label="Active alarms" value={alarms.loading ? "—" : (alarms.data || []).length} sub={alarms.loading ? "" : `${(alarms.data || []).filter(a => a.severity === "critical").length} critical`} tone={(alarms.data || []).some(a => a.severity === "critical") ? "crit" : ""}/>
+        <Stat label="Apps tracked" value={apps.loading ? "—" : (apps.data || []).length}/>
+      </div>
+
+      <div className="row-2">
+        <div className="card">
+          <div className="card-head">
+            <div><h3>Apps needing attention</h3><div className="sub">Sorted by devices on outdated versions</div></div>
+            <button className="btn ghost sm" onClick={() => onNav("apps")}>View all <span style={{ width:12, height:12, display:"inline-flex" }}>{Icon.arrowR}</span></button>
+          </div>
+          <div className="card-body tight">
+            {apps.error && <div style={{ padding:16 }}><ErrorAlert error={apps.error} onRetry={apps.reload}/></div>}
+            {apps.loading && Array.from({ length: 4 }).map((_, i) => (
+              <div className="app-chip" key={i}><Skeleton w={32} h={32} r={8}/><Skeleton w={180} h={14}/><Skeleton w={50} h={12}/></div>
+            ))}
+            {!apps.loading && topApps.length === 0 && <div style={{ padding:24, color:"var(--text-3)" }}>Everything is up to date.</div>}
+            {!apps.loading && topApps.map(a => {
+              const outdated = a.outdatedDeviceCount ?? a.outdated ?? 0;
+              const total = a.deviceCount ?? 1;
+              return (
+                <div className="app-chip" key={a.name} onClick={() => onNav("apps")}>
+                  <div style={{ display:"flex", alignItems:"center", gap:12, minWidth:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:8, background:"var(--bg-sub)", display:"grid", placeItems:"center", flexShrink:0, fontWeight:600, color:"var(--text-2)" }}>
+                      {(a.name || "·").split(" ").map(w => w[0]).slice(0,2).join("")}
+                    </div>
+                    <div style={{ minWidth:0 }}>
+                      <div className="name">{a.name} {a.critical && <span className="pill crit" style={{ marginLeft:6 }}>CVE</span>}</div>
+                      <div className="pub">{a.publisher} · latest {a.latestVersion ?? a.latest}</div>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                    <span className="muted mono" style={{ fontSize:12 }}>{outdated}/{total}</span>
+                    <div className="bar"><span style={{ width:(outdated/total*100)+"%" }}/></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div><h3>Active alarms</h3><div className="sub">{alarms.loading ? "…" : (alarms.data || []).length} unresolved</div></div>
+            <button className="btn ghost sm" onClick={() => onNav("alarms")}>All <span style={{ width:12, height:12, display:"inline-flex" }}>{Icon.arrowR}</span></button>
+          </div>
+          <div className="card-body tight">
+            {alarms.error && <div style={{ padding:16 }}><ErrorAlert error={alarms.error} onRetry={alarms.reload}/></div>}
+            {alarms.loading && <div style={{ padding:16 }}><Skeleton h={40}/></div>}
+            {!alarms.loading && recentAlarms.length === 0 && <div style={{ padding:24, color:"var(--text-3)" }}>No active alarms.</div>}
+            {!alarms.loading && recentAlarms.map(a => (
+              <div key={a.id} style={{ display:"flex", gap:12, padding:"12px 16px", borderBottom:"1px solid var(--line)" }}>
+                <div className={"sev-strip " + a.severity}/>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <strong style={{ fontWeight:500, fontSize:13 }}>{a.message}</strong>
+                  <div className="muted" style={{ fontSize:12 }}>
+                    {a.deviceId && <span className="mono">{a.deviceId}</span>} · {fmtAgo(a.createdAt)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div><h3>Recent tasks</h3><div className="sub">Last 7 update jobs across the fleet</div></div>
+          <button className="btn ghost sm" onClick={() => onNav("tasks")}>All <span style={{ width:12, height:12, display:"inline-flex" }}>{Icon.arrowR}</span></button>
+        </div>
+        <div className="card-body tight" style={{ overflowX:"auto" }}>
+          <table className="tbl">
+            <thead><tr><th>App</th><th>Device</th><th>Version</th><th>Node</th><th>Status</th><th>Created</th></tr></thead>
+            <tbody>
+              {tasks.loading && <SkeletonRows n={5} cols={6}/>}
+              {!tasks.loading && recentTasks.length === 0 && <tr><td colSpan={6} style={{ padding:24, color:"var(--text-3)" }}>No tasks yet.</td></tr>}
+              {!tasks.loading && recentTasks.map(t => (
+                <tr key={t.id} onClick={() => onOpenDevice(t.deviceId)}>
+                  <td><strong style={{ fontWeight:500 }}>{taskLabel(t)}</strong></td>
+                  <td className="mono">{t.deviceId}</td>
+                  <td className="mono muted">{taskVersionLabel(t)}</td>
+                  <td className="mono muted">{t.nodeId}</td>
+                  <td><StatusPill status={t.status}/></td>
+                  <td className="muted">{fmtAgo(t.createdAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, tone }) {
+  return (
+    <div className="stat">
+      <div className="label">{label}</div>
+      <div className="value" style={tone === "crit" ? { color:"var(--crit)" } : {}}>{value}</div>
+      {sub && <div className="delta">{sub}</div>}
+    </div>
+  );
+}
+function Metric({ label, value, tone }) {
+  const color = tone === "crit" ? "var(--crit)" : tone === "warn" ? "var(--warn)" : "var(--text)";
+  return (
+    <div>
+      <div style={{ fontSize:12, color:"var(--text-3)" }}>{label}</div>
+      <div style={{ fontSize:20, fontWeight:600, color, fontVariantNumeric:"tabular-nums" }}>{value}</div>
+    </div>
+  );
+}
+
+// ---------- Devices ----------
+function DevicesPage({ onOpenDevice, globalSearch = "" }) {
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const activeQ = globalSearch || q;
+  const [enrolling, setEnrolling] = useState(false);
+  const devices = useResource(() => PatchAPI.devices());
+  useLiveResource(devices, 2_500);
+  const rows = (devices.data || []).filter(d => {
+    const platform = d.platform || (/(windows|win)/i.test(d.os || "") ? "windows" : "linux");
+    if (!textMatches(activeQ, [d.hostname, formatOs(d.os), d.os, d.site, d.id, d.preferredNodeId])) return false;
+    if (filter === "windows" && platform !== "windows") return false;
+    if (filter === "linux"   && platform !== "linux") return false;
+    if (filter === "online"  && !d.online) return false;
+    if (filter === "offline" &&  d.online) return false;
+    return true;
+  });
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Devices</h2><p>{devices.loading ? "Loading…" : `${(devices.data || []).length} managed endpoints`}</p></div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="btn"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.download}</span>Export CSV</button>
+          <button className="btn primary" onClick={() => setEnrolling(true)}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add clients</button>
+        </div>
+      </div>
+      <div className="card">
+        <div className="filterbar">
+          {[["all","All"],["windows","Windows"],["linux","Linux"],["online","Online"],["offline","Offline"]].map(([k,l]) => (
+            <button key={k} className={"chip " + (filter === k ? "active" : "")} onClick={() => setFilter(k)}>{l}</button>
+          ))}
+          <div style={{ flex:1 }}/>
+          <div className="searchbox" style={{ width:220 }}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.search}</span>
+            <input placeholder="Filter hostname, OS, site…" value={globalSearch || q} onChange={e => setQ(e.target.value)}/>
+          </div>
+        </div>
+        {devices.error && <div style={{ padding:16 }}><ErrorAlert error={devices.error} onRetry={devices.reload}/></div>}
+        <div style={{ overflowX:"auto", maxHeight:"calc(100vh - 280px)", overflowY:"auto" }}>
+          <table className="tbl">
+            <thead><tr><th>Hostname</th><th>OS</th><th>Site</th><th>Node</th><th className="num">Apps</th><th className="num">Pending</th><th>Last seen</th><th>Status</th></tr></thead>
+            <tbody>
+              {devices.loading && <SkeletonRows n={8} cols={8}/>}
+              {!devices.loading && rows.length === 0 && <tr><td colSpan={8} style={{ padding:24, color:"var(--text-3)" }}>No devices match.</td></tr>}
+              {!devices.loading && rows.map(d => {
+                const platform = d.platform || (/(windows|win)/i.test(d.os || "") ? "windows" : "linux");
+                return (
+                  <tr key={d.id} onClick={() => onOpenDevice(d.id)}>
+                    <td><div style={{ display:"flex", alignItems:"center", gap:8 }}><OsIcon platform={platform}/><span className="mono">{d.hostname}</span></div></td>
+                    <td className="muted">{formatOs(d.os)}</td>
+                    <td className="muted">{d.site || "—"}</td>
+                    <td className="muted mono">{d.preferredNodeId || "—"}</td>
+                    <td className="num mono">{d.installedAppCount ?? "—"}</td>
+                    <td className="num mono">{d.pendingTaskCount ?? 0}</td>
+                    <td className="muted">{fmtAgo(d.lastSeenAt)}</td>
+                    <td><StatusPill status={d.online ? "online" : "offline"}/></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {enrolling && <ClientEnrollmentWizard onClose={() => setEnrolling(false)} onCreated={devices.reload}/>}
+    </div>
+  );
+}
+
+function ClientEnrollmentWizard({ onClose, onCreated }) {
+  const browserManagementUrl = `${window.location.protocol}//${window.location.host}`;
+  const [step, setStep] = useState("details");
+  const [mode, setMode] = useState("single");
+  const [form, setForm] = useState({
+    tenantId: "default",
+    managementUrl: browserManagementUrl,
+    trustedDownloadHosts: browserManagementUrl,
+    clientName: "",
+    maxUses: 10,
+    heartbeatSeconds: 60,
+    inventoryMinutes: 30,
+    nodeProbeTimeoutMilliseconds: 2000,
+  });
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState("");
+  const noticeTimer = useRef(null);
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const steps = [
+    ["details", "Details"],
+    ["config", "Config"],
+    ["install", "Install"],
+  ];
+  const configText = !result
+    ? ""
+    : result.oneLineJson || (result.config ? JSON.stringify(result.config) : "");
+  const prettyConfig = !result
+    ? ""
+    : JSON.stringify(result.config, null, 2);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError(null); setNotice("");
+    try {
+      const created = await PatchAPI.createDeviceEnrollment({
+        mode,
+        tenantId: form.tenantId.trim(),
+        managementUrl: form.managementUrl.trim(),
+        trustedDownloadHosts: form.trustedDownloadHosts.split(/\r?\n|,/).map(v => v.trim()).filter(Boolean),
+        heartbeatSeconds: Number(form.heartbeatSeconds),
+        inventoryMinutes: Number(form.inventoryMinutes),
+        nodeProbeTimeoutMilliseconds: Number(form.nodeProbeTimeoutMilliseconds),
+        clientName: mode === "single" ? form.clientName.trim() : undefined,
+        maxUses: mode === "batch" ? Number(form.maxUses) : 1,
+      });
+      setResult(created);
+      setStep("config");
+      setNotice(mode === "batch" ? "Reusable batch config created." : "Client config created.");
+      onCreated?.();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (text, message) => {
+    const copied = await copyTextToClipboard(text);
+    setNotice(copied ? message : "Copy failed. Select the JSON and copy it manually.");
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(""), 2400);
+  };
+
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="wizard-modal" role="dialog" aria-modal="true">
+        <div className="wizard-head">
+          <div>
+            <h3>Add Clients</h3>
+            <p>Generate one-line JSON config for one client or a reusable batch install.</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span></button>
+        </div>
+        <div className="wizard-body">
+          <div className="wizard-steps">
+            {steps.map(([id, label]) => {
+              const done = (id === "details" && result) || (id === "config" && result && step === "install");
+              const active = step === id;
+              return (
+                <button key={id} className={"wizard-step " + (active ? "active " : "") + (done ? "done" : "")} onClick={() => (id === "details" || result) && setStep(id)}>
+                  <span>{done ? "OK" : "--"}</span>{label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="wizard-panel">
+            <div className={"notice-slot " + (notice ? "show" : "")} aria-live="polite" aria-hidden={!notice}>{notice}</div>
+            {step === "details" && (
+              <form onSubmit={submit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="segmented">
+                  <button type="button" className={mode === "single" ? "active" : ""} onClick={() => setMode("single")}>Single client</button>
+                  <button type="button" className={mode === "batch" ? "active" : ""} onClick={() => setMode("batch")}>Batch</button>
+                </div>
+                <div className="form-grid">
+                  <label className="field">
+                    <span>Tenant</span>
+                    <input required value={form.tenantId} onChange={e => set("tenantId", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Management URL</span>
+                    <input required value={form.managementUrl} onChange={e => set("managementUrl", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Heartbeat seconds</span>
+                    <input type="number" min="1" value={form.heartbeatSeconds} onChange={e => set("heartbeatSeconds", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Inventory minutes</span>
+                    <input type="number" min="1" value={form.inventoryMinutes} onChange={e => set("inventoryMinutes", e.target.value)}/>
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Trusted download hosts</span>
+                  <textarea value={form.trustedDownloadHosts} onChange={e => set("trustedDownloadHosts", e.target.value)} placeholder="https://packages.example.com"/>
+                </label>
+                {mode === "single" && (
+                  <label className="field">
+                    <span>Optional client name override</span>
+                    <input value={form.clientName} onChange={e => set("clientName", e.target.value)} placeholder="Leave blank to use device hostname"/>
+                  </label>
+                )}
+                {mode === "batch" && (
+                  <React.Fragment>
+                    <label className="field">
+                      <span>Allowed devices</span>
+                      <input type="number" min="1" max="10000" value={form.maxUses} onChange={e => set("maxUses", e.target.value)}/>
+                    </label>
+                    <div className="success-card">
+                      <strong>One reusable config</strong>
+                      <span>Install this same config on up to {Number(form.maxUses) || 1} clients. Each device reports its own hostname and generates its own device identity.</span>
+                    </div>
+                  </React.Fragment>
+                )}
+                {error && <ErrorAlert error={error}/>}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  <span className="muted">{mode === "batch" ? `One reusable config, limited to ${Number(form.maxUses) || 1} devices.` : "One client config will be generated."}</span>
+                  <button className="btn primary" disabled={busy}>{busy ? "Creating..." : "Create config"}</button>
+                </div>
+              </form>
+            )}
+            {step === "config" && result && (
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="alert" style={{ color:"var(--ok)", background:"var(--ok-soft)", borderColor:"transparent" }}>
+                  <strong>{mode === "batch" ? `Reusable batch config created for ${result.count} devices.` : "Config created."}</strong>
+                  <span className="muted">Use the one-line JSON for client setup.</span>
+                </div>
+                <textarea className="codebox one-line" readOnly value={configText}/>
+                <details>
+                  <summary className="muted" style={{ cursor:"pointer" }}>Pretty appsettings.json preview</summary>
+                  <textarea className="codebox" readOnly value={prettyConfig}/>
+                </details>
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:8, flexWrap:"wrap" }}>
+                  <button type="button" className="btn" disabled={!configText} onClick={() => copy(configText, "Copied one-line JSON.")}>Copy JSON</button>
+                  <button type="button" className="btn" disabled={!prettyConfig} onClick={() => copy(prettyConfig, "Copied pretty config.")}>Copy pretty JSON</button>
+                  <button className="btn primary" onClick={() => setStep("install")}>Next</button>
+                </div>
+              </div>
+            )}
+            {step === "install" && result && (
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="success-card">
+                  <strong>Ready to install</strong>
+                  <span>Start the client in an interactive console, choose JSON setup, and paste the copied JSON. {mode === "batch" ? `Use the same JSON on up to ${result.count} clients; hostnames come from the devices themselves.` : "If no name override was set, the device hostname is used."}</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                  <button className="btn" onClick={() => setStep("config")}>Back</button>
+                  <button className="btn primary" onClick={onClose}>Done</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </React.Fragment>
+  );
+}
+
+// ---------- Apps ----------
+function AppsPage({ globalSearch = "" }) {
+  const [q, setQ] = useState("");
+  const activeQ = globalSearch || q;
+  const apps = useResource(() => PatchAPI.apps());
+  useLiveResource(apps, 5_000);
+  const [queuing, setQueuing] = useState(new Set());
+  const [recentlyQueued, setRecentlyQueued] = useState(new Set());
+  const [notice, setNotice] = useState(null);
+
+  const updateAll = async (name) => {
+    if (recentlyQueued.has(name)) return;
+    setQueuing(prev => new Set([...prev, name]));
+    setRecentlyQueued(prev => new Set([...prev, name]));
+    setTimeout(() => setRecentlyQueued(prev => { const s = new Set(prev); s.delete(name); return s; }), 30_000);
+    try {
+      const result = await PatchAPI.updateAllForApp(name);
+      const count = Array.isArray(result) ? result.length : (result?.tasks?.length ?? 0);
+      const msg = count > 0
+        ? `Queued ${count} update task${count !== 1 ? "s" : ""} for ${name}.`
+        : `No outdated installs of ${name}.`;
+      setNotice({ ok: count > 0, msg });
+    } catch (e) {
+      setNotice({ ok: false, msg: `Failed to queue updates for ${name}: ${e?.message ?? "unknown error"}` });
+    } finally {
+      setQueuing(prev => { const s = new Set(prev); s.delete(name); return s; });
+      setTimeout(() => setNotice(null), 5000);
+    }
+  };
+
+  const rows = (apps.data || []).filter(a => !activeQ || `${a.name} ${a.publisher}`.toLowerCase().includes(activeQ.toLowerCase()));
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Apps</h2><p>Discovered across the fleet · grouped by name</p></div>
+        <button className="btn accent">Update all outdated</button>
+      </div>
+      <div className="card">
+        <div className="filterbar">
+          <div className="searchbox" style={{ flex:1, maxWidth:320 }}>
+            <span style={{ width:14, height:14, display:"inline-flex", alignItems:"center", justifyContent:"center" }}>
+              {apps.loading ? <span className="search-spinner"/> : Icon.search}
+            </span>
+            <input placeholder="Filter apps…" value={globalSearch || q} onChange={e => setQ(e.target.value)}/>
+          </div>
+        </div>
+        {notice && (
+          <div className={`toast-inline${notice.ok ? "" : " error"}`} style={{ margin:"12px 16px 0" }}>
+            {notice.msg}
+          </div>
+        )}
+        {apps.error && <div style={{ padding:16 }}><ErrorAlert error={apps.error} onRetry={apps.reload}/></div>}
+        <div style={{ overflowX:"auto" }}>
+          <table className="tbl">
+            <thead><tr><th>App</th><th>Publisher</th><th>Latest</th><th>Oldest in fleet</th><th className="num">Devices</th><th className="num">Outdated</th><th>Coverage</th><th></th></tr></thead>
+            <tbody>
+              {apps.loading && <SkeletonRows n={6} cols={8}/>}
+              {!apps.loading && rows.length === 0 && <tr><td colSpan={8} style={{ padding:24, color:"var(--text-3)" }}>No apps tracked yet.</td></tr>}
+              {!apps.loading && rows.map(a => {
+                const outdated = a.outdatedDeviceCount ?? a.outdated ?? 0;
+                const total = a.deviceCount ?? 1;
+                const pct = Math.round(((total - outdated) / total) * 100);
+                const isQueuing = queuing.has(a.name);
+                const isLocked = isQueuing || recentlyQueued.has(a.name);
+                return (
+                  <tr key={a.name + (a.publisher || "")}>
+                    <td>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ width:28, height:28, borderRadius:6, background:"var(--bg-sub)", display:"grid", placeItems:"center", fontWeight:600, fontSize:11, color:"var(--text-2)" }}>
+                          {(a.name || "·").split(" ").map(w => w[0]).slice(0,2).join("")}
+                        </div>
+                        <strong style={{ fontWeight:500 }}>{a.name}</strong>
+                        {a.critical && <span className="pill crit">CVE</span>}
+                      </div>
+                    </td>
+                    <td className="muted">{a.publisher}</td>
+                    <td className="mono">{a.latestVersion ?? a.latest}</td>
+                    <td className="mono muted">{a.oldestVersion ?? a.oldest ?? "—"}</td>
+                    <td className="num mono">{total}</td>
+                    <td className="num"><span style={{ color: outdated ? "var(--warn)" : "var(--text-3)", fontFamily:"var(--font-mono)" }}>{outdated}</span></td>
+                    <td><div style={{ display:"flex", alignItems:"center", gap:8 }}><div style={{ width:80, height:4, background:"var(--bg-sub)", borderRadius:2, overflow:"hidden" }}><div style={{ width: pct+"%", height:"100%", background: pct >= 90 ? "var(--ok)" : pct >= 70 ? "var(--accent)" : "var(--warn)" }}/></div><span className="mono muted" style={{ fontSize:12 }}>{pct}%</span></div></td>
+                    <td>{outdated > 0 && <button className="btn sm" disabled={isLocked} onClick={() => updateAll(a.name)}>{isQueuing ? "Queuing…" : isLocked ? "Queued" : `Update ${outdated}`}</button>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Packages ----------
+function PackagesPage({ globalSearch = "" }) {
+  const pkgs = useResource(() => PatchAPI.packages());
+  useLiveResource(pkgs, 10_000);
+  const deploy = async (id) => { try { await PatchAPI.deployPackageAll(id); } finally { pkgs.reload(); } };
+  const rows = (pkgs.data || []).filter(p => textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256]));
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Package library</h2><p>Signed artifacts deployed to backend nodes · MSI / winget / apt</p></div>
+        <button className="btn primary"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add package</button>
+      </div>
+      <div className="card">
+        {pkgs.error && <div style={{ padding:16 }}><ErrorAlert error={pkgs.error} onRetry={pkgs.reload}/></div>}
+        <table className="tbl">
+          <thead><tr><th>Name</th><th>Version</th><th>Type</th><th>Platform</th><th>SHA-256</th><th>Signature</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            {pkgs.loading && <SkeletonRows n={5} cols={8}/>}
+            {!pkgs.loading && rows.length === 0 && <tr><td colSpan={8} style={{ padding:24, color:"var(--text-3)" }}>No packages uploaded.</td></tr>}
+            {!pkgs.loading && rows.map(p => (
+              <tr key={p.id || p.sha256}>
+                <td><div><strong style={{ fontWeight:500 }}>{p.name}</strong><div className="muted" style={{ fontSize:12 }}>{p.publisher}</div></div></td>
+                <td className="mono">{p.version}</td>
+                <td><span className="pill">{p.type}</span></td>
+                <td className="muted">{p.platform}{p.architecture ? " · " + p.architecture : ""}</td>
+                <td className="mono muted" title={p.sha256}>{p.sha256 ? `${p.sha256.slice(0,12)}…` : "—"}</td>
+                <td><StatusPill status={p.signatureStatus}/></td>
+                <td className="muted">{fmtAgo(p.createdAt)}</td>
+                <td><button className="btn sm" onClick={() => deploy(p.id)}>Deploy</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Rules ----------
+function RulesPage({ globalSearch = "" }) {
+  const rules = useResource(() => PatchAPI.rules());
+  useLiveResource(rules, 10_000);
+  const toggle = async (r) => { try { await PatchAPI.toggleRule(r.id, !r.enabled); } finally { rules.reload(); } };
+  const rows = (rules.data || []).filter(r => textMatches(globalSearch, [r.name, r.property, r.operator, r.value, r.targetVersion, r.enabled ? "enabled" : "disabled"]));
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Patch rules</h2><p>Automatically generate update tasks when devices fall out of compliance</p></div>
+        <button className="btn primary"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>New rule</button>
+      </div>
+      <div className="card">
+        {rules.error && <div style={{ padding:16 }}><ErrorAlert error={rules.error} onRetry={rules.reload}/></div>}
+        <table className="tbl">
+          <thead><tr><th>Name</th><th>Match</th><th>Target</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {rules.loading && <SkeletonRows n={4} cols={5}/>}
+            {!rules.loading && rows.length === 0 && <tr><td colSpan={5} style={{ padding:24, color:"var(--text-3)" }}>No rules configured.</td></tr>}
+            {!rules.loading && rows.map(r => (
+              <tr key={r.id}>
+                <td><strong style={{ fontWeight:500 }}>{r.name}</strong></td>
+                <td className="mono muted">{r.property} {r.operator} "{r.value}"</td>
+                <td className="mono">{r.targetVersion}</td>
+                <td>
+                  <button onClick={(e) => { e.stopPropagation(); toggle(r); }} style={{ border:0, padding:0, background:"transparent", cursor:"pointer" }}>
+                    <span className={"pill " + (r.enabled ? "ok" : "")}><span className="dot"/>{r.enabled ? "Enabled" : "Disabled"}</span>
+                  </button>
+                </td>
+                <td><button className="btn sm ghost">Edit</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Tasks ----------
+function TasksPage({ globalSearch = "" }) {
+  const [filter, setFilter] = useState("all");
+  const tasks = useResource(() => PatchAPI.tasks());
+  useLiveResource(tasks, 2_500);
+  const [cancelling, setCancelling] = useState(new Set());
+  const [outputTask, setOutputTask] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const cancel = async (id) => {
+    setCancelling(prev => new Set([...prev, id]));
+    try { await PatchAPI.cancelTask(id); tasks.reload(true); }
+    catch (e) { /* task may have already moved past pending */ }
+    finally { setCancelling(prev => { const s = new Set(prev); s.delete(id); return s; }); }
+  };
+
+  const copyOutput = () => {
+    navigator.clipboard.writeText(outputTask?.output || "").then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const rows = sortTasksNewestFirst(tasks.data || []).filter(t =>
+    (filter === "all" || t.status === filter) &&
+    textMatches(globalSearch, [taskLabel(t), t.type, t.appName, t.deviceId, t.nodeId, t.status, t.fromVersion, t.targetVersion, t.output])
+  );
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Tasks</h2><p>{tasks.loading ? "…" : `${(tasks.data || []).length} update jobs`}</p></div>
+      </div>
+      <div className="card">
+        <div className="filterbar">
+          {[["all","All"],["pending","Pending"],["dispatched","Dispatched"],["completed","Completed"],["failed","Failed"],["cancelled","Cancelled"]].map(([k,l]) => (
+            <button key={k} className={"chip " + (filter === k ? "active" : "")} onClick={() => setFilter(k)}>{l}</button>
+          ))}
+        </div>
+        {tasks.error && <div style={{ padding:16 }}><ErrorAlert error={tasks.error} onRetry={tasks.reload}/></div>}
+        <div style={{ overflowX:"auto" }}>
+          <table className="tbl">
+            <thead><tr><th>App</th><th>Device</th><th>Version</th><th>Node</th><th>Status</th><th>Output</th><th>Created</th><th></th></tr></thead>
+            <tbody>
+              {tasks.loading && <SkeletonRows n={6} cols={8}/>}
+              {!tasks.loading && rows.length === 0 && <tr><td colSpan={8} style={{ padding:24, color:"var(--text-3)" }}>No tasks match.</td></tr>}
+              {!tasks.loading && rows.map(t => (
+                <tr key={t.id}>
+                  <td><strong style={{ fontWeight:500 }}>{taskLabel(t)}</strong></td>
+                  <td className="mono">{t.deviceId}</td>
+                  <td className="mono muted">{taskVersionLabel(t)}</td>
+                  <td className="mono muted">{t.nodeId}</td>
+                  <td><StatusPill status={t.status}/></td>
+                  <td className="mono muted" style={{ maxWidth:280, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", cursor: t.output ? "pointer" : "default" }}
+                      title={t.output ? "Click to view full output" : undefined}
+                      onClick={() => t.output && setOutputTask(t)}>{t.output || "—"}</td>
+                  <td className="muted">{fmtAgo(t.createdAt)}</td>
+                  <td>{t.status === "pending" && (
+                    <button className="btn sm" disabled={cancelling.has(t.id)} onClick={() => cancel(t.id)}>
+                      {cancelling.has(t.id) ? "…" : "Cancel"}
+                    </button>
+                  )}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {outputTask && (
+        <React.Fragment>
+          <div className="drawer-backdrop" onClick={() => setOutputTask(null)}/>
+          <div className="output-dialog">
+            <div className="output-dialog-box">
+              <div className="output-dialog-head">
+                <h4>{taskLabel(outputTask)}</h4>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <button className="btn sm" onClick={copyOutput}>{copied ? "Copied!" : "Copy"}</button>
+                  <button className="icon-btn" onClick={() => setOutputTask(null)}>
+                    <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span>
+                  </button>
+                </div>
+              </div>
+              <div className="output-dialog-body">
+                <pre>{outputTask.output}</pre>
+              </div>
+            </div>
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ---------- Nodes ----------
+function NodesPage({ globalSearch = "" }) {
+  const nodes = useResource(() => PatchAPI.nodes());
+  useLiveResource(nodes, 5_000);
+  const rows = (nodes.data || []).filter(n => textMatches(globalSearch, [n.name, n.id, n.publicUrl, n.url, n.region, n.site, n.status, n.version]));
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollment, setEnrollment] = useState(null);
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Backend nodes</h2><p>Regional workers that fan out tasks to enrolled clients</p></div>
+        <button className="btn primary" onClick={() => { setEnrollment(null); setEnrolling(true); }}>
+          <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Enroll node
+        </button>
+      </div>
+      {nodes.error && <ErrorAlert error={nodes.error} onRetry={nodes.reload}/>}
+      <div className="row-3">
+        {nodes.loading && Array.from({ length:3 }).map((_,i) => <div className="card" key={i}><div className="card-body"><Skeleton h={80}/></div></div>)}
+        {!nodes.loading && rows.length === 0 && <div className="card"><div className="card-body" style={{ color:"var(--text-3)" }}>No nodes enrolled.</div></div>}
+        {!nodes.loading && rows.map(n => (
+          <div className="card" key={n.id}>
+            <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                <div>
+                  <div style={{ fontWeight:600, fontSize:15 }}>{n.name}</div>
+                  <div className="muted mono" style={{ fontSize:12 }}>{n.publicUrl || n.url}</div>
+                </div>
+                <StatusPill status={n.status}/>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, paddingTop:12, borderTop:"1px solid var(--line)" }}>
+                <div><div className="muted" style={{ fontSize:11 }}>REGION</div><div className="mono" style={{ fontSize:13 }}>{n.region || "—"}</div></div>
+                <div><div className="muted" style={{ fontSize:11 }}>VERSION</div><div className="mono" style={{ fontSize:13 }}>{n.version || "—"}</div></div>
+                <div><div className="muted" style={{ fontSize:11 }}>CAPACITY</div><div className="mono" style={{ fontSize:13 }}>{n.capacity ? JSON.stringify(n.capacity) : "—"}</div></div>
+                <div><div className="muted" style={{ fontSize:11 }}>LAST SEEN</div><div className="mono" style={{ fontSize:13 }}>{fmtAgo(n.lastSeenAt)}</div></div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {enrolling && (
+        <EnrollNodeDrawer
+          result={enrollment}
+          onClose={() => setEnrolling(false)}
+          onCreated={(created) => { setEnrollment(created); nodes.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EnrollNodeDrawer({ result, onClose, onCreated }) {
+  const [form, setForm] = useState({ name:"", publicUrl:"http://localhost:4200", region:"", site:"" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const enrollmentJson = result ? JSON.stringify(result, null, 2) : "";
+  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError(null);
+    try {
+      const created = await PatchAPI.createNodeEnrollment({
+        name: form.name.trim(),
+        publicUrl: form.publicUrl.trim(),
+        region: form.region.trim() || undefined,
+        site: form.site.trim() || undefined,
+      });
+      onCreated(created);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = async () => {
+    await copyTextToClipboard(enrollmentJson);
+  };
+
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="drawer">
+        <div className="drawer-head">
+          <h3>Enroll backend node</h3>
+          <button className="icon-btn" onClick={onClose}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span></button>
+        </div>
+        <div className="drawer-body">
+          {!result && (
+            <form onSubmit={submit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              <label className="field">
+                <span>Name</span>
+                <input required value={form.name} placeholder="node-1" onChange={e => set("name", e.target.value)}/>
+              </label>
+              <label className="field">
+                <span>Public URL</span>
+                <input required value={form.publicUrl} placeholder="http://host:4200" onChange={e => set("publicUrl", e.target.value)}/>
+              </label>
+              <label className="field">
+                <span>Region</span>
+                <input value={form.region} placeholder="eu-central" onChange={e => set("region", e.target.value)}/>
+              </label>
+              <label className="field">
+                <span>Site</span>
+                <input value={form.site} placeholder="office-1" onChange={e => set("site", e.target.value)}/>
+              </label>
+              {error && <ErrorAlert error={error}/>}
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                <button type="button" className="btn" onClick={onClose}>Cancel</button>
+                <button className="btn primary" disabled={busy}>{busy ? "Creating…" : "Create enrollment"}</button>
+              </div>
+            </form>
+          )}
+          {result && (
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              <div className="alert" style={{ color:"var(--ok)", background:"var(--ok-soft)", borderColor:"transparent" }}>
+                <strong>Enrollment created.</strong><span className="muted">Use this JSON in the backend node setup.</span>
+              </div>
+              <textarea className="codebox" readOnly value={enrollmentJson}/>
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                <button className="btn" onClick={copy}>Copy JSON</button>
+                <button className="btn primary" onClick={onClose}>Done</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </React.Fragment>
+  );
+}
+
+// ---------- Alarms ----------
+function AlarmsPage({ globalSearch = "" }) {
+  const alarms = useResource(() => PatchAPI.alarms());
+  useLiveResource(alarms, 5_000);
+  const resolve = async (id) => { try { await PatchAPI.resolveAlarm(id); } finally { alarms.reload(); } };
+  const rows = (alarms.data || []).filter(a => textMatches(globalSearch, [a.message, a.deviceId, a.severity, a.id]));
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Alarms</h2><p>{alarms.loading ? "…" : `${rows.length} active across the fleet`}</p></div>
+      </div>
+      <div className="card">
+        {alarms.error && <div style={{ padding:16 }}><ErrorAlert error={alarms.error} onRetry={alarms.reload}/></div>}
+        <div className="card-body tight">
+          {alarms.loading && <div style={{ padding:16 }}><Skeleton h={60}/></div>}
+          {!alarms.loading && rows.length === 0 && <div style={{ padding:24, color:"var(--text-3)" }}>No active alarms.</div>}
+          {!alarms.loading && rows.map(a => (
+            <div key={a.id} style={{ display:"flex", gap:14, padding:"14px 18px", borderBottom:"1px solid var(--line)", alignItems:"center" }}>
+              <div className={"sev-strip " + a.severity}/>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontWeight:500 }}>{a.message}</div>
+                <div className="muted" style={{ fontSize:12, marginTop:2 }}>{a.deviceId && <span className="mono">{a.deviceId}</span>} · {fmtAgo(a.createdAt)}</div>
+              </div>
+              <span className={"pill " + (a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : "accent")}>{a.severity}</span>
+              <button className="btn sm ghost" onClick={() => resolve(a.id)}>Resolve</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Audit ----------
+function AuditPage({ globalSearch = "" }) {
+  const audit = useResource(() => PatchAPI.audit(100));
+  useLiveResource(audit, 10_000);
+  const rows = (audit.data || []).filter(e => textMatches(globalSearch, [e.actor, e.action, e.target, e.id]));
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Audit log</h2><p>Signed event stream for compliance review</p></div>
+        <button className="btn"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.download}</span>Export</button>
+      </div>
+      <div className="card">
+        {audit.error && <div style={{ padding:16 }}><ErrorAlert error={audit.error} onRetry={audit.reload}/></div>}
+        <table className="tbl">
+          <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead>
+          <tbody>
+            {audit.loading && <SkeletonRows n={6} cols={4}/>}
+            {!audit.loading && rows.length === 0 && <tr><td colSpan={4} style={{ padding:24, color:"var(--text-3)" }}>No audit events.</td></tr>}
+            {!audit.loading && rows.map((e,i) => (
+              <tr key={e.id || i}>
+                <td className="muted">{fmtAgo(e.createdAt)}</td>
+                <td className="mono">{e.actor}</td>
+                <td><span className="pill">{e.action}</span></td>
+                <td>{e.target || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Device drawer ----------
+function DeviceDrawer({ deviceId, onClose }) {
+  const detail = useResource(() => PatchAPI.device(deviceId), [deviceId]);
+  useLiveResource(detail, 2_500);
+  const [deviceNotice, setDeviceNotice] = useState(null);
+  const [queuingApp, setQueuingApp] = useState(null);
+  if (!deviceId) return null;
+  const d = detail.data?.device;
+  const apps = detail.data?.installedApps || [];
+  const tasks = sortTasksNewestFirst(detail.data?.tasks || []);
+
+  // compute "outdated" client-side from latest version per app/publisher across the response
+  const latest = new Map();
+  for (const a of apps) {
+    const k = `${a.name}|${a.publisher || ""}`;
+    const version = a.latestVersion || a.version;
+    if (!latest.has(k) || version.localeCompare(latest.get(k), undefined, { numeric:true }) > 0) latest.set(k, version);
+  }
+  const outdated = apps.filter(a => a.version !== latest.get(`${a.name}|${a.publisher || ""}`)).length;
+  const platform = d?.platform || (/(windows|win)/i.test(d?.os || "") ? "windows" : "linux");
+  const online = d?.lastSeenAt ? Date.now() - new Date(d.lastSeenAt).getTime() < 2 * 60_000 : false;
+
+  const refresh = async () => { try { await PatchAPI.refreshInventory(deviceId); } finally { detail.reload(); } };
+  const updateAll = async () => {
+    try {
+      const result = await PatchAPI.updateAllOutdated(deviceId);
+      const count = result?.tasks?.length ?? 0;
+      const msg = count > 0
+        ? `Queued ${count} update task${count !== 1 ? "s" : ""}.`
+        : "All apps are already up to date.";
+      setDeviceNotice({ ok: count > 0, msg });
+      setTimeout(() => setDeviceNotice(null), 5000);
+    } finally {
+      detail.reload();
+    }
+  };
+  const updateApp = async (app) => {
+    const key = `${app.name}|${app.publisher || ""}`;
+    if (queuingApp === key) return;
+    setQueuingApp(key);
+    try {
+      await PatchAPI.updateDeviceForApp(app.name, {
+        deviceId,
+        packageId: app.packageId,
+        productCode: app.productCode,
+        targetVersion: 'latest',
+      });
+      setDeviceNotice({ ok: true, msg: `Queued update for ${app.name}.` });
+      detail.reload();
+    } catch (e) {
+      setDeviceNotice({ ok: false, msg: `Failed to queue update for ${app.name}: ${e?.message ?? "unknown error"}` });
+    } finally {
+      setQueuingApp(null);
+      setTimeout(() => setDeviceNotice(null), 5000);
+    }
+  };
+
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="drawer">
+        <div className="drawer-head">
+          <h3>
+            {d ? <OsIcon platform={platform}/> : null}
+            <span className="mono">{d?.hostname || deviceId}</span>
+            {d && <StatusPill status={online ? "online" : "offline"}/>}
+          </h3>
+          <button className="icon-btn" onClick={onClose}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span></button>
+        </div>
+        <div className="drawer-body">
+          {detail.error && <ErrorAlert error={detail.error} onRetry={detail.reload}/>}
+          {detail.loading && <Skeleton h={240}/>}
+          {!detail.loading && d && (
+            <React.Fragment>
+              <div className="drawer-actions">
+                <button className="btn primary" onClick={refresh}>Refresh inventory</button>
+                <button className="btn accent" onClick={updateAll}>Update all ({outdated})</button>
+              </div>
+              {deviceNotice && (
+                <div className={`toast-inline${deviceNotice.ok ? "" : " error"}`} style={{ margin:"0 0 12px" }}>
+                  {deviceNotice.msg}
+                </div>
+              )}
+              <div className="card">
+                <div className="card-body">
+                  <dl className="kv">
+                    <dt>Device ID</dt><dd className="mono">{d.id}</dd>
+                    <dt>OS</dt><dd>{formatOs(d.os)}</dd>
+                    <dt>Site</dt><dd>{d.site || "—"}</dd>
+                    <dt>Backend node</dt><dd className="mono">{d.preferredNodeId || "—"}</dd>
+                    <dt>Last seen</dt><dd>{fmtAgo(d.lastSeenAt)}</dd>
+                    <dt>Apps</dt><dd>{apps.length} installed · <span style={{ color: outdated ? "var(--warn)" : "var(--text-3)" }}>{outdated} outdated</span></dd>
+                  </dl>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-head"><h3>Installed apps</h3><div className="sub">{apps.length}</div></div>
+                <div style={{ maxHeight:280, overflowY:"auto" }}>
+                  <table className="tbl">
+                    <thead><tr><th>App</th><th>Installed</th><th>Latest</th><th></th></tr></thead>
+                    <tbody>
+                      {apps.map((a,i) => {
+                        const want = a.latestVersion || latest.get(`${a.name}|${a.publisher || ""}`);
+                        const isOutdated = a.version !== want;
+                        const key = `${a.name}|${a.publisher || ""}`;
+                        return (
+                          <tr key={i}>
+                            <td>{a.name}</td>
+                            <td className="mono" style={{ color: isOutdated ? "var(--warn)" : "var(--text)" }}>{a.version}</td>
+                            <td className="mono muted">{want}</td>
+                            <td>{isOutdated && <button className="btn sm" disabled={queuingApp === key} onClick={() => updateApp(a)}>{queuingApp === key ? "Queuing…" : "Update"}</button>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {tasks.length > 0 && (
+                <div className="card">
+                  <div className="card-head"><h3>Tasks</h3><div className="sub">{tasks.length}</div></div>
+                  <div className="drawer-table-scroll">
+                    <table className="tbl">
+                      <thead><tr><th>App</th><th>Version</th><th>Status</th></tr></thead>
+                      <tbody>
+                        {tasks.map(t => (
+                          <tr key={t.id}>
+                            <td>{taskLabel(t)}</td>
+                            <td className="mono muted">{taskVersionLabel(t)}</td>
+                            <td><StatusPill status={t.status}/></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+    </React.Fragment>
+  );
+}
+
+Object.assign(window, {
+  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, DeviceDrawer
+});

@@ -1,42 +1,183 @@
 # 1Patch Management Server
 
-AGPLv3 control plane for 1Patch. It owns setup, local/OAuth authentication, RBAC, tenants, app/rule management, backend-node registry, package metadata, update jobs, audit logs, and dashboard APIs.
 
-## Quick Start
+NestJS control plane for 1Patch. Owns setup, authentication, RBAC, tenants, app/rule management, backend-node registry, package metadata, update jobs, audit logs, and the built-in dashboard.
+
+**Port:** `4100`  
+**License:** AGPL-3.0-only
+
+---
+
+## Prerequisites
+
+- Node.js 20 LTS or 22 LTS
+- PostgreSQL 15 or 16
+- DragonflyDB (Redis-compatible)
+- HashiCorp Vault 1.16+ with PKI engine initialised (see [`vault/README.md`](../vault/README.md))
+- PowerShell 7.4+
+
+---
+
+## First-Time Setup
+
+### 1. Run the PKI init script (once per management host)
+
+```powershell
+cd ../vault
+.\init-pki.ps1 -ManagementHostname manage.1patch.local
+```
+
+Note the four values it prints:
+- `VAULT_ADDR`
+- `VAULT_APPROLE_ROLE_ID`
+- `VAULT_APPROLE_SECRET_ID`
+- `TLS_CERT_PATH` / `TLS_KEY_PATH` / `TLS_CA_PATH`
+
+### 2. Install dependencies and run setup
+
+```powershell
+cd 1patch-management-server
+npm install
+
+.\scripts\setup-management.ps1 `
+  -PostgresServerUrl     "postgres://1patch:secret@localhost:5432" `
+  -DatabaseName          "1patch_management" `
+  -DragonflyUrl          "redis://localhost:6379" `
+  -OwnerEmail            "owner@example.com" `
+  -VaultAddr             "http://127.0.0.1:8200" `
+  -VaultApproleRoleId    "<role-id>" `
+  -VaultApproleSecretId  "<secret-id>"
+```
+
+The script:
+- Generates all secrets (`JWT_SECRET`, `SIGNING_SECRET`, `NODE_API_SECRET`, `ADMIN_API_TOKEN`)
+- Creates the PostgreSQL database and applies the schema
+- Writes `.env`
+- Prints `ADMIN_API_TOKEN` and `NODE_API_SECRET` — **copy these, they are shown once**
+
+### 3. Build and start
+
+```powershell
+npm run build && npm start
+```
+
+### 4. Create the first owner account
+
+The setup script attempts this automatically. If it fails (server not running yet):
+
+```powershell
+Invoke-RestMethod -Method Post "https://manage.1patch.local:4100/setup/owner" `
+  -ContentType "application/json" `
+  -Body '{ "email": "owner@example.com", "password": "<strong-password>" }'
+```
+
+---
+
+## Environment Variables
+
+All variables are written to `.env` by `setup-management.ps1`. Reference:
+
+| Variable | Required | Description |
+|---|---|---|
+| `PORT` | no | HTTP/HTTPS port (default `4100`) |
+| `NODE_ENV` | yes | `production` disables Swagger |
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `DRAGONFLY_URL` | yes | Redis-compatible URL |
+| `JWT_SECRET` | yes | Min 32 chars — signs user JWTs |
+| `SIGNING_SECRET` | yes | Min 32 chars — HMAC-signs manifests and rule bundles |
+| `ADMIN_API_TOKEN` | yes | Static token for admin API routes |
+| `NODE_API_SECRET` | yes | Min 32 chars — shared secret for node-facing routes |
+| `CORS_ALLOWED_ORIGINS` | yes | Comma-separated browser origins |
+| `VAULT_ADDR` | yes* | Vault address e.g. `http://127.0.0.1:8200` |
+| `VAULT_APPROLE_ROLE_ID` | yes* | AppRole role ID |
+| `VAULT_APPROLE_SECRET_ID` | yes* | AppRole secret ID |
+| `TLS_CERT_PATH` | yes* | Path to management server PEM cert |
+| `TLS_KEY_PATH` | yes* | Path to management server PEM key |
+| `TLS_CA_PATH` | yes* | Path to Vault CA PEM cert |
+| `PACKAGE_STORAGE_PATH` | no | Directory for uploaded package files (default `./packages`) |
+| `REQUEST_BODY_LIMIT` | no | Max request body size (default `10mb`) |
+| `PUBLIC_URL` | no | Public URL included in enrollment JSON |
+
+*Required in production. Without the Vault/TLS vars the server starts over plain HTTP with a warning.
+
+---
+
+## Key API Routes
+
+### Setup
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/setup/owner` | none | Create the first owner account (one-time) |
+
+### Auth
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/login` | none | Password login — returns JWT or MFA challenge |
+| `POST` | `/auth/mfa/verify` | none | Complete MFA login |
+| `POST` | `/auth/mfa/enable` | JWT | Enable TOTP for the current user |
+
+### Nodes
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/nodes/enrollments` | Admin token | Create a node enrollment (returns `nodeId` + `enrollmentToken`) |
+| `POST` | `/nodes/register` | Node secret | Node registration — returns Vault mTLS cert |
+| `POST` | `/nodes/heartbeat` | Node secret | Node liveness update |
+| `GET`  | `/nodes` | Admin token | List all nodes |
+| `DELETE` | `/nodes/:nodeId` | Admin token | Decommission node (revokes mTLS cert) |
+
+### Agent (client-facing)
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET`  | `/agent/bootstrap/:tenantId` | none | Signed node manifest for clients |
+| `GET`  | `/agent/rules/:tenantId` | none | Signed rule bundle |
+| `POST` | `/sync/node-events` | Node secret + mTLS | Batched events from backend nodes |
+
+### Packages
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/packages` | Admin token | Upload or register a package |
+| `GET`  | `/packages` | Admin token | List packages |
+| `POST` | `/packages/:id/deploy-all` | Admin token | Deploy to all applicable devices |
+
+### Dashboard
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET`  | `/ui` | JWT | Built-in management dashboard |
+| `GET`  | `/dashboard` | JWT | Dashboard summary API |
+| `GET`  | `/audit` | JWT (auditor+) | Audit log |
+
+---
+
+## Security Controls
+
+- JWT secret, signing secret, and node API secret are enforced at startup — the process exits if any are missing or shorter than 32 characters.
+- Vault AppRole token is refreshed automatically 5 minutes before expiry.
+- Every backend node receives a Vault-issued EC P-256 certificate with a 24-hour TTL. Certs are revoked immediately when a node is decommissioned.
+- All admin endpoints use timing-safe token comparison.
+- MFA failure counters are tracked per challenge token with a maximum of 5 attempts.
+- Account lockout activates after 5 consecutive failed password attempts (15-minute cooldown).
+
+---
+
+## Development
 
 ```powershell
 npm install
-Copy-Item .env.example .env
-npm run dev
+npm run dev        # ts-node watch mode on port 4100
 ```
 
-The current implementation keeps PostgreSQL as the canonical data model and uses DragonflyDB for fast runtime state, queues, sessions, and setup snapshots while database migrations are completed.
-
-## First Setup
-
-Start PostgreSQL and DragonflyDB, then open `/setup` on the management server or run:
+Vault and mTLS are not required in development. The server starts over plain HTTP and logs a warning.
 
 ```powershell
-./scripts/setup-management.ps1 -PostgresServerUrl "postgres://1patch:1patch@localhost:5432" -DatabaseName "1patch_management" -DragonflyUrl "redis://localhost:6379" -OwnerEmail "owner@example.com"
+npm run typecheck  # tsc --noEmit
+npm test           # jest
 ```
 
-PostgreSQL is the canonical database. DragonflyDB is required for fast state, queues, sessions, and setup/runtime snapshots.
+---
 
-## Core Flows
+## Ports
 
-- `POST /setup/owner` creates the first local owner user.
-- `POST /auth/login` starts standalone login and may require MFA.
-- `POST /auth/mfa/verify` completes MFA login.
-- `POST /nodes/register` enrolls a backend node with a node enrollment token.
-- `GET /agent/bootstrap/:tenantId` returns a signed backend-node manifest for clients.
-- `POST /sync/node-events` receives queued backend-node data.
-- `GET /ui` opens the built-in management dashboard backed by real APIs.
-
-## Security Defaults
-
-- AGPL-3.0-only licensing.
-- Local owner is required before OAuth can be configured.
-- MFA/TOTP and recovery code primitives are present from the first phase.
-- RBAC permissions protect management routes.
-- Signed node manifests and rule bundles are the default API shape.
-- Audit events are emitted for setup, auth, node, rule, and sync actions.
+| Port | Protocol | Purpose |
+|---|---|---|
+| `4100` | HTTPS (prod) / HTTP (dev) | All API and dashboard traffic |
+| `8200` | HTTP (localhost only) | Vault — not exposed externally |
