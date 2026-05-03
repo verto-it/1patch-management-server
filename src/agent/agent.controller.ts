@@ -26,8 +26,6 @@ export class AgentController {
     const onlineNodes = this.nodes.onlineNodes();
     this.logger.log(`Bootstrap request for tenant=${tenantId} — returning ${onlineNodes.length} online node(s)`);
     const manifest = {
-      tenantId,
-      issuedAt: new Date().toISOString(),
       nodes: onlineNodes.map((node) => ({
         id: node.id,
         publicUrl: node.publicUrl,
@@ -35,14 +33,14 @@ export class AgentController {
         site: node.site,
       })),
     };
-    return this.signing.signPayload(manifest);
+    return this.signing.signPayload('bootstrap_manifest', tenantId, manifest);
   }
 
   @Get('/agent/rules/:tenantId')
   rules(@Param('tenantId') tenantId: string) {
     const enabledRules = this.store.rules.filter((r) => r.enabled);
     this.logger.debug(`Rules request for tenant=${tenantId} — returning ${enabledRules.length} enabled rule(s)`);
-    return this.signing.signPayload({ tenantId, issuedAt: new Date().toISOString(), rules: enabledRules });
+    return this.signing.signPayload('rule_bundle', tenantId, { rules: enabledRules });
   }
 
 

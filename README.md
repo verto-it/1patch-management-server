@@ -50,10 +50,10 @@ npm install
 ```
 
 The script:
-- Generates all secrets (`JWT_SECRET`, `SIGNING_SECRET`, `NODE_API_SECRET`, `ADMIN_API_TOKEN`)
+- Generates `JWT_SECRET`, the management ES256 signing key pair, and `NODE_API_SECRET`
 - Creates the PostgreSQL database and applies the schema
 - Writes `.env`
-- Prints `ADMIN_API_TOKEN` and `NODE_API_SECRET` — **copy these, they are shown once**
+- Creates the first owner when the server is reachable; use owner login/JWT for admin setup after that
 
 ### 3. Build and start
 
@@ -84,8 +84,9 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DRAGONFLY_URL` | yes | Redis-compatible URL |
 | `JWT_SECRET` | yes | Min 32 chars — signs user JWTs |
-| `SIGNING_SECRET` | yes | Min 32 chars — HMAC-signs manifests and rule bundles |
-| `ADMIN_API_TOKEN` | yes | Static token for admin API routes |
+| `MANAGEMENT_SIGNING_ACTIVE_KEY_ID` | yes | Active ES256 signing key ID |
+| `MANAGEMENT_SIGNING_PRIVATE_KEY` | yes | Base64-encoded PKCS#8 P-256 private key PEM |
+| `MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON` | yes | Trusted keyId-to-public-key JSON for rotation |
 | `NODE_API_SECRET` | yes | Min 32 chars — shared secret for node-facing routes |
 | `CORS_ALLOWED_ORIGINS` | yes | Comma-separated browser origins |
 | `VAULT_ADDR` | yes* | Vault address e.g. `http://127.0.0.1:8200` |
@@ -119,11 +120,11 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 ### Nodes
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/nodes/enrollments` | Admin token | Create a node enrollment (returns `nodeId` + `enrollmentToken`) |
+| `POST` | `/nodes/enrollments` | JWT + `nodes:enroll` | Create a node enrollment (returns `nodeId` + `enrollmentToken`) |
 | `POST` | `/nodes/register` | Node secret | Node registration — returns Vault mTLS cert |
 | `POST` | `/nodes/heartbeat` | Node secret | Node liveness update |
-| `GET`  | `/nodes` | Admin token | List all nodes |
-| `DELETE` | `/nodes/:nodeId` | Admin token | Decommission node (revokes mTLS cert) |
+| `GET`  | `/nodes` | JWT + `nodes:read` | List all nodes |
+| `DELETE` | `/nodes/:nodeId` | JWT + `nodes:manage` | Decommission node (revokes mTLS cert) |
 
 ### Agent (client-facing)
 | Method | Path | Auth | Description |
@@ -135,9 +136,9 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 ### Packages
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/packages` | Admin token | Upload or register a package |
-| `GET`  | `/packages` | Admin token | List packages |
-| `POST` | `/packages/:id/deploy-all` | Admin token | Deploy to all applicable devices |
+| `POST` | `/packages` | JWT + `packages:write` | Upload or register a package |
+| `GET`  | `/packages` | JWT + `packages:read` | List packages |
+| `POST` | `/packages/:id/deploy-all` | JWT + `deployments:write` | Deploy to all applicable devices |
 
 ### Dashboard
 | Method | Path | Auth | Description |
@@ -150,10 +151,10 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 
 ## Security Controls
 
-- JWT secret, signing secret, and node API secret are enforced at startup — the process exits if any are missing or shorter than 32 characters.
+- JWT secret, management signing key config, and node API secret are enforced at startup.
 - Vault AppRole token is refreshed automatically 5 minutes before expiry.
 - Every backend node receives a Vault-issued EC P-256 certificate with a 24-hour TTL. Certs are revoked immediately when a node is decommissioned.
-- All admin endpoints use timing-safe token comparison.
+- Admin endpoints require normal login JWTs plus RBAC permissions; no static admin token is accepted.
 - MFA failure counters are tracked per challenge token with a maximum of 5 attempts.
 - Account lockout activates after 5 consecutive failed password attempts (15-minute cooldown).
 

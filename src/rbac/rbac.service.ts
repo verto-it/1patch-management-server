@@ -2,12 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Permission, Role, User } from '../types';
 
 const rolePermissions: Record<Role, Permission[]> = {
-  owner: ['setup:manage', 'auth:manage', 'users:manage', 'roles:manage', 'nodes:manage', 'apps:read', 'apps:manage', 'rules:manage', 'tasks:manage', 'audit:read'],
-  admin: ['auth:manage', 'users:manage', 'nodes:manage', 'apps:read', 'apps:manage', 'rules:manage', 'tasks:manage', 'audit:read'],
-  patch_manager: ['apps:read', 'apps:manage', 'rules:manage', 'tasks:manage'],
+  owner: ['setup:manage', 'auth:manage', 'users:manage', 'roles:manage', 'nodes:manage', 'nodes:read', 'nodes:enroll', 'packages:read', 'packages:write', 'deployments:write', 'apps:read', 'apps:manage', 'rules:manage', 'tasks:manage', 'audit:read'],
+  admin: ['auth:manage', 'users:manage', 'nodes:manage', 'nodes:read', 'nodes:enroll', 'packages:read', 'packages:write', 'deployments:write', 'apps:read', 'apps:manage', 'rules:manage', 'tasks:manage', 'audit:read'],
+  patch_manager: ['apps:read', 'apps:manage', 'packages:read', 'packages:write', 'deployments:write', 'rules:manage', 'tasks:manage'],
   viewer: ['apps:read'],
   auditor: ['apps:read', 'audit:read'],
-  node_operator: ['nodes:manage', 'audit:read'],
+  node_operator: ['nodes:manage', 'nodes:read', 'nodes:enroll', 'audit:read'],
 };
 
 @Injectable()

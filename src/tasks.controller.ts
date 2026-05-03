@@ -2,29 +2,40 @@ import { BadRequestException, Body, Controller, Delete, Get, Logger, Param, Post
 import { ApiTags } from '@nestjs/swagger';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from './audit/audit.service';
-import { AdminApiGuard } from './security/admin-api.guard';
+import { CurrentUser } from './security/current-user.decorator';
+import { JwtAuthGuard } from './security/jwt-auth.guard';
 import { NodeApiGuard } from './security/node-api.guard';
+import { RbacGuard } from './security/rbac.guard';
+import { RequirePermission } from './security/require-permission.decorator';
 import { MemoryStore } from './storage/memory.store';
-import { UpdateTask } from './types';
+import { Device, UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
+import { SigningService } from './signing.service';
 
 @ApiTags('tasks')
 @Controller('/tasks')
 export class TasksController {
   private readonly logger = new Logger(TasksController.name);
 
-  constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly audit: AuditService,
+    private readonly nodes: NodesService,
+    private readonly signing: SigningService,
+  ) {}
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('tasks:manage')
   @Get()
   list() {
     this.logger.debug(`Listing ${this.store.tasks.length} task(s)`);
     return this.store.tasks;
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('deployments:write')
   @Post('/refresh-inventory/:deviceId')
-  refreshInventory(@Param('deviceId') deviceId: string) {
+  refreshInventory(@Param('deviceId') deviceId: string, @CurrentUser() user: User) {
     const device = this.store.devices.find((d) => d.id === deviceId);
     if (!device) throw new BadRequestException('Unknown device');
     const node = this.nodes.availableNode(device.preferredNodeId);
@@ -36,21 +47,22 @@ export class TasksController {
     };
     this.store.tasks.push(task);
     void this.store.persist();
-    this.audit.record('system', 'task.refresh_inventory_created', task.id, { deviceId, nodeId: node.id });
+    this.audit.record(user.id, 'task.refresh_inventory_created', task.id, { deviceId, nodeId: node.id });
     this.logger.log(`Refresh-inventory task created: taskId=${task.id} deviceId=${deviceId} nodeId=${node.id}`);
     return task;
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('tasks:manage')
   @Delete('/:id')
-  cancel(@Param('id') id: string) {
+  cancel(@Param('id') id: string, @CurrentUser() user: User) {
     const task = this.store.tasks.find((t) => t.id === id);
     if (!task) throw new BadRequestException('Unknown task');
     if (task.status !== 'pending') throw new BadRequestException(`Cannot cancel a task with status '${task.status}'`);
     task.status = 'cancelled';
     task.completedAt = new Date().toISOString();
     void this.store.persist();
-    this.audit.record('system', 'task.cancelled', task.id, {});
+    this.audit.record(user.id, 'task.cancelled', task.id, {});
     this.logger.log(`Task cancelled: taskId=${id}`);
     return task;
   }
@@ -71,10 +83,14 @@ export class TasksController {
     } else {
       this.logger.debug(`No pending tasks for nodeId=${nodeId}`);
     }
-    return { tasks };
+    return {
+      tasks: tasks.map((task) =>
+        this.signing.signPayload('task_bundle', tenantIdForTasks([task], this.store.devices), { tasks: [task] }),
+      ),
+    };
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(NodeApiGuard)
   @Post('/result')
   result(@Body() dto: { deviceId: string; taskId: string; status: 'completed' | 'failed' | 'rejected'; output?: string }) {
     const task = this.store.tasks.find((t) => t.id === dto.taskId);
@@ -98,4 +114,12 @@ export class TasksController {
     }
     return task;
   }
+}
+
+function tenantIdForTasks(tasks: UpdateTask[], devices: Device[]) {
+  for (const task of tasks) {
+    const tenantId = devices.find((device) => device.id === task.deviceId)?.tenantId;
+    if (tenantId) return tenantId;
+  }
+  return 'default';
 }

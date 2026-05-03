@@ -5,16 +5,26 @@ import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from './audit/audit.service';
-import { AdminApiGuard } from './security/admin-api.guard';
+import { CurrentUser } from './security/current-user.decorator';
+import { JwtAuthGuard } from './security/jwt-auth.guard';
+import { RbacGuard } from './security/rbac.guard';
+import { RequirePermission } from './security/require-permission.decorator';
 import { MemoryStore } from './storage/memory.store';
-import { UpdateTask } from './types';
+import { UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
+import { SigningService } from './signing.service';
 
 @ApiTags('devices')
-@UseGuards(AdminApiGuard)
+@UseGuards(JwtAuthGuard, RbacGuard)
+@RequirePermission('apps:read')
 @Controller('/devices')
 export class DevicesController {
-  constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly audit: AuditService,
+    private readonly nodes: NodesService,
+    private readonly signing: SigningService,
+  ) {}
 
   @Get()
   list(@Query('q') q?: string) {
@@ -50,6 +60,7 @@ export class DevicesController {
   }
 
   @Post('/enrollments')
+  @RequirePermission('nodes:enroll')
   createEnrollment(@Body() dto: {
     mode?: 'single' | 'batch';
     tenantId?: string;
@@ -60,12 +71,7 @@ export class DevicesController {
     nodeProbeTimeoutMilliseconds?: number;
     clientName?: string;
     maxUses?: number;
-  }) {
-    const signingSecret = process.env.SIGNING_SECRET;
-    if (!signingSecret || signingSecret.length < 32) {
-      throw new BadRequestException('SIGNING_SECRET must be configured before creating client configs');
-    }
-
+  }, @CurrentUser() user: User) {
     const tenantId = clean(dto.tenantId) || 'default';
     const managementUrl = clean(dto.managementUrl);
     if (!managementUrl) throw new BadRequestException('managementUrl is required');
@@ -82,7 +88,7 @@ export class DevicesController {
       TenantId: tenantId,
       ManagementUrl: managementUrl,
       EnrollmentToken: enrollmentToken,
-      ManifestSigningSecret: signingSecret,
+      TrustedSigningPublicKeys: this.signing.publicKeysForConfig(),
       TrustedDownloadHosts: trustedDownloadHosts.length ? trustedDownloadHosts : [managementUrl],
       HeartbeatSeconds: heartbeatSeconds,
       InventoryMinutes: inventoryMinutes,
@@ -105,7 +111,7 @@ export class DevicesController {
     });
     void this.store.persist();
 
-    this.audit.record('system', 'device.enrollment_config_created', tenantId, {
+    this.audit.record(user.id, 'device.enrollment_config_created', tenantId, {
       mode,
       reusable: mode === 'batch',
       maxUses,
@@ -127,7 +133,8 @@ export class DevicesController {
   }
 
   @Post('/:id/update-all-outdated')
-  updateAllOutdated(@Param('id') id: string) {
+  @RequirePermission('deployments:write')
+  updateAllOutdated(@Param('id') id: string, @CurrentUser() user: User) {
     const device = this.store.devices.find((d) => d.id === id);
     if (!device) throw new BadRequestException('Unknown device');
     const node = this.nodes.availableNode(device.preferredNodeId);
@@ -156,7 +163,7 @@ export class DevicesController {
     }
 
     void this.store.persist();
-    this.audit.record('system', 'device.update_all_outdated', id, { count: tasks.length });
+    this.audit.record(user.id, 'device.update_all_outdated', id, { count: tasks.length });
     return { tasks };
   }
 }

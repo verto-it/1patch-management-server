@@ -22,8 +22,9 @@ import { RbacService } from './rbac/rbac.service';
 import { RulesController } from './rules/rules.controller';
 import { SigningService } from './signing.service';
 import { VaultPkiService } from './vault/vault-pki.service';
-import { AdminApiGuard } from './security/admin-api.guard';
 import { JwtAuthGuard } from './security/jwt-auth.guard';
+import { NodeOrJwtGuard } from './security/node-or-jwt.guard';
+import { RbacGuard } from './security/rbac.guard';
 import { DragonflyService } from './storage/dragonfly.service';
 import { MemoryStore } from './storage/memory.store';
 import { PostgresService } from './storage/postgres.service';
@@ -47,7 +48,7 @@ import { SetupController } from './setup.controller';
   providers: [
     DragonflyService, PostgresService, MemoryStore,
     AuditService, AuthService, RbacService, NodesService, SigningService,
-    AdminApiGuard, JwtAuthGuard,
+    JwtAuthGuard, RbacGuard, NodeOrJwtGuard,
     VaultPkiService,
   ],
 })

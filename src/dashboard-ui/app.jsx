@@ -296,7 +296,7 @@ function App() {
         <div className="sidebar-footer">
           <div className="user-card">
             <div className="avatar">1P</div>
-            <div className="user-meta"><strong>Admin session</strong><span>x-1patch-admin-token</span></div>
+            <div className="user-meta"><strong>Admin session</strong><span>JWT session</span></div>
           </div>
         </div>
       </aside>

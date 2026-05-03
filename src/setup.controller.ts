@@ -1,12 +1,16 @@
-import { Body, Controller, Get, Header, Post } from '@nestjs/common';
+import { Body, Controller, Get, Header, Post, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { JwtService } from '@nestjs/jwt';
+import { Request } from 'express';
 import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { NodesService } from './nodes/nodes.service';
 import { MemoryStore } from './storage/memory.store';
 import { DragonflyService } from './storage/dragonfly.service';
 import { PostgresService } from './storage/postgres.service';
+import { RbacService } from './rbac/rbac.service';
+import { Permission } from './types';
 
 class StorageConfigDto {
   @IsString()
@@ -29,9 +33,6 @@ class SetupConfigDto extends StorageConfigDto {
   @MinLength(12)
   ownerPassword!: string;
 
-  @IsString()
-  @MinLength(12)
-  adminApiToken!: string;
 }
 
 class SetupEnrollmentDto {
@@ -58,6 +59,8 @@ export class SetupController {
     private readonly dragonfly: DragonflyService,
     private readonly nodes: NodesService,
     private readonly store: MemoryStore,
+    private readonly jwt: JwtService,
+    private readonly rbac: RbacService,
   ) {}
 
   @Get()
@@ -82,7 +85,6 @@ export class SetupController {
       nodeCount: this.store.backendNodes.length,
       pendingNodeCount: this.store.backendNodes.filter((node) => node.status === 'pending').length,
       onlineNodeCount: this.store.backendNodes.filter((node) => node.status === 'online').length,
-      adminTokenConfigured: Boolean(process.env.ADMIN_API_TOKEN),
       publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4100}`,
     };
   }
@@ -94,11 +96,10 @@ export class SetupController {
       env: {
         DATABASE_URL: databaseUrl,
         DRAGONFLY_URL: dto.dragonflyUrl,
-        ADMIN_API_TOKEN: dto.adminApiToken,
         FIRST_OWNER_EMAIL: dto.ownerEmail,
         FIRST_OWNER_PASSWORD: dto.ownerPassword,
       },
-      powershell: `./scripts/setup-management.ps1 -PostgresServerUrl '${dto.postgresServerUrl}' -DatabaseName '${dto.databaseName}' -DragonflyUrl '${dto.dragonflyUrl}' -OwnerEmail '${dto.ownerEmail}' -AdminApiToken '${dto.adminApiToken}'`,
+      powershell: `./scripts/setup-management.ps1 -PostgresServerUrl '${dto.postgresServerUrl}' -DatabaseName '${dto.databaseName}' -DragonflyUrl '${dto.dragonflyUrl}' -OwnerEmail '${dto.ownerEmail}'`,
       nextSteps: [
         'Run the generated setup script on the management server host.',
         'The script writes .env, creates the database when psql is available, applies schema, and tries to create the first owner if the server is running.',
@@ -119,14 +120,32 @@ export class SetupController {
   }
 
   @Post('/migrate')
-  async migrate() {
+  async migrate(@Req() request: Request) {
+    this.assertSetupAccess(request, 'setup:manage');
     await this.postgres.ensureSchema({ throwOnError: true });
     return { migrated: true };
   }
 
   @Post('/node-enrollment')
-  async createNodeEnrollment(@Body() dto: SetupEnrollmentDto) {
-    return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site);
+  async createNodeEnrollment(@Body() dto: SetupEnrollmentDto, @Req() request: Request) {
+    const actor = this.assertSetupAccess(request, 'nodes:enroll');
+    return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site, actor);
+  }
+
+  private assertSetupAccess(request: Request, permission: Permission) {
+    if (this.store.users.length === 0) return 'setup';
+    const token = request.header('authorization')?.replace(/^Bearer\s+/i, '');
+    if (!token) throw new UnauthorizedException('Owner authentication required');
+    let payload: { sub?: string };
+    try {
+      payload = this.jwt.verify(token) as { sub?: string };
+    } catch {
+      throw new UnauthorizedException('Invalid or expired token');
+    }
+    const user = this.store.users.find((candidate) => candidate.id === payload.sub);
+    if (!user) throw new UnauthorizedException('Unknown user');
+    if (!this.rbac.can(user, permission)) throw new ForbiddenException('Insufficient permission');
+    return user.id;
   }
 }
 
@@ -216,7 +235,6 @@ const managementSetupHtml = `<!doctype html>
             <div><label>PostgreSQL server URL</label><input id="postgresServerUrl" value="postgres://1patch:1patch@localhost:5432"></div>
             <div><label>Database name</label><input id="databaseName" value="1patch_management"></div>
             <div><label>DragonflyDB URL</label><input id="dragonflyUrl" value="redis://localhost:6379"></div>
-            <div><label>Admin API token</label><input id="adminApiToken" type="password" minlength="12"></div>
             <div><label>Owner email for generated .env</label><input id="configOwnerEmail" type="email" placeholder="owner@example.com"></div>
             <div><label>Owner password for generated .env</label><input id="configOwnerPassword" type="password" minlength="12"></div>
           </div>
@@ -297,7 +315,6 @@ const managementSetupHtml = `<!doctype html>
           postgresServerUrl: formValue('postgresServerUrl'),
           databaseName: formValue('databaseName'),
           dragonflyUrl: formValue('dragonflyUrl'),
-          adminApiToken: document.getElementById('adminApiToken').value,
           ownerEmail: formValue('configOwnerEmail'),
           ownerPassword: document.getElementById('configOwnerPassword').value
         })});

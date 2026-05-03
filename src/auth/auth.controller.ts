@@ -4,8 +4,9 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
 import { Request } from 'express';
 import { AuditService } from '../audit/audit.service';
-import { AdminApiGuard } from '../security/admin-api.guard';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
+import { RbacGuard } from '../security/rbac.guard';
+import { RequirePermission } from '../security/require-permission.decorator';
 import { AuthService } from './auth.service';
 
 class SetupOwnerDto {
@@ -58,7 +59,8 @@ export class AuthController {
 
   // FIX #10: audit log requires admin authentication
   @ApiBearerAuth()
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('audit:read')
   @Get('/audit')
   auditLog() {
     return this.audit.list();

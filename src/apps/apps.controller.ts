@@ -5,8 +5,11 @@ import { IsIn, IsOptional, IsString } from 'class-validator';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
 import { MemoryStore } from '../storage/memory.store';
-import { UpdateTask } from '../types';
-import { AdminApiGuard } from '../security/admin-api.guard';
+import { UpdateTask, User } from '../types';
+import { CurrentUser } from '../security/current-user.decorator';
+import { JwtAuthGuard } from '../security/jwt-auth.guard';
+import { RbacGuard } from '../security/rbac.guard';
+import { RequirePermission } from '../security/require-permission.decorator';
 import { NodesService } from '../nodes/nodes.service';
 
 class CreateUpdateTaskDto {
@@ -31,7 +34,8 @@ class CreateUpdateTaskDto {
 }
 
 @ApiTags('apps')
-@UseGuards(AdminApiGuard)
+@UseGuards(JwtAuthGuard, RbacGuard)
+@RequirePermission('apps:read')
 @Controller('/apps')
 export class AppsController {
   constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
@@ -87,12 +91,14 @@ export class AppsController {
   }
 
   @Post('/:name/update-device')
-  updateDevice(@Param('name') name: string, @Body() dto: CreateUpdateTaskDto) {
-    return this.createTask(name, dto);
+  @RequirePermission('deployments:write')
+  updateDevice(@Param('name') name: string, @Body() dto: CreateUpdateTaskDto, @CurrentUser() user: User) {
+    return this.createTask(name, dto, user.id);
   }
 
   @Post('/:name/update-all')
-  updateAll(@Param('name') name: string, @Body() dto: Omit<CreateUpdateTaskDto, 'deviceId'>) {
+  @RequirePermission('deployments:write')
+  updateAll(@Param('name') name: string, @Body() dto: Omit<CreateUpdateTaskDto, 'deviceId'>, @CurrentUser() user: User) {
     const installed = this.store.installedApps.filter((app) => app.name.toLowerCase() === name.toLowerCase());
     const latestVersion = installed.map((app) => app.version).sort(compareVersions).at(-1);
     const outdated = latestVersion
@@ -103,11 +109,11 @@ export class AppsController {
       deviceId: app.deviceId,
       packageId: dto.packageId ?? safePackageId(app.packageId),
       productCode: dto.productCode ?? app.productCode,
-    }));
+    }, user.id));
     return { tasks };
   }
 
-  private createTask(appName: string, dto: CreateUpdateTaskDto) {
+  private createTask(appName: string, dto: CreateUpdateTaskDto, actor = 'system') {
     const device = this.store.devices.find((candidate) => candidate.id === dto.deviceId);
     if (!device) throw new BadRequestException('Unknown device');
     const node = this.nodes.availableNode(device.preferredNodeId);
@@ -126,7 +132,7 @@ export class AppsController {
     };
     this.store.tasks.push(task);
     void this.store.persist();
-    this.audit.record('system', 'task.created', task.id, { ...task });
+    this.audit.record(actor, 'task.created', task.id, { ...task });
     return task;
   }
 }

@@ -2,8 +2,12 @@ import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/c
 import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUrl } from 'class-validator';
 import { NodesService } from './nodes.service';
-import { AdminApiGuard } from '../security/admin-api.guard';
+import { CurrentUser } from '../security/current-user.decorator';
+import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { NodeApiGuard } from '../security/node-api.guard';
+import { RbacGuard } from '../security/rbac.guard';
+import { RequirePermission } from '../security/require-permission.decorator';
+import { User } from '../types';
 
 class CreateEnrollmentDto {
   @IsString()
@@ -26,10 +30,11 @@ class CreateEnrollmentDto {
 export class NodesController {
   constructor(private readonly nodes: NodesService) {}
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('nodes:enroll')
   @Post('/enrollments')
-  createEnrollment(@Body() dto: CreateEnrollmentDto) {
-    return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site);
+  createEnrollment(@Body() dto: CreateEnrollmentDto, @CurrentUser() user: User) {
+    return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site, user.id);
   }
 
   @UseGuards(NodeApiGuard)
@@ -44,15 +49,17 @@ export class NodesController {
     return this.nodes.heartbeat(dto.nodeId, dto.capacity);
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('nodes:read')
   @Get()
   list() {
     return this.nodes.listNodes();
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('nodes:manage')
   @Delete('/:nodeId')
-  remove(@Param('nodeId') nodeId: string) {
-    return this.nodes.removeNode(nodeId);
+  remove(@Param('nodeId') nodeId: string, @CurrentUser() user: User) {
+    return this.nodes.removeNode(nodeId, user.id);
   }
 }

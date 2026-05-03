@@ -18,7 +18,7 @@ export class NodesService {
     private readonly vaultPki: VaultPkiService,
   ) {}
 
-  async createEnrollment(name: string, publicUrl: string, region?: string, site?: string) {
+  async createEnrollment(name: string, publicUrl: string, region?: string, site?: string, actor = 'system') {
     const token = `node_${uuid().replaceAll('-', '')}`;
     const node = {
       id: uuid(),
@@ -31,7 +31,7 @@ export class NodesService {
     };
     this.store.backendNodes.push(node);
     await this.store.persist();
-    this.audit.record('system', 'node.enrollment_created', node.id, { name, publicUrl, region, site });
+    this.audit.record(actor, 'node.enrollment_created', node.id, { name, publicUrl, region, site });
     this.logger.log(`Enrollment created: nodeId=${node.id} name=${name} publicUrl=${publicUrl}`);
 
     const nodeApiSecret = process.env.NODE_API_SECRET;
@@ -125,7 +125,7 @@ export class NodesService {
     return nodes;
   }
 
-  async removeNode(nodeId: string) {
+  async removeNode(nodeId: string, actor = 'system') {
     const index = this.store.backendNodes.findIndex((n) => n.id === nodeId);
     if (index === -1) throw new BadRequestException('Unknown node');
     const node = this.store.backendNodes[index];
@@ -149,7 +149,7 @@ export class NodesService {
     }
     this.store.backendNodes.splice(index, 1);
     await this.store.persist();
-    this.audit.record('system', 'node.removed', nodeId, { name: node.name, publicUrl: node.publicUrl, decommission });
+    this.audit.record(actor, 'node.removed', nodeId, { name: node.name, publicUrl: node.publicUrl, decommission });
     return { nodeId, removed: true, decommission };
   }
 

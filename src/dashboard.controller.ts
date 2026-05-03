@@ -1,11 +1,14 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { AdminApiGuard } from './security/admin-api.guard';
+import { JwtAuthGuard } from './security/jwt-auth.guard';
+import { RbacGuard } from './security/rbac.guard';
+import { RequirePermission } from './security/require-permission.decorator';
 import { DragonflyService } from './storage/dragonfly.service';
 import { MemoryStore } from './storage/memory.store';
 
 @ApiTags('dashboard')
-@UseGuards(AdminApiGuard)
+@UseGuards(JwtAuthGuard, RbacGuard)
+@RequirePermission('apps:read')
 @Controller('/dashboard')
 export class DashboardController {
   constructor(private readonly store: MemoryStore, private readonly dragonfly: DragonflyService) {}

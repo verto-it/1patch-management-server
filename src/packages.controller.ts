@@ -6,10 +6,13 @@ import { mkdir, writeFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from './audit/audit.service';
-import { AdminApiGuard } from './security/admin-api.guard';
-import { NodeOrAdminApiGuard } from './security/node-or-admin-api.guard';
+import { CurrentUser } from './security/current-user.decorator';
+import { JwtAuthGuard } from './security/jwt-auth.guard';
+import { NodeOrJwtGuard } from './security/node-or-jwt.guard';
+import { RbacGuard } from './security/rbac.guard';
+import { RequirePermission } from './security/require-permission.decorator';
 import { MemoryStore } from './storage/memory.store';
-import { PackageArtifact, UpdateTask } from './types';
+import { PackageArtifact, UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
@@ -34,16 +37,18 @@ export class PackagesController {
 
   constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('packages:read')
   @Get()
   list() {
     this.logger.debug(`Listing ${this.store.packages.length} package(s)`);
     return this.store.packages;
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('packages:write')
   @Post()
-  async create(@Body() dto: PackageDto) {
+  async create(@Body() dto: PackageDto, @CurrentUser() user: User) {
     if (!dto.name || !dto.publisher || !dto.version)
       throw new BadRequestException('name, publisher, and version are required');
 
@@ -88,12 +93,13 @@ export class PackagesController {
     };
     this.store.packages.push(artifact);
     await this.store.persist();
-    this.audit.record('system', 'package.created', artifact.id, { name: artifact.name, version: artifact.version, sha256: artifact.sha256 });
+    this.audit.record(user.id, 'package.created', artifact.id, { name: artifact.name, version: artifact.version, sha256: artifact.sha256 });
     this.logger.log(`Package created: id=${artifact.id} name=${artifact.name} v${artifact.version}`);
     return artifact;
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('packages:read')
   @Get('/:id')
   detail(@Param('id') id: string) {
     const artifact = this.findPackage(id);
@@ -101,7 +107,7 @@ export class PackagesController {
     return artifact;
   }
 
-  @UseGuards(NodeOrAdminApiGuard)
+  @UseGuards(NodeOrJwtGuard)
   @Get('/:id/download')
   @Header('content-type', 'application/octet-stream')
   download(@Param('id') id: string) {
@@ -114,16 +120,18 @@ export class PackagesController {
     });
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('deployments:write')
   @Post('/:id/deploy-device/:deviceId')
-  async deployDevice(@Param('id') id: string, @Param('deviceId') deviceId: string) {
+  async deployDevice(@Param('id') id: string, @Param('deviceId') deviceId: string, @CurrentUser() user: User) {
     this.logger.log(`Deploying package ${id} to device ${deviceId}`);
-    return this.createDeploymentTask(this.findPackage(id), deviceId);
+    return this.createDeploymentTask(this.findPackage(id), deviceId, user.id);
   }
 
-  @UseGuards(AdminApiGuard)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('deployments:write')
   @Post('/:id/deploy-all')
-  async deployAll(@Param('id') id: string) {
+  async deployAll(@Param('id') id: string, @CurrentUser() user: User) {
     const artifact = this.findPackage(id);
     const targets = [...new Set(
       this.store.installedApps
@@ -131,10 +139,10 @@ export class PackagesController {
         .map((app) => app.deviceId)
     )];
     this.logger.log(`Deploying package ${id} to ${targets.length} device(s)`);
-    return targets.map((deviceId) => this.createDeploymentTask(artifact, deviceId));
+    return targets.map((deviceId) => this.createDeploymentTask(artifact, deviceId, user.id));
   }
 
-  private createDeploymentTask(artifact: PackageArtifact, deviceId: string) {
+  private createDeploymentTask(artifact: PackageArtifact, deviceId: string, actor = 'system') {
     const device = this.store.devices.find((d) => d.id === deviceId);
     if (!device) throw new BadRequestException('Unknown device');
     const node = this.nodes.availableNode(device.preferredNodeId);
@@ -149,7 +157,7 @@ export class PackagesController {
     };
     this.store.tasks.push(task);
     void this.store.persist();
-    this.audit.record('system', 'package.deployment_created', task.id, { packageId: artifact.id, deviceId });
+    this.audit.record(actor, 'package.deployment_created', task.id, { packageId: artifact.id, deviceId });
     this.logger.log(`Deployment task created: taskId=${task.id} package=${artifact.name} device=${deviceId} node=${node.id}`);
     return task;
   }

@@ -1,33 +1,38 @@
 import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { timingSafeEqual } from 'crypto';
 
 @Injectable()
-export class NodeOrAdminApiGuard implements CanActivate {
-  private readonly logger = new Logger(NodeOrAdminApiGuard.name);
+export class NodeOrJwtGuard implements CanActivate {
+  private readonly logger = new Logger(NodeOrJwtGuard.name);
+
+  constructor(private readonly jwt: JwtService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
-    if (this.validAdminToken(request)) {
-      this.logger.debug(`Admin request authorised (path=${request.path})`);
-      return true;
-    }
     if (this.validNodeSecret(request)) {
       this.logger.debug(`Node request authorised (path=${request.path})`);
       return true;
     }
+    if (this.validJwt(request)) {
+      this.logger.debug(`JWT request authorised (path=${request.path})`);
+      return true;
+    }
 
-    this.logger.warn(`Request rejected — admin token or node secret required (path=${request.path})`);
-    throw new UnauthorizedException('Admin API token or node API secret required');
+    this.logger.warn(`Request rejected — node secret or JWT required (path=${request.path})`);
+    throw new UnauthorizedException('Node API secret or authenticated user required');
   }
 
-  private validAdminToken(request: Request) {
-    const configured = process.env.ADMIN_API_TOKEN;
-    if (!configured) return false;
-    const supplied =
-      request.header('x-1patch-admin-token') ??
-      request.header('authorization')?.replace(/^Bearer\s+/i, '');
-    return Boolean(supplied && safeEqual(supplied, configured));
+  private validJwt(request: Request) {
+    const supplied = request.header('authorization')?.replace(/^Bearer\s+/i, '');
+    if (!supplied) return false;
+    try {
+      this.jwt.verify(supplied);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private validNodeSecret(request: Request) {

@@ -1,10 +1,13 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AuditService } from './audit.service';
-import { AdminApiGuard } from '../security/admin-api.guard';
+import { JwtAuthGuard } from '../security/jwt-auth.guard';
+import { RbacGuard } from '../security/rbac.guard';
+import { RequirePermission } from '../security/require-permission.decorator';
 
 @ApiTags('audit')
-@UseGuards(AdminApiGuard)
+@UseGuards(JwtAuthGuard, RbacGuard)
+@RequirePermission('audit:read')
 @Controller('/audit')
 export class AuditController {
   constructor(private readonly audit: AuditService) {}

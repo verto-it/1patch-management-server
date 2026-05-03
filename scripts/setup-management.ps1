@@ -4,7 +4,6 @@ param(
   [Parameter(Mandatory = $true)][string]$DragonflyUrl,
   [Parameter(Mandatory = $true)][string]$OwnerEmail,
   [Parameter(Mandatory = $false)][string]$OwnerPassword,
-  [Parameter(Mandatory = $false)][string]$AdminApiToken,
   [Parameter(Mandatory = $false)][string]$ManagementUrl = "http://127.0.0.1:4100",
   # Comma-separated list of browser origins allowed to call the API, e.g. "https://manage.example.com"
   [Parameter(Mandatory = $false)][string]$CorsAllowedOrigins = "",
@@ -26,13 +25,14 @@ if ([string]::IsNullOrWhiteSpace($OwnerPassword)) {
     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 }
 
-if ([string]::IsNullOrWhiteSpace($AdminApiToken)) {
-  $AdminApiToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-}
-
 # Generate all secrets up-front so they can be printed together at the end
 $jwtSecret      = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$signingSecret  = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$signingKeyId   = "main-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$ecdsa          = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+$privatePem     = $ecdsa.ExportPkcs8PrivateKeyPem()
+$publicPem      = $ecdsa.ExportSubjectPublicKeyInfoPem()
+$privateB64     = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($privatePem))
+$publicKeysJson = @{ $signingKeyId = $publicPem } | ConvertTo-Json -Compress
 # NODE_API_SECRET is the shared secret that every backend node must present.
 # It is embedded in enrollment JSON by the management server so the backend-node
 # wizard receives it automatically via copy-paste.
@@ -49,8 +49,9 @@ DATABASE_URL=$databaseUrl
 DRAGONFLY_URL=$DragonflyUrl
 PACKAGE_STORAGE_PATH=./packages
 JWT_SECRET=$jwtSecret
-SIGNING_SECRET=$signingSecret
-ADMIN_API_TOKEN=$AdminApiToken
+MANAGEMENT_SIGNING_ACTIVE_KEY_ID=$signingKeyId
+MANAGEMENT_SIGNING_PRIVATE_KEY=$privateB64
+MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON=$publicKeysJson
 NODE_API_SECRET=$nodeApiSecret
 CORS_ALLOWED_ORIGINS=$CorsAllowedOrigins
 FIRST_OWNER_EMAIL=$OwnerEmail
@@ -75,9 +76,8 @@ if ($CorsAllowedOrigins) {
   Write-Host "CORS Allowed Origins:  (none — browser access disabled until CORS_ALLOWED_ORIGINS is set)" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "--- Secrets (store securely — shown once) ---" -ForegroundColor Yellow
-Write-Host "ADMIN_API_TOKEN:  $AdminApiToken"
-Write-Host "NODE_API_SECRET:  $nodeApiSecret"
+Write-Host "--- Secrets (store securely) ---" -ForegroundColor Yellow
+Write-Host "NODE_API_SECRET generated and written to .env."
 Write-Host ""
 Write-Host "Copy NODE_API_SECRET to every backend node's .env (or let the enrollment JSON wizard do it automatically)." -ForegroundColor Yellow
 Write-Host ""
@@ -106,6 +106,12 @@ if (-not $SkipOwnerCreate) {
       -ContentType "application/json" `
       -Body (@{ email = $OwnerEmail; password = $OwnerPassword } | ConvertTo-Json) | Out-Null
     Write-Host "Owner account created for $OwnerEmail." -ForegroundColor Green
+    $login = Invoke-RestMethod -Method Post "$ManagementUrl/auth/login" `
+      -ContentType "application/json" `
+      -Body (@{ email = $OwnerEmail; password = $OwnerPassword } | ConvertTo-Json)
+    if ($login.accessToken) {
+      Write-Host "Owner login succeeded; use this account for further admin setup actions." -ForegroundColor Green
+    }
   } catch {
     Write-Host "Owner was not created via the API (server may not be running yet). Start the server and POST /setup/owner manually." -ForegroundColor Yellow
     Write-Host $_.Exception.Message
