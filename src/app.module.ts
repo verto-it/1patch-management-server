@@ -1,5 +1,4 @@
-
-// AGPL-3.0-only — replacement for src/app.module.ts
+// AGPL-3.0-only
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
@@ -23,6 +22,7 @@ import { RulesController } from './rules/rules.controller';
 import { SigningService } from './signing.service';
 import { VaultPkiService } from './vault/vault-pki.service';
 import { JwtAuthGuard } from './security/jwt-auth.guard';
+import { MtlsNodeGuard } from './security/mtls-node.guard';
 import { NodeOrJwtGuard } from './security/node-or-jwt.guard';
 import { RbacGuard } from './security/rbac.guard';
 import { DragonflyService } from './storage/dragonfly.service';
@@ -48,7 +48,7 @@ import { SetupController } from './setup.controller';
   providers: [
     DragonflyService, PostgresService, MemoryStore,
     AuditService, AuthService, RbacService, NodesService, SigningService,
-    JwtAuthGuard, RbacGuard, NodeOrJwtGuard,
+    JwtAuthGuard, RbacGuard, MtlsNodeGuard, NodeOrJwtGuard,
     VaultPkiService,
   ],
 })

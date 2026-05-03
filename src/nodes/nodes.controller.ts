@@ -4,7 +4,8 @@ import { IsOptional, IsString, IsUrl } from 'class-validator';
 import { NodesService } from './nodes.service';
 import { CurrentUser } from '../security/current-user.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
-import { NodeApiGuard } from '../security/node-api.guard';
+import { MtlsNodeGuard } from '../security/mtls-node.guard';
+import { NodeId } from '../security/node-id.decorator';
 import { RbacGuard } from '../security/rbac.guard';
 import { RequirePermission } from '../security/require-permission.decorator';
 import { User } from '../types';
@@ -37,16 +38,36 @@ export class NodesController {
     return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site, user.id);
   }
 
-  @UseGuards(NodeApiGuard)
+  /**
+   * First-time registration — the ONLY endpoint that still accepts an enrollment token.
+   * No mTLS guard here because the node does not yet have a certificate.
+   * The enrollment token is one-time use with a 24 h TTL.
+   */
   @Post('/register')
   register(@Body() dto: { nodeId: string; enrollmentToken: string; version: string; capacity?: Record<string, unknown> }) {
     return this.nodes.register(dto.nodeId, dto.enrollmentToken, dto.version, dto.capacity);
   }
 
-  @UseGuards(NodeApiGuard)
+  /**
+   * Heartbeat — requires a valid Vault-issued mTLS client certificate.
+   * The nodeId is read from the certificate CN, not the request body.
+   * Capacity from the body is still accepted as informational.
+   */
+  @UseGuards(MtlsNodeGuard)
   @Post('/heartbeat')
-  heartbeat(@Body() dto: { nodeId: string; capacity?: Record<string, unknown> }) {
-    return this.nodes.heartbeat(dto.nodeId, dto.capacity);
+  heartbeat(@NodeId() nodeId: string, @Body() dto: { capacity?: Record<string, unknown> }) {
+    return this.nodes.heartbeat(nodeId, dto.capacity);
+  }
+
+  /**
+   * Certificate renewal — called by a node before its current cert expires.
+   * Requires the current (still-valid) mTLS cert — no token needed.
+   * Issues a fresh 24 h cert and revokes the old one.
+   */
+  @UseGuards(MtlsNodeGuard)
+  @Post('/renew-cert')
+  renewCert(@NodeId() nodeId: string) {
+    return this.nodes.renewCert(nodeId);
   }
 
   @UseGuards(JwtAuthGuard, RbacGuard)

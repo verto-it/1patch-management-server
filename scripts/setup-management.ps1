@@ -25,7 +25,7 @@ if ([string]::IsNullOrWhiteSpace($OwnerPassword)) {
     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 }
 
-# Generate all secrets up-front so they can be printed together at the end
+# Generate secrets up-front so they can be printed together at the end
 $jwtSecret      = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $signingKeyId   = "main-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $ecdsa          = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256)
@@ -33,13 +33,8 @@ $privatePem     = $ecdsa.ExportPkcs8PrivateKeyPem()
 $publicPem      = $ecdsa.ExportSubjectPublicKeyInfoPem()
 $privateB64     = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($privatePem))
 $publicKeysJson = @{ $signingKeyId = $publicPem } | ConvertTo-Json -Compress
-# NODE_API_SECRET is the shared secret that every backend node must present.
-# It is embedded in enrollment JSON by the management server so the backend-node
-# wizard receives it automatically via copy-paste.
-$nodeApiSecret  = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 
 $databaseUrl = "$($PostgresServerUrl.TrimEnd('/'))/$DatabaseName"
-
 
 @"
 NODE_ENV=production
@@ -52,7 +47,6 @@ JWT_SECRET=$jwtSecret
 MANAGEMENT_SIGNING_ACTIVE_KEY_ID=$signingKeyId
 MANAGEMENT_SIGNING_PRIVATE_KEY=$privateB64
 MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON=$publicKeysJson
-NODE_API_SECRET=$nodeApiSecret
 CORS_ALLOWED_ORIGINS=$CorsAllowedOrigins
 FIRST_OWNER_EMAIL=$OwnerEmail
 FIRST_OWNER_PASSWORD=$OwnerPassword
@@ -76,10 +70,9 @@ if ($CorsAllowedOrigins) {
   Write-Host "CORS Allowed Origins:  (none — browser access disabled until CORS_ALLOWED_ORIGINS is set)" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "--- Secrets (store securely) ---" -ForegroundColor Yellow
-Write-Host "NODE_API_SECRET generated and written to .env."
-Write-Host ""
-Write-Host "Copy NODE_API_SECRET to every backend node's .env (or let the enrollment JSON wizard do it automatically)." -ForegroundColor Yellow
+Write-Host "--- Authentication ---" -ForegroundColor Yellow
+Write-Host "Node authentication: mTLS only (Vault-issued certificates)."
+Write-Host "No shared secrets are used for node-to-management communication."
 Write-Host ""
 
 if (Get-Command psql -ErrorAction SilentlyContinue) {

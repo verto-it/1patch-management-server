@@ -43,9 +43,13 @@ export interface BackendNode {
   name: string;
   publicUrl: string;
   region?: string;
+  
   site?: string;
   status: 'pending' | 'online' | 'offline';
   enrollmentTokenHash: string;
+  /** ISO timestamp set when the enrollment was created — tokens older than 24 h are rejected */
+  enrollmentTokenCreatedAt: string;
+  /** ISO timestamp set on first successful registration — any second use is rejected (one-time use) */
   enrollmentTokenUsedAt?: string;
   firstSeenAt?: string;
   lastSeenAt?: string;
@@ -53,6 +57,14 @@ export interface BackendNode {
   capacity?: Record<string, unknown>;
   /** Serial number of the Vault-issued mTLS cert — used to revoke on decommission */
   tlsCertSerial?: string;
+  /** ISO timestamp when the current mTLS cert expires — node should renew before this */
+  tlsCertExpiresAt?: string;
+  /**
+   * Per-node decommission token (plaintext).
+   * Returned to the node at registration and stored in .env as NODE_DECOMMISSION_TOKEN.  Management sends it when calling POST /node/decommission
+   * on the backend node — it is unique per node and cannot be used against other nodes.
+   */
+  decommissionToken?: string;
 }
 
 export interface ClientEnrollment {

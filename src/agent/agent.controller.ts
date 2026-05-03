@@ -3,7 +3,8 @@ import { ApiTags } from '@nestjs/swagger';
 import * as bcrypt from 'bcryptjs';
 import { AuditService } from '../audit/audit.service';
 import { NodesService } from '../nodes/nodes.service';
-import { NodeApiGuard } from '../security/node-api.guard';
+import { MtlsNodeGuard } from '../security/mtls-node.guard';
+import { NodeId } from '../security/node-id.decorator';
 import { SigningService } from '../signing.service';
 import { MemoryStore } from '../storage/memory.store';
 import { Device, InstalledApp } from '../types';
@@ -13,6 +14,7 @@ import { Device, InstalledApp } from '../types';
 export class AgentController {
   private readonly logger = new Logger(AgentController.name);
 
+  
   constructor(
     private readonly nodes: NodesService,
     private readonly signing: SigningService,
@@ -43,15 +45,21 @@ export class AgentController {
     return this.signing.signPayload('rule_bundle', tenantId, { rules: enabledRules });
   }
 
-
-  // FIX #5: sync endpoint is only callable by authenticated backend nodes
-  @UseGuards(NodeApiGuard)
+  /**
+   * Sync endpoint — callable only by authenticated backend nodes.
+   * Authentication is via Vault-issued mTLS certificate; the nodeId is extracted
+   * from the certificate CN by MtlsNodeGuard and injected via @NodeId().
+   */
+  @UseGuards(MtlsNodeGuard)
   @Post('/sync/node-events')
-  syncNodeEvents(@Body() dto: { nodeId: string; events: Array<{ type: string; payload: unknown }> }) {
-    this.logger.log(`Sync from nodeId=${dto.nodeId}: ${dto.events.length} event(s)`);
+  syncNodeEvents(
+    @NodeId() nodeId: string,
+    @Body() dto: { events: Array<{ type: string; payload: unknown }> },
+  ) {
+    this.logger.log(`Sync from nodeId=${nodeId}: ${dto.events.length} event(s)`);
 
     for (const event of dto.events) {
-      this.logger.debug(`Processing event type=${event.type} from nodeId=${dto.nodeId}`);
+      this.logger.debug(`Processing event type=${event.type} from nodeId=${nodeId}`);
       switch (event.type) {
         case 'device_registered': {
           const payload = event.payload as Device & { deviceId?: string; enrollmentToken?: string };
@@ -61,13 +69,13 @@ export class AgentController {
           );
           if (!enrollment) {
             this.logger.warn(`Device registration rejected: invalid enrollment token for deviceId=${id}`);
-            this.audit.record(dto.nodeId, 'device.registration_rejected', id, { reason: 'invalid_enrollment_token' });
+            this.audit.record(nodeId, 'device.registration_rejected', id, { reason: 'invalid_enrollment_token' });
             break;
           }
           const alreadyUsedByDevice = enrollment.usedDeviceIds.includes(id);
           if (!alreadyUsedByDevice && enrollment.uses >= enrollment.maxUses) {
             this.logger.warn(`Device registration rejected: enrollment use limit reached for deviceId=${id}`);
-            this.audit.record(dto.nodeId, 'device.registration_rejected', id, { reason: 'enrollment_limit_reached', enrollmentId: enrollment.id });
+            this.audit.record(nodeId, 'device.registration_rejected', id, { reason: 'enrollment_limit_reached', enrollmentId: enrollment.id });
             break;
           }
           if (!alreadyUsedByDevice) {
@@ -81,7 +89,7 @@ export class AgentController {
             hostname: payload.hostname,
             os: payload.os,
             publicKey: payload.publicKey,
-            preferredNodeId: dto.nodeId,
+            preferredNodeId: nodeId,
             lastSeenAt: new Date().toISOString(),
           };
           if (existing) {
@@ -98,7 +106,7 @@ export class AgentController {
           const device = this.store.devices.find((d) => d.id === payload.deviceId);
           if (device) {
             device.lastSeenAt = new Date().toISOString();
-            device.preferredNodeId = dto.nodeId;
+            device.preferredNodeId = nodeId;
             this.logger.debug(`Heartbeat recorded for deviceId=${payload.deviceId}`);
           } else {
             this.logger.warn(`Heartbeat from unknown deviceId=${payload.deviceId}`);
@@ -141,7 +149,7 @@ export class AgentController {
           const payload = event.payload as { deviceId: string; severity: 'info' | 'warning' | 'critical'; message: string; metadata?: Record<string, unknown> };
           this.logger.warn(`Alarm from deviceId=${payload.deviceId} severity=${payload.severity}: ${payload.message}`);
           this.store.alarms.unshift({
-            id: `${dto.nodeId}-${Date.now()}-${this.store.alarms.length}`,
+            id: `${nodeId}-${Date.now()}-${this.store.alarms.length}`,
             deviceId: payload.deviceId,
             severity: payload.severity,
             message: payload.message,
@@ -151,13 +159,13 @@ export class AgentController {
           break;
         }
         default:
-          this.logger.warn(`Unknown event type '${event.type}' from nodeId=${dto.nodeId} — ignored`);
+          this.logger.warn(`Unknown event type '${event.type}' from nodeId=${nodeId} — ignored`);
       }
-      this.audit.record(dto.nodeId, `node.sync.${event.type}`, dto.nodeId);
+      this.audit.record(nodeId, `node.sync.${event.type}`, nodeId);
     }
 
     void this.store.persist();
-    this.logger.log(`Sync from nodeId=${dto.nodeId} complete — ${dto.events.length} event(s) processed`);
+    this.logger.log(`Sync from nodeId=${nodeId} complete — ${dto.events.length} event(s) processed`);
     return { accepted: dto.events.length };
   }
 }

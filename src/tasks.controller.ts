@@ -4,13 +4,15 @@ import { v4 as uuid } from 'uuid';
 import { AuditService } from './audit/audit.service';
 import { CurrentUser } from './security/current-user.decorator';
 import { JwtAuthGuard } from './security/jwt-auth.guard';
-import { NodeApiGuard } from './security/node-api.guard';
+import { MtlsNodeGuard } from './security/mtls-node.guard';
+import { NodeId } from './security/node-id.decorator';
 import { RbacGuard } from './security/rbac.guard';
 import { RequirePermission } from './security/require-permission.decorator';
 import { MemoryStore } from './storage/memory.store';
 import { Device, UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
 import { SigningService } from './signing.service';
+
 
 @ApiTags('tasks')
 @Controller('/tasks')
@@ -67,21 +69,30 @@ export class TasksController {
     return task;
   }
 
-  @UseGuards(NodeApiGuard)
+  /**
+   * Node polls for its pending tasks.
+   * Authentication is via Vault-issued mTLS certificate; nodeId comes from the cert CN.
+   */
+  @UseGuards(MtlsNodeGuard)
   @Get('/node/:nodeId/pending')
-  pendingForNode(@Param('nodeId') nodeId: string) {
+  pendingForNode(@NodeId() certNodeId: string, @Param('nodeId') paramNodeId: string) {
+    // Cert identity must match the requested nodeId — prevents one node reading another's tasks
+    if (certNodeId !== paramNodeId) {
+      this.logger.warn(`Node ${certNodeId} attempted to poll tasks for a different node ${paramNodeId}`);
+      throw new BadRequestException('Certificate identity does not match requested nodeId');
+    }
     const now = new Date().toISOString();
-    const tasks = this.store.tasks.filter((t) => t.nodeId === nodeId && t.status === 'pending');
+    const tasks = this.store.tasks.filter((t) => t.nodeId === certNodeId && t.status === 'pending');
     for (const task of tasks) {
       task.status = 'dispatched';
       task.dispatchedAt = now;
     }
     void this.store.persist();
     if (tasks.length > 0) {
-      this.audit.record(nodeId, 'task.dispatched_to_node', nodeId, { count: tasks.length });
-      this.logger.log(`Dispatched ${tasks.length} task(s) to nodeId=${nodeId}`);
+      this.audit.record(certNodeId, 'task.dispatched_to_node', certNodeId, { count: tasks.length });
+      this.logger.log(`Dispatched ${tasks.length} task(s) to nodeId=${certNodeId}`);
     } else {
-      this.logger.debug(`No pending tasks for nodeId=${nodeId}`);
+      this.logger.debug(`No pending tasks for nodeId=${certNodeId}`);
     }
     return {
       tasks: tasks.map((task) =>
@@ -90,17 +101,21 @@ export class TasksController {
     };
   }
 
-  @UseGuards(NodeApiGuard)
+  /** Node reports a task result — identity verified via mTLS cert. */
+  @UseGuards(MtlsNodeGuard)
   @Post('/result')
-  result(@Body() dto: { deviceId: string; taskId: string; status: 'completed' | 'failed' | 'rejected'; output?: string }) {
+  result(
+    @NodeId() nodeId: string,
+    @Body() dto: { deviceId: string; taskId: string; status: 'completed' | 'failed' | 'rejected'; output?: string },
+  ) {
     const task = this.store.tasks.find((t) => t.id === dto.taskId);
     if (!task) throw new BadRequestException('Unknown task');
     task.status = dto.status;
     task.output = dto.output;
     task.completedAt = new Date().toISOString();
     void this.store.persist();
-    this.audit.record(dto.deviceId, `task.${dto.status}`, task.id, { output: dto.output });
-    this.logger.log(`Task result recorded: taskId=${dto.taskId} deviceId=${dto.deviceId} status=${dto.status}`);
+    this.audit.record(nodeId, `task.${dto.status}`, task.id, { output: dto.output });
+    this.logger.log(`Task result recorded: taskId=${dto.taskId} deviceId=${dto.deviceId} status=${dto.status} node=${nodeId}`);
     if (dto.output) this.logger.debug(`Task ${dto.taskId} output: ${dto.output}`);
     if (dto.status === 'failed' || dto.status === 'rejected') {
       this.logger.warn(`Task ${dto.status} alarm: taskId=${dto.taskId} deviceId=${dto.deviceId}`);

@@ -143,7 +143,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
         await client.query(
           `insert into backend_nodes (id, name, public_url, region, site, status, enrollment_token_hash, enrollment_token_used_at, last_seen_at, version, capacity)
            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-          [node.id, node.name, node.publicUrl, node.region, node.site, node.status, node.enrollmentTokenHash, node.enrollmentTokenUsedAt, node.lastSeenAt, node.version, JSON.stringify(node.capacity ?? {})],
+          [node.id, node.name, node.publicUrl, node.region, node.site, node.status, node.enrollmentTokenHash, node.enrollmentTokenCreatedAt, node.enrollmentTokenUsedAt, node.firstSeenAt, node.lastSeenAt, node.version, JSON.stringify(node.capacity ?? {}), node.tlsCertSerial, node.tlsCertExpiresAt, node.decommissionToken],
         );
       }
       for (const enrollment of snapshot.clientEnrollments ?? []) {
@@ -281,6 +281,11 @@ create table if not exists backend_nodes (
   created_at timestamptz not null default now()
 );
 alter table backend_nodes add column if not exists enrollment_token_used_at timestamptz;
+alter table backend_nodes add column if not exists enrollment_token_created_at timestamptz;
+alter table backend_nodes add column if not exists first_seen_at timestamptz;
+alter table backend_nodes add column if not exists tls_cert_serial text;
+alter table backend_nodes add column if not exists tls_cert_expires_at timestamptz;
+alter table backend_nodes add column if not exists decommission_token_hash text; -- stores plaintext per-node decommission token
 create table if not exists client_enrollments (
   id text primary key,
   tenant_id text not null,
@@ -411,10 +416,15 @@ function rowToNode(row: Record<string, any>): BackendNode {
     site: row.site,
     status: row.status,
     enrollmentTokenHash: row.enrollment_token_hash,
+    enrollmentTokenCreatedAt: toIso(row.enrollment_token_created_at) ?? new Date().toISOString(),
     enrollmentTokenUsedAt: toIso(row.enrollment_token_used_at),
+    firstSeenAt: toIso(row.first_seen_at),
     lastSeenAt: toIso(row.last_seen_at),
     version: row.version,
     capacity: row.capacity ?? {},
+    tlsCertSerial: row.tls_cert_serial,
+    tlsCertExpiresAt: toIso(row.tls_cert_expires_at),
+    decommissionToken: row.decommission_token_hash,
   };
 }
 

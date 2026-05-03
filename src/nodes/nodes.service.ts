@@ -7,6 +7,8 @@ import { BackendNode } from '../types';
 import { VaultPkiService } from '../vault/vault-pki.service';
 
 const NODE_ONLINE_TTL_MS = Number(process.env.NODE_ONLINE_TTL_MS ?? 2 * 60_000);
+/** Enrollment tokens are valid for 24 hours from creation. */
+const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60_000;
 
 @Injectable()
 export class NodesService {
@@ -20,24 +22,21 @@ export class NodesService {
 
   async createEnrollment(name: string, publicUrl: string, region?: string, site?: string, actor = 'system') {
     const token = `node_${uuid().replaceAll('-', '')}`;
-    const node = {
+    const now = new Date().toISOString();
+    const node: BackendNode = {
       id: uuid(),
       name,
       publicUrl,
       region,
       site,
-      status: 'pending' as const,
+      status: 'pending',
       enrollmentTokenHash: await bcrypt.hash(token, 12),
+      enrollmentTokenCreatedAt: now,
     };
     this.store.backendNodes.push(node);
     await this.store.persist();
     this.audit.record(actor, 'node.enrollment_created', node.id, { name, publicUrl, region, site });
     this.logger.log(`Enrollment created: nodeId=${node.id} name=${name} publicUrl=${publicUrl}`);
-
-    const nodeApiSecret = process.env.NODE_API_SECRET;
-    if (!nodeApiSecret) {
-      this.logger.warn('NODE_API_SECRET is not set — enrollment JSON will not include it.');
-    }
 
     return {
       nodeId: node.id,
@@ -45,7 +44,6 @@ export class NodesService {
       managementUrl: process.env.PUBLIC_URL ?? process.env.MANAGEMENT_URL ?? '',
       nodePublicUrl: publicUrl,
       dragonflyUrl: '',
-      nodeApiSecret: nodeApiSecret ?? '',
     };
   }
 
@@ -55,6 +53,20 @@ export class NodesService {
       this.logger.warn(`Registration rejected — unknown nodeId=${nodeId}`);
       throw new BadRequestException('Unknown node');
     }
+
+    // One-time use enforcement
+    if (node.enrollmentTokenUsedAt) {
+      this.logger.warn(`Registration rejected — enrollment token already used for nodeId=${nodeId}`);
+      throw new UnauthorizedException('Enrollment token has already been used');
+    }
+
+    // TTL enforcement (24 h)
+    const createdAt = new Date(node.enrollmentTokenCreatedAt).getTime();
+    if (!Number.isFinite(createdAt) || Date.now() - createdAt > ENROLLMENT_TOKEN_TTL_MS) {
+      this.logger.warn(`Registration rejected — enrollment token expired for nodeId=${nodeId}`);
+      throw new UnauthorizedException('Enrollment token has expired');
+    }
+
     if (!(await bcrypt.compare(enrollmentToken, node.enrollmentTokenHash))) {
       this.logger.warn(`Registration rejected — invalid enrollment token for nodeId=${nodeId}`);
       throw new UnauthorizedException('Invalid enrollment token');
@@ -66,36 +78,74 @@ export class NodesService {
     const now = new Date().toISOString();
     node.firstSeenAt = node.firstSeenAt ?? now;
     node.lastSeenAt = now;
+    node.enrollmentTokenUsedAt = now;
 
-    // Issue (or re-issue) a Vault mTLS certificate for this node.
-    // The cert + key are returned to the node in this response — they are never stored
-    // server-side. The node persists them locally and uses them for all future connections.
-    let issuedCert: { certificate: string; privateKey: string; caCert: string; serial: string } | undefined;
+    // Generate a per-node decommission token — unique, not shared with any other node.
+    const decommissionToken = `decomm_${uuid().replaceAll('-', '')}`;
+    node.decommissionToken = decommissionToken;
+
+    // Issue a Vault mTLS certificate.  Cert + key are returned to the node only in
+    // this response — they are never stored server-side.
+    let issuedCert: { certificate: string; privateKey: string; caCert: string; serial: string; expiresAt: string } | undefined;
     try {
       if (node.tlsCertSerial) {
         await this.vaultPki.revokeCert(node.tlsCertSerial);
       }
-      issuedCert = await this.vaultPki.issueCert(nodeId);
-      node.tlsCertSerial = issuedCert.serial;
-      this.logger.log(`mTLS cert issued for nodeId=${nodeId} serial=${issuedCert.serial}`);
+      const cert = await this.vaultPki.issueCert(nodeId);
+      // Vault 24-h TTL — record the expiry so the node knows when to renew.
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+      node.tlsCertSerial = cert.serial;
+      node.tlsCertExpiresAt = expiresAt;
+      issuedCert = { ...cert, expiresAt };
+      this.logger.log(`mTLS cert issued for nodeId=${nodeId} serial=${cert.serial} expiresAt=${expiresAt}`);
     } catch (err) {
       this.logger.error(
-        `Vault cert issuance failed for nodeId=${nodeId}: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Node will use shared-secret auth only until Vault recovers.`,
+        `Vault cert issuance failed for nodeId=${nodeId}: ${err instanceof Error ? err.message : String(err)}.`,
       );
     }
 
-    if (node.enrollmentTokenUsedAt) {
-      await this.store.persist();
-      this.logger.debug(`Repeat registration accepted for existing nodeId=${nodeId}`);
-      return { nodeId: node.id, accepted: true, alreadyRegistered: true, tls: issuedCert ?? null };
-    }
-
-    node.enrollmentTokenUsedAt = now;
     await this.store.persist();
     this.audit.record(node.id, 'node.registered', node.id, { version, capacity, tlsSerial: issuedCert?.serial });
     this.logger.log(`Node registered: nodeId=${nodeId} name=${node.name} version=${version}`);
-    return { nodeId: node.id, accepted: true, tls: issuedCert ?? null };
+
+    return {
+      nodeId: node.id,
+      accepted: true,
+      decommissionToken,
+      tls: issuedCert ?? null,
+    };
+  }
+
+  /**
+   * Re-issues a Vault mTLS certificate for a node that is approaching expiry.
+   * The node must be authenticated via its current (still-valid) mTLS certificate
+   * before this endpoint is reached — no additional token is needed.
+   * The old certificate is revoked and replaced atomically.
+   */
+  async renewCert(nodeId: string) {
+    const node = this.store.backendNodes.find((n) => n.id === nodeId);
+    if (!node) throw new BadRequestException('Unknown node');
+
+    let issuedCert: { certificate: string; privateKey: string; caCert: string; serial: string; expiresAt: string };
+    try {
+      if (node.tlsCertSerial) {
+        await this.vaultPki.revokeCert(node.tlsCertSerial);
+      }
+      const cert = await this.vaultPki.issueCert(nodeId);
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+      node.tlsCertSerial = cert.serial;
+      node.tlsCertExpiresAt = expiresAt;
+      issuedCert = { ...cert, expiresAt };
+    } catch (err) {
+      throw new BadRequestException(
+        `Certificate renewal failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    await this.store.persist();
+    this.audit.record(nodeId, 'node.cert_renewed', nodeId, { serial: issuedCert.serial });
+    this.logger.log(`mTLS cert renewed for nodeId=${nodeId} serial=${issuedCert.serial}`);
+    return { nodeId, renewed: true, tls: issuedCert };
   }
 
   heartbeat(nodeId: string, capacity?: Record<string, unknown>) {
@@ -111,7 +161,11 @@ export class NodesService {
     node.capacity = capacity ?? node.capacity;
     void this.store.persist();
     this.logger.debug(`Heartbeat from nodeId=${nodeId}`);
-    return { accepted: true, serverTime: new Date().toISOString() };
+    return {
+      accepted: true,
+      serverTime: new Date().toISOString(),
+      certExpiresAt: node.tlsCertExpiresAt,
+    };
   }
 
   listNodes() {
@@ -119,7 +173,10 @@ export class NodesService {
     const nodes = this.store.backendNodes.map((node) => {
       const status = this.resolveStatus(node);
       if (node.status !== status) { node.status = status; changed = true; }
-      return { ...node, status };
+      // Strip sensitive hashes from the API response
+      const { enrollmentTokenHash, decommissionToken: _dt, ...safe } = node;
+      void enrollmentTokenHash; void _dt;
+      return { ...safe, status };
     });
     if (changed) void this.store.persist();
     return nodes;
@@ -131,7 +188,6 @@ export class NodesService {
     const node = this.store.backendNodes[index];
     this.logger.log(`Removing node ${node.name} (${node.id})`);
 
-    // Revoke the mTLS cert immediately — node stops working within one CRL cycle (~10 min)
     if (node.tlsCertSerial) {
       try {
         await this.vaultPki.revokeCert(node.tlsCertSerial);
@@ -141,7 +197,7 @@ export class NodesService {
       }
     }
 
-    const decommission = await this.decommissionNode(node.id, node.publicUrl);
+    const decommission = await this.decommissionNode(node.id, node.publicUrl, node.decommissionToken);
     if (decommission.cleared) {
       this.logger.log(`Node ${node.name} confirmed local config cleanup`);
     } else {
@@ -165,17 +221,19 @@ export class NodesService {
     return this.onlineNodes()[0];
   }
 
-  private async decommissionNode(nodeId: string, publicUrl: string) {
+  private async decommissionNode(nodeId: string, publicUrl: string, decommissionToken?: string) {
+    if (!decommissionTokenHash) {
+      this.logger.warn(`No decommission token stored for nodeId=${nodeId} — cannot authenticate decommission call`);
+      return { attempted: false, cleared: false, reason: 'no_decommission_token' };
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
       const res = await fetch(`${publicUrl.replace(/\/$/, '')}/node/decommission`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-node-api-secret': process.env.NODE_API_SECRET ?? '',
-        },
-        body: JSON.stringify({ nodeId }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nodeId, decommissionToken }),
         signal: controller.signal,
       });
       const text = await res.text();
