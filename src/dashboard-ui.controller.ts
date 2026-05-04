@@ -19,6 +19,8 @@ const CATEGORIES = new Set([
   'nodes',
   'alarms',
   'audit',
+  'siem',
+  'security-posture',
 ]);
 
 
@@ -28,6 +30,7 @@ export class DashboardUiController {
 
   @Get('/ui')
   @Header('content-type', 'text/html; charset=utf-8')
+  @Header('cache-control', 'no-store')
   index() {
     return readFileSync(join(this.assetRoot, 'shell.html'), 'utf8');
   }
@@ -38,6 +41,7 @@ export class DashboardUiController {
     if (!meta) {
       if (CATEGORIES.has(asset)) {
         res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.setHeader('cache-control', 'no-store');
         res.send(readFileSync(join(this.assetRoot, 'shell.html'), 'utf8'));
         return;
       }

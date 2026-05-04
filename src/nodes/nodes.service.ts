@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, UnauthorizedException } from '
 import * as bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
+import { SiemEventService } from '../siem/siem-event.service';
 import { MemoryStore } from '../storage/memory.store';
 import { BackendNode } from '../types';
 import { VaultPkiService } from '../vault/vault-pki.service';
@@ -17,6 +18,7 @@ export class NodesService {
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
+    private readonly siem: SiemEventService,
     private readonly vaultPki: VaultPkiService,
   ) {}
 
@@ -106,6 +108,8 @@ export class NodesService {
 
     await this.store.persist();
     this.audit.record(node.id, 'node.registered', node.id, { version, capacity, tlsSerial: issuedCert?.serial });
+    this.siem.emit({ tenantId: 'system', type: 'node.registered', severity: 'low', actor: { userId: null, nodeId: node.id, ip: null }, target: { taskId: null, deviceId: null, nodeId: node.id }, metadata: { name: node.name, version, tlsSerial: issuedCert?.serial } });
+    if (issuedCert) { this.siem.emit({ tenantId: 'system', type: 'node.certificate.issued', severity: 'low', actor: { userId: null, nodeId: node.id, ip: null }, target: { taskId: null, deviceId: null, nodeId: node.id }, metadata: { serial: issuedCert.serial, expiresAt: issuedCert.expiresAt } }); }
     this.logger.log(`Node registered: nodeId=${nodeId} name=${node.name} version=${version}`);
 
     return {
@@ -222,7 +226,7 @@ export class NodesService {
   }
 
   private async decommissionNode(nodeId: string, publicUrl: string, decommissionToken?: string) {
-    if (!decommissionTokenHash) {
+    if (!decommissionToken) {
       this.logger.warn(`No decommission token stored for nodeId=${nodeId} — cannot authenticate decommission call`);
       return { attempted: false, cleared: false, reason: 'no_decommission_token' };
     }

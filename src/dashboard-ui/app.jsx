@@ -8,7 +8,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "sidebar": "labelled"
 }/*EDITMODE-END*/;
 
-const CATEGORY_IDS = ["overview", "devices", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit"];
+const CATEGORY_IDS = ["overview", "devices", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit", "siem", "security-posture"];
 const SEARCH_TYPES = ["device", "app", "package", "rule", "task", "node", "alarm", "audit"];
 const SEARCH_ALIASES = {
   devices: "device",
@@ -179,6 +179,22 @@ function pushCategoryUrl(category) {
 }
 
 function App() {
+  const [authSession, setAuthSession] = useStateApp(() => PatchAPI.session());
+
+  useEffectApp(() => {
+    const onSessionChange = () => setAuthSession(PatchAPI.session());
+    window.addEventListener("patch-session-change", onSessionChange);
+    return () => window.removeEventListener("patch-session-change", onSessionChange);
+  }, []);
+
+  if (!authSession.accessToken) {
+    return <LoginScreen onAuthenticated={(nextSession) => setAuthSession(nextSession)}/>;
+  }
+
+  return <DashboardApp sessionInfo={authSession} onLogout={() => { PatchAPI.logout(); setAuthSession({}); }}/>;
+}
+
+function DashboardApp({ sessionInfo, onLogout }) {
   const [tab, setTabState] = useStateApp(categoryFromUrl);
   const [openDevice, setOpenDevice] = useStateApp(null);
   const [globalSearch, setGlobalSearch] = useStateApp("");
@@ -254,6 +270,8 @@ function App() {
     { id:"nodes",    label:"Nodes",     icon: Icon.nodes },
     { id:"alarms",   label:"Alarms",    icon: Icon.alarms,   count: counts.criticalAlarms, countTone: "crit" },
     { id:"audit",    label:"Audit",     icon: Icon.audit },
+    { id:"siem",     label:"SIEM",      icon: Icon.audit },
+    { id:"security-posture", label:"Posture", icon: Icon.shield },
   ];
 
   const pageSearchTerm = (category) => {
@@ -272,6 +290,8 @@ function App() {
     nodes:    <NodesPage globalSearch={pageSearchTerm("nodes")}/>,
     alarms:   <AlarmsPage globalSearch={pageSearchTerm("alarms")}/>,
     audit:    <AuditPage globalSearch={pageSearchTerm("audit")}/>,
+    siem:     <SiemPage/>,
+    "security-posture": <SecurityPosturePage/>,
   }[tab];
 
   const current = NAV.find(n => n.id === tab);
@@ -295,8 +315,9 @@ function App() {
         {NAV.slice(5).map(n => <NavItem key={n.id} item={n} active={tab===n.id} onClick={() => setTab(n.id)}/>)}
         <div className="sidebar-footer">
           <div className="user-card">
-            <div className="avatar">1P</div>
-            <div className="user-meta"><strong>Admin session</strong><span>JWT session</span></div>
+            <div className="avatar">{initials(sessionInfo.user?.email)}</div>
+            <div className="user-meta"><strong>{sessionInfo.user?.email || "Admin session"}</strong><span>JWT session</span></div>
+            <button type="button" className="icon-btn logout-btn" aria-label="Sign out" onClick={onLogout}>{Icon.close}</button>
           </div>
         </div>
       </aside>
@@ -335,6 +356,115 @@ function App() {
         </TweakSection>
       </TweaksPanel>
     </div>
+  );
+}
+
+function initials(email) {
+  const name = String(email || "1P").trim();
+  if (!name || name === "1P") return "1P";
+  return name.slice(0, 2).toUpperCase();
+}
+
+function LoginScreen({ onAuthenticated }) {
+  const [email, setEmail] = useStateApp("");
+  const [password, setPassword] = useStateApp("");
+  const [mfaCode, setMfaCode] = useStateApp("");
+  const [challengeToken, setChallengeToken] = useStateApp("");
+  const [loading, setLoading] = useStateApp(false);
+  const [error, setError] = useStateApp("");
+  const mfaRequired = Boolean(challengeToken);
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (loading) return;
+    setLoading(true);
+    setError("");
+    const action = mfaRequired
+      ? PatchAPI.verifyMfa(challengeToken, mfaCode.trim())
+      : PatchAPI.login(email.trim(), password);
+    action.then((body) => {
+      if (body.mfaRequired) {
+        setChallengeToken(body.challengeToken);
+        setMfaCode("");
+        setError("");
+        return;
+      }
+      onAuthenticated(body);
+    }).catch((err) => {
+      setError(err.message || (mfaRequired ? "MFA verification failed" : "Login failed"));
+    }).finally(() => {
+      setLoading(false);
+    });
+  };
+
+  return (
+    <main className="login-screen">
+      <section className="login-panel" aria-labelledby="login-title">
+        <div className="login-brand">
+          <div className="brand-mark">1P</div>
+          <div>
+            <strong>1Patch Management</strong>
+            <span>Control plane access</span>
+          </div>
+        </div>
+        <div className="login-copy">
+          <h1 id="login-title">{mfaRequired ? "Enter MFA code" : "Sign in"}</h1>
+          <p>{mfaRequired ? "Use the current code from your authenticator app." : "Use your local owner or admin account."}</p>
+        </div>
+        <form className="login-form" onSubmit={submit}>
+          {!mfaRequired && (
+            <>
+              <label className="field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  minLength="12"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </label>
+            </>
+          )}
+          {mfaRequired && (
+            <label className="field">
+              <span>Authentication code</span>
+              <input
+                className="mfa-input"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                required
+                autoFocus
+              />
+            </label>
+          )}
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <button type="submit" className="btn primary login-submit" disabled={loading || (mfaRequired ? mfaCode.length < 6 : !email || !password)}>
+            {loading ? <span className="search-spinner"/> : <span className="login-submit-icon">{Icon.shield}</span>}
+            {mfaRequired ? "Verify code" : "Sign in"}
+          </button>
+          {mfaRequired && (
+            <button type="button" className="btn ghost login-back" onClick={() => { setChallengeToken(""); setError(""); }}>
+              Back to password
+            </button>
+          )}
+        </form>
+      </section>
+    </main>
   );
 }
 

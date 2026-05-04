@@ -1,6 +1,10 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
-import { Alarm, AuditEvent, BackendNode, ClientEnrollment, Device, InstalledApp, PackageArtifact, PatchRule, UpdateTask, User } from '../types';
+import {
+  Alarm, AuditEvent, BackendNode, ClientEnrollment, Device, InstalledApp,
+  KillSwitchState, PackageArtifact, PatchRule, SiemEvent, TaskLedgerEntry,
+  UpdateTask, User,
+} from '../types';
 
 export interface StoreSnapshot {
   users: User[];
@@ -13,6 +17,8 @@ export interface StoreSnapshot {
   tasks: UpdateTask[];
   alarms: Alarm[];
   auditEvents: AuditEvent[];
+  taskLedger: TaskLedgerEntry[];
+  killSwitchStates: KillSwitchState[];
 }
 
 @Injectable()
@@ -69,7 +75,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   async loadSnapshot(): Promise<StoreSnapshot | undefined> {
     if (!this.pool) return undefined;
     try {
-      const [users, nodes, clientEnrollments, devices, apps, packages, rules, tasks, alarms, audit] = await Promise.all([
+      const [users, nodes, clientEnrollments, devices, apps, packages, rules, tasks, alarms, audit, ledger, killSwitch] = await Promise.all([
         this.pool.query('select * from users order by created_at asc'),
         this.pool.query('select * from backend_nodes order by name asc'),
         this.pool.query('select * from client_enrollments order by created_at desc'),
@@ -80,6 +86,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
         this.pool.query('select * from update_tasks order by created_at asc'),
         this.pool.query('select * from alarms order by created_at desc'),
         this.pool.query('select * from audit_events order by created_at desc limit 1000'),
+        this.pool.query('select * from task_ledger order by created_at desc limit 5000'),
+        this.pool.query('select * from kill_switch_states order by tenant_id asc'),
       ]);
       this.lastError = undefined;
       return {
@@ -93,6 +101,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
         tasks: tasks.rows.map(rowToTask),
         alarms: alarms.rows.map(rowToAlarm),
         auditEvents: audit.rows.map(rowToAudit),
+        taskLedger: ledger.rows.map(rowToTaskLedger),
+        killSwitchStates: killSwitch.rows.map(rowToKillSwitchState),
       };
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -124,6 +134,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       await client.query('delete from installed_apps');
       await client.query('delete from package_artifacts');
       await client.query('delete from audit_events');
+      await client.query('delete from task_ledger');
+      await client.query('delete from kill_switch_states');
       await client.query('delete from alarms');
       await client.query('delete from update_tasks');
       await client.query('delete from patch_rules');
@@ -141,8 +153,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       }
       for (const node of snapshot.backendNodes) {
         await client.query(
-          `insert into backend_nodes (id, name, public_url, region, site, status, enrollment_token_hash, enrollment_token_used_at, last_seen_at, version, capacity)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          `insert into backend_nodes (id, name, public_url, region, site, status, enrollment_token_hash, enrollment_token_created_at, enrollment_token_used_at, first_seen_at, last_seen_at, version, capacity, tls_cert_serial, tls_cert_expires_at, decommission_token_hash)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
           [node.id, node.name, node.publicUrl, node.region, node.site, node.status, node.enrollmentTokenHash, node.enrollmentTokenCreatedAt, node.enrollmentTokenUsedAt, node.firstSeenAt, node.lastSeenAt, node.version, JSON.stringify(node.capacity ?? {}), node.tlsCertSerial, node.tlsCertExpiresAt, node.decommissionToken],
         );
       }
@@ -238,6 +250,28 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
           [event.id, event.actor, event.action, event.target, event.ip, event.createdAt, JSON.stringify(event.metadata ?? {})],
         );
       }
+      for (const entry of snapshot.taskLedger) {
+        await client.query(
+          `insert into task_ledger (ledger_id, task_id, tenant_id, created_by, created_at, visible_in_dashboard, task_hash, risk_score, approvals, not_before, expires_at, key_id, signature, state, revoked_at, revoked_reason, superseded_by)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          [
+            entry.ledgerId, entry.taskId, entry.tenantId, entry.createdBy, entry.createdAt,
+            entry.visibleInDashboard, entry.taskHash, entry.riskScore, JSON.stringify(entry.approvals ?? []),
+            entry.notBefore, entry.expiresAt, entry.keyId, entry.signature, entry.state,
+            entry.revokedAt, entry.revokedReason, entry.supersededBy,
+          ],
+        );
+      }
+      for (const state of snapshot.killSwitchStates) {
+        await client.query(
+          `insert into kill_switch_states (id, tenant_id, active, activated_at, activated_by, deactivated_at, deactivated_by, reason, signature, key_id)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            state.id, state.tenantId, state.active, state.activatedAt, state.activatedBy,
+            state.deactivatedAt, state.deactivatedBy, state.reason, state.signature, state.keyId,
+          ],
+        );
+      }
 
       await client.query('commit');
     } catch (error) {
@@ -246,6 +280,33 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Could not persist PostgreSQL snapshot: ${this.lastError}`);
     } finally {
       client.release();
+    }
+  }
+
+  async appendSiemEvent(event: SiemEvent) {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        `insert into siem_events (event_id, timestamp, tenant_id, type, severity, actor, target, metadata, correlation_id, previous_event_hash, event_hash)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         on conflict (event_id) do nothing`,
+        [
+          event.eventId,
+          event.timestamp,
+          event.tenantId,
+          event.type,
+          event.severity,
+          JSON.stringify(event.actor),
+          JSON.stringify(event.target),
+          JSON.stringify(event.metadata ?? {}),
+          event.correlationId,
+          event.previousEventHash,
+          event.eventHash,
+        ],
+      );
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not append SIEM event to PostgreSQL: ${this.lastError}`);
     }
   }
 }
@@ -286,6 +347,54 @@ alter table backend_nodes add column if not exists first_seen_at timestamptz;
 alter table backend_nodes add column if not exists tls_cert_serial text;
 alter table backend_nodes add column if not exists tls_cert_expires_at timestamptz;
 alter table backend_nodes add column if not exists decommission_token_hash text; -- stores plaintext per-node decommission token
+create table if not exists task_ledger (
+  ledger_id text primary key,
+  task_id text not null,
+  tenant_id text not null,
+  created_by text not null,
+  created_at timestamptz not null,
+  visible_in_dashboard boolean not null default true,
+  task_hash text not null,
+  risk_score integer not null,
+  approvals jsonb not null default '[]',
+  not_before timestamptz not null,
+  expires_at timestamptz not null,
+  key_id text not null,
+  signature text not null,
+  state text not null,
+  revoked_at timestamptz,
+  revoked_reason text,
+  superseded_by text
+);
+create index if not exists task_ledger_task_idx on task_ledger(task_id);
+create index if not exists task_ledger_tenant_idx on task_ledger(tenant_id);
+create table if not exists kill_switch_states (
+  id text primary key,
+  tenant_id text not null unique,
+  active boolean not null,
+  activated_at timestamptz,
+  activated_by text,
+  deactivated_at timestamptz,
+  deactivated_by text,
+  reason text,
+  signature text not null,
+  key_id text not null
+);
+create table if not exists siem_events (
+  event_id text primary key,
+  timestamp timestamptz not null,
+  tenant_id text not null,
+  type text not null,
+  severity text not null,
+  actor jsonb not null,
+  target jsonb not null,
+  metadata jsonb not null default '{}',
+  correlation_id text,
+  previous_event_hash text,
+  event_hash text
+);
+create index if not exists siem_events_tenant_timestamp_idx on siem_events(tenant_id, timestamp desc);
+create index if not exists siem_events_type_idx on siem_events(type);
 create table if not exists client_enrollments (
   id text primary key,
   tenant_id text not null,
@@ -546,6 +655,43 @@ function rowToAudit(row: Record<string, any>): AuditEvent {
   };
 }
 
+function rowToTaskLedger(row: Record<string, any>): TaskLedgerEntry {
+  return {
+    ledgerId: row.ledger_id,
+    taskId: row.task_id,
+    tenantId: row.tenant_id,
+    createdBy: row.created_by,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString(),
+    visibleInDashboard: true,
+    taskHash: row.task_hash,
+    riskScore: row.risk_score,
+    approvals: row.approvals ?? [],
+    notBefore: toIso(row.not_before) ?? new Date().toISOString(),
+    expiresAt: toIso(row.expires_at) ?? new Date().toISOString(),
+    keyId: row.key_id,
+    signature: row.signature,
+    state: row.state,
+    revokedAt: toIso(row.revoked_at),
+    revokedReason: row.revoked_reason,
+    supersededBy: row.superseded_by,
+  };
+}
+
+function rowToKillSwitchState(row: Record<string, any>): KillSwitchState {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    active: row.active,
+    activatedAt: toIso(row.activated_at),
+    activatedBy: row.activated_by,
+    deactivatedAt: toIso(row.deactivated_at),
+    deactivatedBy: row.deactivated_by,
+    reason: row.reason,
+    signature: row.signature,
+    keyId: row.key_id,
+  };
+}
+
 function toIso(value: unknown) {
   if (!value) return undefined;
   if (value instanceof Date) return value.toISOString();
@@ -564,14 +710,21 @@ export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {
     tasks: uniqueById(snapshot.tasks),
     alarms: uniqueById(snapshot.alarms),
     auditEvents: uniqueById(snapshot.auditEvents),
+    taskLedger: uniqueBy(snapshot.taskLedger ?? [], (entry) => entry.ledgerId),
+    killSwitchStates: uniqueById(snapshot.killSwitchStates ?? []),
   };
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  return uniqueBy(items, (item) => item.id);
+}
+
+function uniqueBy<T>(items: T[], id: (item: T) => string): T[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
+    const key = id(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }

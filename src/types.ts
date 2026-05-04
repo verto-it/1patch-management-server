@@ -6,6 +6,7 @@ export type Role =
   | 'auditor'
   | 'node_operator';
 
+  
 export type Permission =
   | 'setup:manage'
   | 'auth:manage'
@@ -21,7 +22,35 @@ export type Permission =
   | 'apps:manage'
   | 'rules:manage'
   | 'tasks:manage'
+  | 'tasks:approve'
+  | 'tasks:sign'
+  | 'kill_switch:manage'
   | 'audit:read';
+
+/** Signing scope — each key is scoped to exactly one payload type */
+export type SigningScope =
+  | 'bootstrap_manifest'
+  | 'rule_bundle'
+  | 'task_bundle'
+  | 'task_ledger'
+  | 'kill_switch'
+  | 'recovery_task';
+
+/** Full task lifecycle */
+export type TaskStatus =
+  | 'draft'
+  | 'security_scanned'
+  | 'mfa_approved'
+  | 'signed'
+  | 'scheduled'
+  | 'executable'
+  | 'pending'        // legacy alias treated as executable
+  | 'dispatched'
+  | 'completed'
+  | 'failed'
+  | 'rejected'
+  | 'cancelled'
+  | 'revoked';
 
 export interface User {
   id: string;
@@ -43,27 +72,17 @@ export interface BackendNode {
   name: string;
   publicUrl: string;
   region?: string;
-  
   site?: string;
   status: 'pending' | 'online' | 'offline';
   enrollmentTokenHash: string;
-  /** ISO timestamp set when the enrollment was created — tokens older than 24 h are rejected */
   enrollmentTokenCreatedAt: string;
-  /** ISO timestamp set on first successful registration — any second use is rejected (one-time use) */
   enrollmentTokenUsedAt?: string;
   firstSeenAt?: string;
   lastSeenAt?: string;
   version?: string;
   capacity?: Record<string, unknown>;
-  /** Serial number of the Vault-issued mTLS cert — used to revoke on decommission */
   tlsCertSerial?: string;
-  /** ISO timestamp when the current mTLS cert expires — node should renew before this */
   tlsCertExpiresAt?: string;
-  /**
-   * Per-node decommission token (plaintext).
-   * Returned to the node at registration and stored in .env as NODE_DECOMMISSION_TOKEN.  Management sends it when calling POST /node/decommission
-   * on the backend node — it is unique per node and cannot be used against other nodes.
-   */
   decommissionToken?: string;
 }
 
@@ -134,10 +153,48 @@ export interface PackageArtifact {
   createdAt: string;
 }
 
+export interface TaskApproval {
+  approverUserId: string;
+  approvedAt: string;
+  mfaChallengeId: string;
+  approvalType: 'mfa_totp' | 'break_glass';
+}
+
+export interface SecurityFinding {
+  code: string;
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
+  message: string;
+  field?: string;
+}
+
+export interface SecurityScanResult {
+  taskId: string;
+  scannedAt: string;
+  /** 0-100 composite risk score */
+  riskScore: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  findings: SecurityFinding[];
+  humanReadableSummary: string;
+  /** Hard block prevents signing regardless of approvals unless break-glass */
+  hardBlock: boolean;
+  hardBlockReason?: string;
+  /** AI advisory only — never used to auto-approve or block */
+  advisoryFindings?: SecurityFinding[];
+  virusTotalResult?: {
+    checkedAt: string;
+    positives?: number;
+    total?: number;
+    permalink?: string;
+    available: boolean;
+  };
+}
+
 export interface UpdateTask {
   id: string;
   nodeId: string;
   deviceId: string;
+  tenantId?: string;
+  createdBy?: string;
   appName?: string;
   packageArtifactId?: string;
   packageId?: string;
@@ -147,23 +204,81 @@ export interface UpdateTask {
   installArgs?: string;
   targetVersion: 'latest' | string;
   type: 'update_package' | 'refresh_inventory';
-  status: 'pending' | 'dispatched' | 'completed' | 'failed' | 'rejected' | 'cancelled';
+  status: TaskStatus;
+  /** SHA-256 of canonical task execution fields — tamper detection */
+  taskHash?: string;
+  /** Client must not execute task before this ISO timestamp */
+  notBefore?: string;
+  securityScanResult?: SecurityScanResult;
+  approvals?: TaskApproval[];
+  ledgerEntryId?: string;
   createdAt: string;
   dispatchedAt?: string;
   completedAt?: string;
   output?: string;
 }
 
+export interface TaskLedgerEntry {
+  ledgerId: string;
+  taskId: string;
+  tenantId: string;
+  createdBy: string;
+  createdAt: string;
+  /** Always true — invisible tasks must never be executed */
+  visibleInDashboard: true;
+  taskHash: string;
+  riskScore: number;
+  approvals: TaskApproval[];
+  notBefore: string;
+  expiresAt: string;
+  keyId: string;
+  signature: string;
+  state: 'active' | 'revoked' | 'superseded';
+  revokedAt?: string;
+  revokedReason?: string;
+  supersededBy?: string;
+}
+
 export interface SignedEnvelope<T = unknown> {
   algorithm: 'ES256';
   keyId: string;
-  payloadType: 'bootstrap_manifest' | 'rule_bundle' | 'task_bundle';
+  payloadType: SigningScope;
   tenantId: string;
   issuedAt: string;
   expiresAt: string;
   nonce: string;
+  /** SHA-256 hex of canonical payload — verified by client in strict/tinfoil mode */
+  payloadHash?: string;
   payload: T;
   signature: string;
+}
+
+export interface KillSwitchState {
+  id: string;
+  /** 'global' or a tenantId */
+  tenantId: string;
+  active: boolean;
+  activatedAt?: string;
+  activatedBy?: string;
+  deactivatedAt?: string;
+  deactivatedBy?: string;
+  reason?: string;
+  signature: string;
+  keyId: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  actor: string;
+  tenantId?: string;
+  action: string;
+  target?: string;
+  ip?: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+  /** SHA-256 hex of previous event for chain integrity */
+  previousEventHash?: string;
+  eventHash?: string;
 }
 
 export interface Alarm {
@@ -176,12 +291,146 @@ export interface Alarm {
   metadata?: Record<string, unknown>;
 }
 
-export interface AuditEvent {
-  id: string;
-  actor: string;
-  action: string;
-  target?: string;
-  ip?: string;
-  createdAt: string;
-  metadata?: Record<string, unknown>;
+export type NotificationEventType =
+  | 'task.created'
+  | 'task.approved'
+  | 'task.signed'
+  | 'task.high_risk'
+  | 'task.broad_targeting'
+  | 'task.emergency_bypass'
+  | 'kill_switch.activated'
+  | 'kill_switch.deactivated'
+  | 'signing_key.rotated'
+  | 'new_admin_task'
+  | 'task.outside_business_hours';
+
+export interface TenantNotificationConfig {
+  emailAddresses?: string[];
+  slackWebhookUrl?: string;
+  teamsWebhookUrl?: string;
+  genericWebhookUrl?: string;
+  notifyOn: NotificationEventType[];
+}
+
+export interface TenantPolicy {
+  tenantId: string;
+  /** Minimum seconds between task creation and earliest execution */
+  minimumExecutionDelaySeconds: number;
+  allowEmergencyBypass: boolean;
+  requireMfaForTaskSigning: boolean;
+  /** Normal/strict: 1, Tinfoil: 2 */
+  requiredApprovalCount: number;
+  /** For tasks with riskScore >= 70 */
+  highRiskRequiredApprovalCount: number;
+  securityMode: 'normal' | 'strict' | 'tinfoil';
+  trustedSourceHosts: string[];
+  allowedTaskTypes: string[];
+  maintenanceWindows: Array<{ dayOfWeek?: number; startHourUtc: number; endHourUtc: number }>;
+  requireVirusTotalForStrict: boolean;
+  requireVirusTotalForTinfoil: boolean;
+  /** Per-tenant VirusTotal API key — never relayed to nodes or clients */
+  virusTotalApiKey?: string;
+  defaultTaskTtlSeconds: number;
+  broadTargetingThresholdPercent: number;
+  notificationConfig?: TenantNotificationConfig;
+  breakGlassKeyId?: string;
+}
+
+export interface SigningKeyMetadata {
+  keyId: string;
+  scope: SigningScope | '*';
+  status: 'active' | 'trusted' | 'retired' | 'revoked';
+  publicKeyPem: string;
+  issuedAt: string;
+  retiredAt?: string;
+  /** Signatures valid until this date even after retirement */
+  retirementDeadline?: string;
+  revokedAt?: string;
+  /** Dev-only keys are rejected by clients in production mode */
+  isDev: boolean;
+}
+
+// ── SIEM ──────────────────────────────────────────────────────────────────────
+
+export type SiemEventType =
+  | 'auth.login.success'
+  | 'auth.login.failed'
+  | 'auth.mfa.success'
+  | 'auth.mfa.failed'
+  | 'task.created'
+  | 'task.security_scan.completed'
+  | 'task.approved'
+  | 'task.signed'
+  | 'task.executed'
+  | 'task.failed'
+  | 'task.revoked'
+  | 'task.high_risk_detected'
+  | 'task.mass_rollout_detected'
+  | 'invalid_signature_detected'
+  | 'replay_attack_blocked'
+  | 'node.registered'
+  | 'node.unhealthy'
+  | 'node.certificate.issued'
+  | 'node.certificate.revoked'
+  | 'kill_switch.activated'
+  | 'kill_switch.deactivated'
+  | 'signing_key.rotated'
+  | 'signing_key.revoked'
+  | 'audit.chain.broken';
+
+export type SiemSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type SiemMode = 'minimal' | 'standard' | 'full';
+
+export interface SiemEvent {
+  eventId: string;
+  timestamp: string;
+  tenantId: string;
+  type: SiemEventType;
+  severity: SiemSeverity;
+  actor: {
+    userId: string | null;
+    nodeId: string | null;
+    ip: string | null;
+  };
+  target: {
+    taskId: string | null;
+    deviceId: string | null;
+    nodeId: string | null;
+  };
+  metadata: Record<string, unknown>;
+  correlationId: string | null;
+  previousEventHash?: string;
+  eventHash?: string;
+}
+
+export interface SiemWebhookConfig {
+  url: string;
+  secret?: string;
+  headers?: Record<string, string>;
+}
+
+export interface SiemSyslogConfig {
+  host: string;
+  port: number;
+  protocol: 'udp' | 'tcp';
+  appName?: string;
+}
+
+export interface SiemSentinelConfig {
+  workspaceId: string;
+  sharedKey: string;
+  logType: string;
+}
+
+export interface SiemConfig {
+  mode: SiemMode;
+  webhook?: SiemWebhookConfig;
+  syslog?: SiemSyslogConfig;
+  sentinel?: SiemSentinelConfig;
+  exportOverrides?: Partial<Record<SiemEventType, boolean>>;
+}
+
+export interface TenantSiemConfig {
+  tenantId: string;
+  config: SiemConfig;
 }

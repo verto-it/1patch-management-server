@@ -727,9 +727,16 @@ function session() {
         return {};
     }
 }
-async function login() {
-    const email = window.prompt('Email') || '';
-    const password = window.prompt('Password') || '';
+function storeSession(sessionBody) {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ accessToken: sessionBody.accessToken, user: sessionBody.user }));
+    window.dispatchEvent(new CustomEvent('patch-session-change', { detail: sessionBody }));
+    return sessionBody;
+}
+function clearSession() {
+    localStorage.removeItem(SESSION_KEY);
+    window.dispatchEvent(new CustomEvent('patch-session-change', { detail: null }));
+}
+async function loginWithCredentials(email, password) {
     const r = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -738,12 +745,11 @@ async function login() {
     const body = await r.json().catch(() => ({}));
     if (!r.ok)
         throw new Error(body.message || 'Login failed');
-    const sessionBody = body.mfaRequired ? await verifyMfa(body.challengeToken) : body;
-    localStorage.setItem(SESSION_KEY, JSON.stringify({ accessToken: sessionBody.accessToken, user: sessionBody.user }));
-    return sessionBody.accessToken;
+    if (body.mfaRequired)
+        return body;
+    return storeSession(body);
 }
-async function verifyMfa(challengeToken) {
-    const code = window.prompt('MFA code') || '';
+async function verifyMfaWithCode(challengeToken, code) {
     const r = await fetch('/auth/mfa/verify', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -752,11 +758,15 @@ async function verifyMfa(challengeToken) {
     const body = await r.json().catch(() => ({}));
     if (!r.ok)
         throw new Error(body.message || 'MFA verification failed');
-    return body;
+    return storeSession(body);
 }
 async function token() {
     const existing = session().accessToken;
-    return existing || await login();
+    if (existing)
+        return existing;
+    const err = new Error('Authentication required');
+    err.code = 'AUTH_REQUIRED';
+    throw err;
 }
 async function api(path, init) {
     const headers = { 'content-type': 'application/json' };
@@ -765,13 +775,10 @@ async function api(path, init) {
         headers.authorization = `Bearer ${t}`;
     const r = await fetch(path, { ...init, headers: { ...headers, ...(init && init.headers) } });
     if (r.status === 401) {
-        localStorage.removeItem(SESSION_KEY);
-        const retryToken = await login();
-        const retry = await fetch(path, { ...init, headers: { ...headers, authorization: `Bearer ${retryToken}`, ...(init && init.headers) } });
-        if (!retry.ok)
-            throw new Error(`${retry.status} ${retry.statusText} — ${path}`);
-        const retryCt = retry.headers.get('content-type') || '';
-        return retryCt.includes('application/json') ? retry.json() : retry.text();
+        clearSession();
+        const err = new Error('Session expired');
+        err.code = 'AUTH_REQUIRED';
+        throw err;
     }
     if (!r.ok)
         throw new Error(`${r.status} ${r.statusText} — ${path}`);
@@ -779,6 +786,10 @@ async function api(path, init) {
     return ct.includes('application/json') ? r.json() : r.text();
 }
 window.PatchAPI = {
+    session,
+    login: (email, password) => loginWithCredentials(email, password),
+    verifyMfa: (challengeToken, code) => verifyMfaWithCode(challengeToken, code),
+    logout: () => clearSession(),
     summary: () => api('/dashboard/summary'),
     coverageHistory: (d = 30) => api(`/dashboard/coverage-history?days=${d}`),
     devices: (q) => api('/devices' + (q ? `?q=${encodeURIComponent(q)}` : '')),
@@ -793,6 +804,13 @@ window.PatchAPI = {
     createNodeEnrollment: (b) => api('/nodes/enrollments', { method: 'POST', body: JSON.stringify(b) }),
     alarms: () => api('/alarms'),
     audit: (l = 100) => api(`/audit?limit=${l}`),
+    siemConfig: (t = 'default') => api(`/siem/config/${encodeURIComponent(t)}`),
+    saveSiemConfig: (t, b) => api(`/siem/config/${encodeURIComponent(t)}`, { method: 'PUT', body: JSON.stringify(b) }),
+    testSiem: (t = 'default') => api(`/siem/test/${encodeURIComponent(t)}`, { method: 'POST', body: '{}' }),
+    verifySiem: (t = 'default') => api(`/siem/verify/${encodeURIComponent(t)}`, { method: 'POST', body: '{}' }),
+    siemQueueStatus: () => api('/siem/queue/status'),
+    securityPosture: (t = 'default') => api(`/security/posture?tenantId=${encodeURIComponent(t)}`),
+    fixSecurityPosture: (t = 'default', actions) => api(`/security/posture/fix?tenantId=${encodeURIComponent(t)}`, { method: 'POST', body: JSON.stringify(actions ? { actions } : {}) }),
     createPackage: (b) => api('/packages', { method: 'POST', body: JSON.stringify(b) }),
     deployPackageAll: (id) => api(`/packages/${id}/deploy-all`, { method: 'POST', body: '{}' }),
     updateAllForApp: (n, b) => api(`/apps/${encodeURIComponent(n)}/update-all`, { method: 'POST', body: JSON.stringify(b || { targetVersion: 'latest' }) }),
@@ -838,6 +856,9 @@ const Icon = {
     audit: (React.createElement("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5" },
         React.createElement("path", { d: "M3 2h7l3 3v9H3z" }),
         React.createElement("path", { d: "M10 2v3h3M5 8h6M5 11h4" }))),
+    shield: (React.createElement("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5" },
+        React.createElement("path", { d: "M8 2 13 4v3.5c0 3-2 5.4-5 6.5-3-1.1-5-3.5-5-6.5V4z" }),
+        React.createElement("path", { d: "m5.8 8 1.4 1.4L10.5 6" }))),
     search: (React.createElement("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5" },
         React.createElement("circle", { cx: "7", cy: "7", r: "4.5" }),
         React.createElement("path", { d: "m10.5 10.5 3 3" }))),
@@ -1656,6 +1677,7 @@ function PackagesPage({ globalSearch = "" }) {
 }
 // ---------- Rules ----------
 function RulesPage({ globalSearch = "" }) {
+    const [creating, setCreating] = useState(false);
     const rules = useResource(() => PatchAPI.rules());
     useLiveResource(rules, 10000);
     const toggle = async (r) => { try {
@@ -1670,7 +1692,7 @@ function RulesPage({ globalSearch = "" }) {
             React.createElement("div", null,
                 React.createElement("h2", null, "Patch rules"),
                 React.createElement("p", null, "Automatically generate update tasks when devices fall out of compliance")),
-            React.createElement("button", { className: "btn primary" },
+            React.createElement("button", { className: "btn primary", onClick: () => setCreating(true) },
                 React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.plus),
                 "New rule")),
         React.createElement("div", { className: "card" },
@@ -1705,7 +1727,162 @@ function RulesPage({ globalSearch = "" }) {
                                     React.createElement("span", { className: "dot" }),
                                     r.enabled ? "Enabled" : "Disabled"))),
                         React.createElement("td", null,
-                            React.createElement("button", { className: "btn sm ghost" }, "Edit"))))))))));
+                            React.createElement("button", { className: "btn sm ghost" }, "Edit")))))))),
+        creating && React.createElement(RuleWizard, { onClose: () => setCreating(false), onCreated: rules.reload })));
+}
+function RuleWizard({ onClose, onCreated }) {
+    const [step, setStep] = useState("match");
+    const [versionMode, setVersionMode] = useState("latest");
+    const [form, setForm] = useState({
+        name: "",
+        enabled: true,
+        property: "appName",
+        operator: "contains",
+        value: "",
+        targetVersion: "latest",
+        maxVersion: "",
+    });
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+    const steps = [
+        ["match", "Match"],
+        ["policy", "Policy"],
+        ["review", "Review"],
+    ];
+    const propertyLabels = {
+        appName: "App name",
+        manufacturer: "Manufacturer",
+        guid: "Product GUID",
+        packageId: "Package ID",
+    };
+    const cleanRule = () => ({
+        name: form.name.trim(),
+        enabled: Boolean(form.enabled),
+        property: form.property,
+        operator: form.operator,
+        value: form.value.trim(),
+        targetVersion: versionMode === "latest" ? "latest" : form.targetVersion.trim(),
+        ...(form.maxVersion.trim() ? { maxVersion: form.maxVersion.trim() } : {}),
+    });
+    const canMatch = form.name.trim() && form.value.trim();
+    const canPolicy = versionMode === "latest" || form.targetVersion.trim();
+    const canReview = canMatch && canPolicy;
+    const goPolicy = (e) => {
+        e.preventDefault();
+        if (canMatch)
+            setStep("policy");
+    };
+    const goReview = (e) => {
+        e.preventDefault();
+        if (canPolicy)
+            setStep("review");
+    };
+    const submit = async (e) => {
+        e.preventDefault();
+        if (!canReview)
+            return;
+        setBusy(true);
+        setError(null);
+        try {
+            await PatchAPI.createRule(cleanRule());
+            onCreated?.();
+            onClose();
+        }
+        catch (err) {
+            setError(err);
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    return (React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "drawer-backdrop", onClick: onClose }),
+        React.createElement("div", { className: "wizard-modal", role: "dialog", "aria-modal": "true" },
+            React.createElement("div", { className: "wizard-head" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, "New Rule"),
+                    React.createElement("p", null, "Define the app match and version policy clients should enforce.")),
+                React.createElement("button", { className: "icon-btn", onClick: onClose },
+                    React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.close))),
+            React.createElement("div", { className: "wizard-body" },
+                React.createElement("div", { className: "wizard-steps" }, steps.map(([id, label]) => {
+                    const done = (id === "match" && canMatch && step !== "match") || (id === "policy" && canPolicy && step === "review");
+                    const active = step === id;
+                    const unlocked = id === "match" || (id === "policy" && canMatch) || (id === "review" && canReview);
+                    return (React.createElement("button", { key: id, className: "wizard-step " + (active ? "active " : "") + (done ? "done" : ""), onClick: () => unlocked && setStep(id) },
+                        React.createElement("span", null, done ? "OK" : "--"),
+                        label));
+                })),
+                React.createElement("div", { className: "wizard-panel" },
+                    step === "match" && (React.createElement("form", { onSubmit: goPolicy, style: { display: "flex", flexDirection: "column", gap: 14 } },
+                        React.createElement("div", { className: "form-grid" },
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Rule name"),
+                                React.createElement("input", { required: true, value: form.name, onChange: e => set("name", e.target.value), placeholder: "Chrome stable update" })),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Status"),
+                                React.createElement("select", { value: form.enabled ? "enabled" : "disabled", onChange: e => set("enabled", e.target.value === "enabled") },
+                                    React.createElement("option", { value: "enabled" }, "Enabled"),
+                                    React.createElement("option", { value: "disabled" }, "Disabled"))),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Match field"),
+                                React.createElement("select", { value: form.property, onChange: e => set("property", e.target.value) },
+                                    React.createElement("option", { value: "appName" }, "App name"),
+                                    React.createElement("option", { value: "manufacturer" }, "Manufacturer"),
+                                    React.createElement("option", { value: "guid" }, "Product GUID"),
+                                    React.createElement("option", { value: "packageId" }, "Package ID"))),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Operator"),
+                                React.createElement("select", { value: form.operator, onChange: e => set("operator", e.target.value) },
+                                    React.createElement("option", { value: "contains" }, "Contains"),
+                                    React.createElement("option", { value: "equals" }, "Equals")))),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Match value"),
+                            React.createElement("input", { required: true, value: form.value, onChange: e => set("value", e.target.value), placeholder: form.property === "guid" ? "{00000000-0000-0000-0000-000000000000}" : "Google Chrome" })),
+                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+                            React.createElement("span", { className: "muted" }, "Rules match installed app inventory before update tasks are generated."),
+                            React.createElement("button", { className: "btn primary", disabled: !canMatch }, "Next")))),
+                    step === "policy" && (React.createElement("form", { onSubmit: goReview, style: { display: "flex", flexDirection: "column", gap: 14 } },
+                        React.createElement("div", { className: "segmented" },
+                            React.createElement("button", { type: "button", className: versionMode === "latest" ? "active" : "", onClick: () => setVersionMode("latest") }, "Latest"),
+                            React.createElement("button", { type: "button", className: versionMode === "pinned" ? "active" : "", onClick: () => setVersionMode("pinned") }, "Pinned")),
+                        versionMode === "pinned" && (React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Target version"),
+                            React.createElement("input", { required: true, value: form.targetVersion === "latest" ? "" : form.targetVersion, onChange: e => set("targetVersion", e.target.value), placeholder: "124.0.6367.119" }))),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Maximum current version"),
+                            React.createElement("input", { value: form.maxVersion, onChange: e => set("maxVersion", e.target.value), placeholder: "Optional ceiling before this rule applies" })),
+                        React.createElement("div", { className: "success-card" },
+                            React.createElement("strong", null, versionMode === "latest" ? "Track latest available version" : "Pin to an exact version"),
+                            React.createElement("span", null, versionMode === "latest" ? "Matching apps are driven to the latest version known to the package inventory." : "Matching apps are driven to the version you specify here.")),
+                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+                            React.createElement("button", { type: "button", className: "btn", onClick: () => setStep("match") }, "Back"),
+                            React.createElement("button", { className: "btn primary", disabled: !canPolicy }, "Review")))),
+                    step === "review" && (React.createElement("form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: 14 } },
+                        React.createElement("div", { className: "success-card" },
+                            React.createElement("strong", null, form.name.trim()),
+                            React.createElement("span", null,
+                                propertyLabels[form.property],
+                                " ",
+                                form.operator,
+                                " \"",
+                                form.value.trim(),
+                                "\"")),
+                        React.createElement("div", { className: "form-grid" },
+                            React.createElement("div", { className: "field" },
+                                React.createElement("span", null, "Target"),
+                                React.createElement("input", { readOnly: true, value: cleanRule().targetVersion })),
+                            React.createElement("div", { className: "field" },
+                                React.createElement("span", null, "Status"),
+                                React.createElement("input", { readOnly: true, value: form.enabled ? "Enabled" : "Disabled" })),
+                            React.createElement("div", { className: "field" },
+                                React.createElement("span", null, "Maximum current version"),
+                                React.createElement("input", { readOnly: true, value: form.maxVersion.trim() || "None" }))),
+                        error && React.createElement(ErrorAlert, { error: error }),
+                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+                            React.createElement("button", { type: "button", className: "btn", onClick: () => setStep("policy") }, "Back"),
+                            React.createElement("button", { className: "btn primary", disabled: busy }, busy ? "Creating..." : "Create rule")))))))));
 }
 // ---------- Tasks ----------
 function TasksPage({ globalSearch = "" }) {
@@ -1958,6 +2135,313 @@ function AuditPage({ globalSearch = "" }) {
                             React.createElement("span", { className: "pill" }, e.action)),
                         React.createElement("td", null, e.target || "—")))))))));
 }
+// ---------- SIEM ----------
+function SiemPage() {
+    const [tenantId, setTenantId] = useState("default");
+    const [form, setForm] = useState(defaultSiemConfig());
+    const [notice, setNotice] = useState(null);
+    const [busy, setBusy] = useState("");
+    const config = useResource(() => PatchAPI.siemConfig(tenantId).catch(() => ({ tenantId, config: defaultSiemConfig() })), [tenantId]);
+    const queue = useResource(() => PatchAPI.siemQueueStatus());
+    useLiveResource(queue, 10000);
+    useEffect(() => {
+        if (config.data?.config)
+            setForm(mergeSiemConfig(config.data.config));
+    }, [config.data]);
+    const set = (path, value) => {
+        setForm(prev => {
+            const next = JSON.parse(JSON.stringify(prev));
+            const parts = path.split(".");
+            let cur = next;
+            for (const part of parts.slice(0, -1))
+                cur = cur[part] = cur[part] || {};
+            cur[parts[parts.length - 1]] = value;
+            return next;
+        });
+    };
+    const payload = () => {
+        const next = mergeSiemConfig(form);
+        if (!next.webhook.url)
+            delete next.webhook;
+        if (!next.syslog.host)
+            delete next.syslog;
+        if (!next.sentinel.workspaceId)
+            delete next.sentinel;
+        return next;
+    };
+    const run = async (kind) => {
+        setBusy(kind);
+        setNotice(null);
+        try {
+            const result = kind === "save"
+                ? await PatchAPI.saveSiemConfig(tenantId, payload())
+                : kind === "test"
+                    ? await PatchAPI.testSiem(tenantId)
+                    : await PatchAPI.verifySiem(tenantId);
+            setNotice({ ok: true, text: kind === "save" ? "SIEM configuration saved." : JSON.stringify(result.results || result, null, 2) });
+            config.reload(true);
+            queue.reload(true);
+        }
+        catch (err) {
+            setNotice({ ok: false, text: err?.message || String(err) });
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const webhookConfigured = !!form.webhook.url;
+    const syslogConfigured = !!form.syslog.host;
+    const sentinelConfigured = !!form.sentinel.workspaceId;
+    const queueDepth = queue.loading ? null : (queue.data?.queueDepth ?? 0);
+    return (React.createElement("div", { className: "page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h2", null, "SIEM integrations"),
+                React.createElement("p", null, "Export security events to Webhook, Syslog, and Microsoft Sentinel")),
+            React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("button", { className: "btn", disabled: busy, onClick: () => run("verify") }, busy === "verify" ? "Checking…" : "Verify"),
+                React.createElement("button", { className: "btn", disabled: busy, onClick: () => run("test") }, busy === "test" ? "Sending…" : "Test"),
+                React.createElement("button", { className: "btn primary", disabled: busy, onClick: () => run("save") }, busy === "save" ? "Saving…" : "Save"))),
+        config.error && React.createElement(ErrorAlert, { error: config.error, onRetry: config.reload }),
+        notice && (React.createElement("div", { className: `siem-notice ${notice.ok ? "ok" : "err"}` },
+            React.createElement("span", { className: "siem-notice-icon" }, notice.ok
+                ? React.createElement("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
+                    React.createElement("path", { d: "M13 4L6.5 11 3 7.5" }))
+                : React.createElement("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round" },
+                    React.createElement("path", { d: "M8 5v4M8 11v1" }),
+                    React.createElement("circle", { cx: "8", cy: "8", r: "6.5" }))),
+            React.createElement("pre", { style: { margin: 0, whiteSpace: "pre-wrap", flex: 1, fontFamily: "inherit", fontSize: 13 } }, notice.text),
+            React.createElement("button", { className: "btn ghost sm", style: { flexShrink: 0 }, onClick: () => setNotice(null) },
+                React.createElement("svg", { width: "12", height: "12", viewBox: "0 0 12 12", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round" },
+                    React.createElement("path", { d: "M1 1l10 10M11 1 1 11" }))))),
+        React.createElement("div", { className: "siem-config-strip" },
+            React.createElement("div", { className: "siem-config-group" },
+                React.createElement("span", { className: "siem-config-label" }, "Tenant"),
+                React.createElement("input", { className: "siem-config-input", value: tenantId, onChange: e => setTenantId(e.target.value || "default") })),
+            React.createElement("div", { className: "siem-config-sep" }),
+            React.createElement("div", { className: "siem-config-group" },
+                React.createElement("span", { className: "siem-config-label" }, "Export mode"),
+                React.createElement("div", { className: "segmented" }, ["minimal", "standard", "full"].map(m => (React.createElement("button", { key: m, className: form.mode === m ? "active" : "", onClick: () => set("mode", m) }, m))))),
+            React.createElement("div", { className: "siem-config-sep" }),
+            React.createElement("div", { className: "siem-config-group", style: { marginLeft: "auto" } },
+                React.createElement("span", { className: "siem-config-label" }, "Queue depth"),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                    React.createElement("span", { className: `siem-queue-dot ${queueDepth > 0 ? "active" : ""}` }),
+                    React.createElement("span", { className: "siem-queue-num" }, queueDepth === null ? "…" : queueDepth)))),
+        React.createElement("div", { className: "row-3" },
+            React.createElement("div", { className: "card siem-card" },
+                React.createElement("div", { className: "siem-card-accent", style: { background: "var(--accent)" } }),
+                React.createElement("div", { className: "card-head", style: { gap: 12 } },
+                    React.createElement("div", { className: "siem-card-icon", style: { background: "var(--accent-soft)", color: "var(--accent)" } },
+                        React.createElement("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" },
+                            React.createElement("path", { d: "M2 8c0-3.3 2.7-6 6-6" }),
+                            React.createElement("path", { d: "M14 8c0 3.3-2.7 6-6 6" }),
+                            React.createElement("path", { d: "M9 5l3 3-3 3" }),
+                            React.createElement("path", { d: "M7 11l-3-3 3-3" }))),
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("h3", { style: { margin: 0, fontSize: 14, fontWeight: 600 } }, "Webhook"),
+                        React.createElement("div", { className: "sub" }, "HTTPS JSON array export")),
+                    React.createElement("span", { className: `pill ${webhookConfigured ? "ok" : ""}` }, webhookConfigured ? "active" : "not set")),
+                React.createElement("div", { className: "card-body", style: { display: "flex", flexDirection: "column", gap: 14 } },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "URL"),
+                        React.createElement("input", { value: form.webhook.url, onChange: e => set("webhook.url", e.target.value), placeholder: "https://siem.example/events" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "HMAC secret"),
+                        React.createElement("input", { type: "password", value: form.webhook.secret, onChange: e => set("webhook.secret", e.target.value), placeholder: "optional" })))),
+            React.createElement("div", { className: "card siem-card" },
+                React.createElement("div", { className: "siem-card-accent", style: { background: "var(--warn)" } }),
+                React.createElement("div", { className: "card-head", style: { gap: 12 } },
+                    React.createElement("div", { className: "siem-card-icon", style: { background: "var(--warn-soft)", color: "var(--warn)" } },
+                        React.createElement("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" },
+                            React.createElement("rect", { x: "1.5", y: "2.5", width: "13", height: "11", rx: "1.5" }),
+                            React.createElement("path", { d: "M4.5 6l2.5 2.5L4.5 11" }),
+                            React.createElement("path", { d: "M9 11h2.5" }))),
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("h3", { style: { margin: 0, fontSize: 14, fontWeight: 600 } }, "Syslog"),
+                        React.createElement("div", { className: "sub" }, "RFC5424 UDP or TCP")),
+                    React.createElement("span", { className: `pill ${syslogConfigured ? "ok" : ""}` }, syslogConfigured ? "active" : "not set")),
+                React.createElement("div", { className: "card-body", style: { display: "flex", flexDirection: "column", gap: 14 } },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Host"),
+                        React.createElement("input", { value: form.syslog.host, onChange: e => set("syslog.host", e.target.value), placeholder: "syslog.example" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Port"),
+                        React.createElement("input", { type: "number", value: form.syslog.port, onChange: e => set("syslog.port", Number(e.target.value || 514)) })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Protocol"),
+                        React.createElement("select", { className: "siem-select", value: form.syslog.protocol, onChange: e => set("syslog.protocol", e.target.value) },
+                            React.createElement("option", { value: "udp" }, "udp"),
+                            React.createElement("option", { value: "tcp" }, "tcp"))))),
+            React.createElement("div", { className: "card siem-card" },
+                React.createElement("div", { className: "siem-card-accent", style: { background: "oklch(0.55 0.18 290)" } }),
+                React.createElement("div", { className: "card-head", style: { gap: 12 } },
+                    React.createElement("div", { className: "siem-card-icon", style: { background: "oklch(0.95 0.04 290)", color: "oklch(0.45 0.18 290)" } },
+                        React.createElement("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" },
+                            React.createElement("path", { d: "M8 1.5L2 4v4c0 3.3 2.5 5.7 6 6.5 3.5-.8 6-3.2 6-6.5V4L8 1.5z" }),
+                            React.createElement("path", { d: "M5.5 8.5l2 2 3.5-3.5" }))),
+                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                        React.createElement("h3", { style: { margin: 0, fontSize: 14, fontWeight: 600 } }, "Microsoft Sentinel"),
+                        React.createElement("div", { className: "sub" }, "Log Analytics Data Collector API")),
+                    React.createElement("span", { className: `pill ${sentinelConfigured ? "ok" : ""}` }, sentinelConfigured ? "active" : "not set")),
+                React.createElement("div", { className: "card-body", style: { display: "flex", flexDirection: "column", gap: 14 } },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Workspace ID"),
+                        React.createElement("input", { value: form.sentinel.workspaceId, onChange: e => set("sentinel.workspaceId", e.target.value), placeholder: "workspace-guid" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Shared key"),
+                        React.createElement("input", { type: "password", value: form.sentinel.sharedKey, onChange: e => set("sentinel.sharedKey", e.target.value), placeholder: "base64 key" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Log type"),
+                        React.createElement("input", { value: form.sentinel.logType, onChange: e => set("sentinel.logType", e.target.value || "OnePatchEvents") })))))));
+}
+function defaultSiemConfig() {
+    return {
+        mode: "standard",
+        webhook: { url: "", secret: "" },
+        syslog: { host: "", port: 514, protocol: "udp", appName: "1patch" },
+        sentinel: { workspaceId: "", sharedKey: "", logType: "OnePatchEvents" },
+        exportOverrides: {},
+    };
+}
+function mergeSiemConfig(config) {
+    const base = defaultSiemConfig();
+    return {
+        ...base,
+        ...config,
+        webhook: { ...base.webhook, ...(config.webhook || {}) },
+        syslog: { ...base.syslog, ...(config.syslog || {}) },
+        sentinel: { ...base.sentinel, ...(config.sentinel || {}) },
+        exportOverrides: config.exportOverrides || {},
+    };
+}
+// ---------- Security Posture ----------
+function SecurityPosturePage() {
+    const [tenantId, setTenantId] = useState("default");
+    const [notice, setNotice] = useState(null);
+    const [busy, setBusy] = useState("");
+    const posture = useResource(() => PatchAPI.securityPosture(tenantId), [tenantId]);
+    const report = posture.data;
+    const critical = report?.findingsBySeverity?.critical || [];
+    const findings = report?.findings || [];
+    const safeFixCount = findings.filter(f => f.autoFixAvailable && f.severity !== "critical").length;
+    const rerun = () => {
+        setNotice(null);
+        posture.reload(false);
+    };
+    const applySafe = async () => {
+        setBusy("fix");
+        setNotice(null);
+        try {
+            const result = await PatchAPI.fixSecurityPosture(tenantId);
+            setNotice({ ok: true, text: `Applied ${result.applied.length} safe fix${result.applied.length === 1 ? "" : "es"}.` });
+            posture.reload(true);
+        }
+        catch (err) {
+            setNotice({ ok: false, text: err?.message || String(err) });
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const exportJson = () => {
+        const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `1patch-security-posture-${tenantId}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+    const scoreTone = report?.score >= 85 ? "ok" : report?.score >= 70 ? "warn" : "crit";
+    return (React.createElement("div", { className: "page posture-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h2", null, "Security Posture"),
+                React.createElement("p", null, "Auditable setup health for enterprise readiness")),
+            React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+                React.createElement("label", { className: "posture-tenant" },
+                    React.createElement("span", null, "Tenant"),
+                    React.createElement("input", { value: tenantId, onChange: e => setTenantId(e.target.value || "default") })),
+                React.createElement("button", { className: "btn", onClick: rerun, disabled: posture.loading },
+                    React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.refresh),
+                    "Re-run check"),
+                React.createElement("button", { className: "btn", onClick: exportJson, disabled: !report },
+                    React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.download),
+                    "Export JSON"),
+                React.createElement("button", { className: "btn", onClick: () => window.print(), disabled: !report }, "Export PDF"),
+                React.createElement("button", { className: "btn primary", onClick: applySafe, disabled: !safeFixCount || busy === "fix" }, busy === "fix" ? "Applying..." : `Apply safe fixes${safeFixCount ? ` (${safeFixCount})` : ""}`))),
+        posture.error && React.createElement(ErrorAlert, { error: posture.error, onRetry: posture.reload }),
+        notice && React.createElement("div", { className: "alert", style: { borderColor: notice.ok ? "var(--ok)" : "var(--crit)", background: notice.ok ? "var(--ok-soft)" : "var(--crit-soft)", color: notice.ok ? "var(--ok)" : "var(--crit)" } }, notice.text),
+        React.createElement("div", { className: "posture-hero card" },
+            React.createElement("div", { className: "posture-score" }, posture.loading ? React.createElement(Skeleton, { w: 132, h: 132, r: 66 }) : React.createElement(Donut, { value: report?.score ?? 0 })),
+            React.createElement("div", { className: "posture-summary" },
+                React.createElement("div", { className: "pulse-sub" }, "Overall security score"),
+                React.createElement("div", { className: `posture-score-text ${scoreTone}` }, posture.loading ? "..." : `${report.score}/100`),
+                React.createElement("div", { className: "posture-meta" },
+                    React.createElement("span", { className: `pill ${modeTone(report?.mode)}` }, report?.mode || "..."),
+                    React.createElement("span", null,
+                        "Last checked ",
+                        report ? fmtAgo(report.generatedAt) : "..."))),
+            React.createElement("div", { className: "posture-verdict" }, posture.loading ? React.createElement(Skeleton, { h: 80 }) : (React.createElement(React.Fragment, null,
+                React.createElement("strong", null, enterpriseVerdict(report.score, critical.length)),
+                React.createElement("span", null, critical.length ? `${critical.length} critical issue${critical.length === 1 ? "" : "s"} must be fixed first.` : "No critical issues detected in the current posture checks."))))),
+        critical.length > 0 && (React.createElement("div", { className: "card posture-critical" },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, "Critical issues"),
+                    React.createElement("div", { className: "sub" }, "Fix these before treating the tenant as enterprise-ready"))),
+            React.createElement("div", { className: "card-body posture-finding-list" }, critical.map(f => React.createElement(SecurityFindingCard, { key: f.id, finding: f, onFix: applySafe, busy: busy }))))),
+        React.createElement("div", { className: "posture-categories" },
+            (report?.categoryBreakdown || []).map(category => (React.createElement("div", { className: `posture-category ${category.status}`, key: category.category },
+                React.createElement("div", null,
+                    React.createElement("strong", null, category.label),
+                    React.createElement("span", null, category.findingCount ? `${category.findingCount} issue${category.findingCount === 1 ? "" : "s"}` : "No findings")),
+                React.createElement("span", { className: `pill ${category.status === "critical" ? "crit" : category.status === "warning" ? "warn" : "ok"}` }, category.status)))),
+            posture.loading && Array.from({ length: 8 }).map((_, i) => React.createElement("div", { className: "posture-category", key: i },
+                React.createElement(Skeleton, { w: 130 }),
+                React.createElement(Skeleton, { w: 62 })))),
+        React.createElement("div", { className: "card" },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, "Findings"),
+                    React.createElement("div", { className: "sub" }, posture.loading ? "Loading" : `${findings.length} total`))),
+            React.createElement("div", { className: "card-body posture-finding-list" },
+                posture.loading && Array.from({ length: 5 }).map((_, i) => React.createElement(Skeleton, { key: i, h: 92 })),
+                !posture.loading && findings.length === 0 && React.createElement("div", { className: "empty" }, "No posture findings detected."),
+                !posture.loading && findings.map(f => React.createElement(SecurityFindingCard, { key: f.id, finding: f, onFix: applySafe, busy: busy }))))));
+}
+function SecurityFindingCard({ finding, onFix, busy }) {
+    return (React.createElement("div", { className: `posture-finding ${finding.severity}` },
+        React.createElement("div", { className: "posture-finding-main" },
+            React.createElement("div", { className: "posture-finding-title" },
+                React.createElement("strong", null, finding.title),
+                React.createElement("span", { className: `pill ${severityTone(finding.severity)}` }, finding.severity)),
+            React.createElement("p", null, finding.description),
+            React.createElement("dl", null,
+                React.createElement("dt", null, "Risk"),
+                React.createElement("dd", null, finding.riskExplanation),
+                React.createElement("dt", null, "Fix"),
+                React.createElement("dd", null, finding.fixSuggestion))),
+        React.createElement("div", { className: "posture-finding-actions" }, finding.autoFixAvailable
+            ? React.createElement("button", { className: "btn sm", onClick: onFix, disabled: busy === "fix" || finding.severity === "critical" }, finding.severity === "critical" ? "Confirm manually" : "Fix")
+            : React.createElement("span", { className: "muted" }, "Manual"))));
+}
+function severityTone(severity) {
+    return severity === "critical" ? "crit" : severity === "high" || severity === "medium" ? "warn" : "accent";
+}
+function modeTone(mode) {
+    return mode === "tinfoil" ? "crit" : mode === "strict" ? "ok" : "warn";
+}
+function enterpriseVerdict(score, criticalCount) {
+    if (criticalCount > 0)
+        return "Not enterprise-ready yet";
+    if (score >= 85)
+        return "Enterprise-ready posture";
+    if (score >= 70)
+        return "Close, with remediation needed";
+    return "Needs security hardening";
+}
 // ---------- Device drawer ----------
 function DeviceDrawer({ deviceId, onClose }) {
     const detail = useResource(() => PatchAPI.device(deviceId), [deviceId]);
@@ -2104,7 +2588,7 @@ function DeviceDrawer({ deviceId, onClose }) {
                                         React.createElement(StatusPill, { status: t.status }))))))))))))))));
 }
 Object.assign(window, {
-    OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, DeviceDrawer
+    OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer
 });
 
 
@@ -2116,7 +2600,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/ {
     "density": "comfortable",
     "sidebar": "labelled"
 } /*EDITMODE-END*/;
-const CATEGORY_IDS = ["overview", "devices", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit"];
+const CATEGORY_IDS = ["overview", "devices", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit", "siem", "security-posture"];
 const SEARCH_TYPES = ["device", "app", "package", "rule", "task", "node", "alarm", "audit"];
 const SEARCH_ALIASES = {
     devices: "device",
@@ -2283,6 +2767,18 @@ function pushCategoryUrl(category) {
     window.history.pushState({ category }, "", target);
 }
 function App() {
+    const [authSession, setAuthSession] = useStateApp(() => PatchAPI.session());
+    useEffectApp(() => {
+        const onSessionChange = () => setAuthSession(PatchAPI.session());
+        window.addEventListener("patch-session-change", onSessionChange);
+        return () => window.removeEventListener("patch-session-change", onSessionChange);
+    }, []);
+    if (!authSession.accessToken) {
+        return React.createElement(LoginScreen, { onAuthenticated: (nextSession) => setAuthSession(nextSession) });
+    }
+    return React.createElement(DashboardApp, { sessionInfo: authSession, onLogout: () => { PatchAPI.logout(); setAuthSession({}); } });
+}
+function DashboardApp({ sessionInfo, onLogout }) {
     const [tab, setTabState] = useStateApp(categoryFromUrl);
     const [openDevice, setOpenDevice] = useStateApp(null);
     const [globalSearch, setGlobalSearch] = useStateApp("");
@@ -2357,6 +2853,8 @@ function App() {
         { id: "nodes", label: "Nodes", icon: Icon.nodes },
         { id: "alarms", label: "Alarms", icon: Icon.alarms, count: counts.criticalAlarms, countTone: "crit" },
         { id: "audit", label: "Audit", icon: Icon.audit },
+        { id: "siem", label: "SIEM", icon: Icon.audit },
+        { id: "security-posture", label: "Posture", icon: Icon.shield },
     ];
     const pageSearchTerm = (category) => {
         const parsed = parseSearchQuery(globalSearch);
@@ -2374,6 +2872,8 @@ function App() {
         nodes: React.createElement(NodesPage, { globalSearch: pageSearchTerm("nodes") }),
         alarms: React.createElement(AlarmsPage, { globalSearch: pageSearchTerm("alarms") }),
         audit: React.createElement(AuditPage, { globalSearch: pageSearchTerm("audit") }),
+        siem: React.createElement(SiemPage, null),
+        "security-posture": React.createElement(SecurityPosturePage, null),
     }[tab];
     const current = NAV.find(n => n.id === tab);
     const handleSearchSelect = (result) => {
@@ -2396,10 +2896,11 @@ function App() {
             NAV.slice(5).map(n => React.createElement(NavItem, { key: n.id, item: n, active: tab === n.id, onClick: () => setTab(n.id) })),
             React.createElement("div", { className: "sidebar-footer" },
                 React.createElement("div", { className: "user-card" },
-                    React.createElement("div", { className: "avatar" }, "1P"),
+                    React.createElement("div", { className: "avatar" }, initials(sessionInfo.user?.email)),
                     React.createElement("div", { className: "user-meta" },
-                        React.createElement("strong", null, "Admin session"),
-                        React.createElement("span", null, "JWT session"))))),
+                        React.createElement("strong", null, sessionInfo.user?.email || "Admin session"),
+                        React.createElement("span", null, "JWT session")),
+                    React.createElement("button", { type: "button", className: "icon-btn logout-btn", "aria-label": "Sign out", onClick: onLogout }, Icon.close)))),
         React.createElement("div", { className: "main" },
             React.createElement("div", { className: "topbar" },
                 React.createElement("div", { className: "crumbs" },
@@ -2424,6 +2925,70 @@ function App() {
                 React.createElement(TweakSlider, { label: "Accent hue", min: 0, max: 360, step: 1, value: tweaks.accentHue, onChange: v => setTweak("accentHue", v) }),
                 React.createElement(TweakRadio, { label: "Density", value: tweaks.density, options: [["compact", "Compact"], ["comfortable", "Comfy"], ["spacious", "Spacious"]], onChange: v => setTweak("density", v) }),
                 React.createElement(TweakRadio, { label: "Sidebar", value: tweaks.sidebar, options: [["labelled", "Labelled"], ["icon", "Icon-only"]], onChange: v => setTweak("sidebar", v) })))));
+}
+function initials(email) {
+    const name = String(email || "1P").trim();
+    if (!name || name === "1P")
+        return "1P";
+    return name.slice(0, 2).toUpperCase();
+}
+function LoginScreen({ onAuthenticated }) {
+    const [email, setEmail] = useStateApp("");
+    const [password, setPassword] = useStateApp("");
+    const [mfaCode, setMfaCode] = useStateApp("");
+    const [challengeToken, setChallengeToken] = useStateApp("");
+    const [loading, setLoading] = useStateApp(false);
+    const [error, setError] = useStateApp("");
+    const mfaRequired = Boolean(challengeToken);
+    const submit = (event) => {
+        event.preventDefault();
+        if (loading)
+            return;
+        setLoading(true);
+        setError("");
+        const action = mfaRequired
+            ? PatchAPI.verifyMfa(challengeToken, mfaCode.trim())
+            : PatchAPI.login(email.trim(), password);
+        action.then((body) => {
+            if (body.mfaRequired) {
+                setChallengeToken(body.challengeToken);
+                setMfaCode("");
+                setError("");
+                return;
+            }
+            onAuthenticated(body);
+        }).catch((err) => {
+            setError(err.message || (mfaRequired ? "MFA verification failed" : "Login failed"));
+        }).finally(() => {
+            setLoading(false);
+        });
+    };
+    return (React.createElement("main", { className: "login-screen" },
+        React.createElement("section", { className: "login-panel", "aria-labelledby": "login-title" },
+            React.createElement("div", { className: "login-brand" },
+                React.createElement("div", { className: "brand-mark" }, "1P"),
+                React.createElement("div", null,
+                    React.createElement("strong", null, "1Patch Management"),
+                    React.createElement("span", null, "Control plane access"))),
+            React.createElement("div", { className: "login-copy" },
+                React.createElement("h1", { id: "login-title" }, mfaRequired ? "Enter MFA code" : "Sign in"),
+                React.createElement("p", null, mfaRequired ? "Use the current code from your authenticator app." : "Use your local owner or admin account.")),
+            React.createElement("form", { className: "login-form", onSubmit: submit },
+                !mfaRequired && (React.createElement(React.Fragment, null,
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Email"),
+                        React.createElement("input", { type: "email", autoComplete: "email", value: email, onChange: (e) => setEmail(e.target.value), required: true, autoFocus: true })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Password"),
+                        React.createElement("input", { type: "password", autoComplete: "current-password", minLength: "12", value: password, onChange: (e) => setPassword(e.target.value), required: true })))),
+                mfaRequired && (React.createElement("label", { className: "field" },
+                    React.createElement("span", null, "Authentication code"),
+                    React.createElement("input", { className: "mfa-input", inputMode: "numeric", autoComplete: "one-time-code", value: mfaCode, onChange: (e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6)), required: true, autoFocus: true }))),
+                error && React.createElement("div", { className: "login-error", role: "alert" }, error),
+                React.createElement("button", { type: "submit", className: "btn primary login-submit", disabled: loading || (mfaRequired ? mfaCode.length < 6 : !email || !password) },
+                    loading ? React.createElement("span", { className: "search-spinner" }) : React.createElement("span", { className: "login-submit-icon" }, Icon.shield),
+                    mfaRequired ? "Verify code" : "Sign in"),
+                mfaRequired && (React.createElement("button", { type: "button", className: "btn ghost login-back", onClick: () => { setChallengeToken(""); setError(""); } }, "Back to password"))))));
 }
 function NotificationBell({ counts, onNav }) {
     const [open, setOpen] = useStateApp(false);

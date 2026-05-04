@@ -1,9 +1,11 @@
+// AGPL-3.0-only
 import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { authenticator } from 'otplib';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
+import { SiemEventService } from '../siem/siem-event.service';
 import { RbacService } from '../rbac/rbac.service';
 import { MemoryStore } from '../storage/memory.store';
 import { User } from '../types';
@@ -20,14 +22,13 @@ export class AuthService implements OnModuleInit {
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
     private readonly rbac: RbacService,
+    private readonly siem: SiemEventService,
   ) {
-    // FIX #3: JWT secret initialised here but validated in onModuleInit
     this.jwt = new JwtService({ secret: process.env.JWT_SECRET ?? '' });
   }
 
   onModuleInit() {
     const secret = process.env.JWT_SECRET;
-    // FIX #3: refuse to start with a missing or weak JWT secret
     if (!secret || secret.length < 32) {
       this.logger.error(
         'JWT_SECRET env var is missing or less than 32 characters. ' +
@@ -62,11 +63,21 @@ export class AuthService implements OnModuleInit {
     const user = this.store.users.find((c) => c.email === email.toLowerCase());
     if (!user) {
       this.logger.warn(`Login attempt for unknown email ${email} from IP ${ip}`);
+      this.siem.emit({
+        tenantId: 'system', type: 'auth.login.failed', severity: 'medium',
+        actor: { userId: null, nodeId: null, ip: ip ?? null },
+        metadata: { reason: 'unknown_email' },
+      });
       throw new UnauthorizedException('Invalid credentials');
     }
 
     if (user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
       this.logger.warn(`Login blocked — account ${user.id} is locked until ${user.lockedUntil}`);
+      this.siem.emit({
+        tenantId: 'system', type: 'auth.login.failed', severity: 'high',
+        actor: { userId: user.id, nodeId: null, ip: ip ?? null },
+        metadata: { reason: 'account_locked', lockedUntil: user.lockedUntil },
+      });
       throw new UnauthorizedException('Account is locked');
     }
 
@@ -79,20 +90,22 @@ export class AuthService implements OnModuleInit {
         this.logger.warn(`Account ${user.id} locked after ${user.failedAttempts} failed attempts`);
       }
       this.audit.record(user.id, 'auth.login_failed', user.id, { ip, failedAttempts: user.failedAttempts, locked });
+      this.siem.emit({
+        tenantId: 'system', type: 'auth.login.failed', severity: locked ? 'high' : 'medium',
+        actor: { userId: user.id, nodeId: null, ip: ip ?? null },
+        metadata: { reason: 'bad_password', failedAttempts: user.failedAttempts, locked },
+      });
       void this.store.persist();
       throw new UnauthorizedException('Invalid credentials');
     }
 
     user.failedAttempts = 0;
 
-    // FIX #22: use server-side IP geolocation note — country comes from client but flag it clearly in audit
     if (user.lastLoginCountry && country && user.lastLoginCountry !== country) {
       this.logger.warn(`Possible impossible travel for user ${user.id}: ${user.lastLoginCountry} -> ${country} (client-reported)`);
       this.audit.record(user.id, 'auth.impossible_travel_review', user.id, {
-        previousCountry: user.lastLoginCountry,
-        currentCountry: country,
-        note: 'country is client-reported — verify with server-side IP geolocation',
-        ip,
+        previousCountry: user.lastLoginCountry, currentCountry: country,
+        note: 'country is client-reported — verify with server-side IP geolocation', ip,
       });
     }
     user.lastLoginCountry = country;
@@ -123,7 +136,6 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid MFA challenge');
     }
 
-    // FIX #14: rate-limit TOTP attempts per challenge token
     const attempts = (mfaFailures.get(challengeToken) ?? 0) + 1;
     if (attempts > 5) {
       this.logger.warn(`MFA brute-force detected for user ${decoded.sub} — challenge invalidated after ${attempts} attempts`);
@@ -134,16 +146,25 @@ export class AuthService implements OnModuleInit {
     if (!user?.mfaSecret || !authenticator.check(code, user.mfaSecret)) {
       mfaFailures.set(challengeToken, attempts);
       this.audit.record(decoded.sub, 'auth.mfa_failed', decoded.sub, { ip, attempts });
+      this.siem.emit({
+        tenantId: 'system', type: 'auth.mfa.failed', severity: attempts >= 3 ? 'high' : 'medium',
+        actor: { userId: decoded.sub, nodeId: null, ip: ip ?? null },
+        metadata: { attempts },
+      });
       this.logger.warn(`MFA code rejected for user ${decoded.sub} (attempt ${attempts}/5)`);
       throw new UnauthorizedException('Invalid MFA code');
     }
 
     mfaFailures.delete(challengeToken);
+    this.siem.emit({
+      tenantId: 'system', type: 'auth.mfa.success', severity: 'low',
+      actor: { userId: user.id, nodeId: null, ip: ip ?? null },
+      metadata: { email: user.email },
+    });
     this.logger.log(`MFA verified for user ${user.email} (id=${user.id}) from IP ${ip}`);
     return this.issueSession(user, ip);
   }
 
-  // FIX #9: userId is now derived from a verified JWT, not from the request body
   enableMfa(userId: string) {
     const user = this.store.users.find((c) => c.id === userId);
     if (!user) throw new BadRequestException('Unknown user');
@@ -157,9 +178,7 @@ export class AuthService implements OnModuleInit {
 
   publicUser(user: User) {
     return {
-      id: user.id,
-      email: user.email,
-      roles: user.roles,
+      id: user.id, email: user.email, roles: user.roles,
       permissions: this.rbac.permissionsFor(user.roles),
       mfaEnabled: user.mfaEnabled,
       oauthLinks: user.oauthLinks.map((link) => link.provider),
@@ -170,6 +189,11 @@ export class AuthService implements OnModuleInit {
     user.lastLoginAt = new Date().toISOString();
     const token = this.jwt.sign({ sub: user.id, roles: user.roles }, { expiresIn: '8h' });
     this.audit.record(user.id, 'auth.login_success', user.id, { ip });
+    this.siem.emit({
+      tenantId: 'system', type: 'auth.login.success', severity: 'low',
+      actor: { userId: user.id, nodeId: null, ip: ip ?? null },
+      metadata: { email: user.email, roles: user.roles },
+    });
     return { accessToken: token, user: this.publicUser(user) };
   }
 

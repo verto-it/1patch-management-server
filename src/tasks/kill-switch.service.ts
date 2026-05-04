@@ -1,0 +1,109 @@
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { v4 as uuid } from 'uuid';
+import { AuditService } from '../audit/audit.service';
+import { SiemEventService } from '../siem/siem-event.service';
+import { SigningService } from '../signing.service';
+import { MemoryStore } from '../storage/memory.store';
+import { KillSwitchState, User } from '../types';
+import { NotificationService } from './notification.service';
+import { TenantPolicyService } from './tenant-policy.service';
+
+@Injectable()
+export class KillSwitchService {
+  private readonly logger = new Logger(KillSwitchService.name);
+
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly signing: SigningService,
+    private readonly audit: AuditService,
+    private readonly siem: SiemEventService,
+    private readonly notifications: NotificationService,
+    private readonly policy: TenantPolicyService,
+  ) {}
+
+  getState(tenantId: string): KillSwitchState | undefined {
+    return this.store.killSwitchStates.find((s) => s.tenantId === tenantId) ??
+           this.store.killSwitchStates.find((s) => s.tenantId === 'global');
+  }
+
+  isActive(tenantId: string): boolean {
+    const state = this.getState(tenantId);
+    return state?.active === true;
+  }
+
+  
+  getSignedState(tenantId: string): { state: KillSwitchState; envelope: ReturnType<SigningService['signPayload']> } | null {
+    const state = this.getState(tenantId);
+    if (!state) return null;
+    const envelope = this.signing.signPayload('kill_switch', tenantId, state);
+    return { state, envelope };
+  }
+
+  activate(tenantId: string, actor: User, reason?: string): KillSwitchState {
+    const existing = this.store.killSwitchStates.find((s) => s.tenantId === tenantId);
+    const now = new Date().toISOString();
+
+    const unsigned = {
+      id: existing?.id ?? uuid(),
+      tenantId,
+      active: true,
+      activatedAt: now,
+      activatedBy: actor.id,
+      reason,
+      keyId: '', // filled after signing
+    };
+    const envelope = this.signing.signPayload('kill_switch', tenantId, unsigned);
+
+    const state: KillSwitchState = { ...unsigned, keyId: envelope.keyId, signature: envelope.signature };
+
+    if (existing) {
+      Object.assign(existing, state);
+    } else {
+      this.store.killSwitchStates.push(state);
+    }
+    void this.store.persist();
+
+    this.audit.record(actor.id, 'kill_switch.activated', tenantId, { reason }, tenantId);
+    this.siem.emit({ tenantId, type: 'kill_switch.activated', severity: 'critical', actor: { userId: actor.id, nodeId: null, ip: null }, target: { taskId: null, deviceId: null, nodeId: null }, metadata: { reason } });
+    this.logger.warn(`KILL SWITCH ACTIVATED: tenantId=${tenantId} by=${actor.email} reason=${reason ?? 'none'}`);
+
+    const cfg = this.policy.get(tenantId).notificationConfig;
+    this.notifications.notify(cfg, {
+      event: 'kill_switch.activated',
+      tenantId,
+      message: `Kill switch activated for tenant ${tenantId} by ${actor.email}. Reason: ${reason ?? 'none'}`,
+      details: { activatedBy: actor.id, reason },
+    });
+
+    return state;
+  }
+
+  deactivate(tenantId: string, actor: User): KillSwitchState {
+    const existing = this.store.killSwitchStates.find((s) => s.tenantId === tenantId);
+    if (!existing || !existing.active) throw new BadRequestException('Kill switch is not active');
+
+    const now = new Date().toISOString();
+    existing.active = false;
+    existing.deactivatedAt = now;
+    existing.deactivatedBy = actor.id;
+
+    const envelope = this.signing.signPayload('kill_switch', tenantId, existing);
+    existing.keyId = envelope.keyId;
+    existing.signature = envelope.signature;
+
+    void this.store.persist();
+
+    this.audit.record(actor.id, 'kill_switch.deactivated', tenantId, {}, tenantId);
+    this.siem.emit({ tenantId, type: 'kill_switch.deactivated', severity: 'high', actor: { userId: actor.id, nodeId: null, ip: null }, target: { taskId: null, deviceId: null, nodeId: null }, metadata: {} });
+    this.logger.log(`Kill switch deactivated: tenantId=${tenantId} by=${actor.email}`);
+
+    const cfg = this.policy.get(tenantId).notificationConfig;
+    this.notifications.notify(cfg, {
+      event: 'kill_switch.deactivated',
+      tenantId,
+      message: `Kill switch deactivated for tenant ${tenantId} by ${actor.email}`,
+    });
+
+    return existing;
+  }
+}

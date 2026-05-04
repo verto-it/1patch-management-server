@@ -711,6 +711,7 @@ function PackagesPage({ globalSearch = "" }) {
 
 // ---------- Rules ----------
 function RulesPage({ globalSearch = "" }) {
+  const [creating, setCreating] = useState(false);
   const rules = useResource(() => PatchAPI.rules());
   useLiveResource(rules, 10_000);
   const toggle = async (r) => { try { await PatchAPI.toggleRule(r.id, !r.enabled); } finally { rules.reload(); } };
@@ -719,7 +720,7 @@ function RulesPage({ globalSearch = "" }) {
     <div className="page">
       <div className="page-head">
         <div><h2>Patch rules</h2><p>Automatically generate update tasks when devices fall out of compliance</p></div>
-        <button className="btn primary"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>New rule</button>
+        <button className="btn primary" onClick={() => setCreating(true)}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>New rule</button>
       </div>
       <div className="card">
         {rules.error && <div style={{ padding:16 }}><ErrorAlert error={rules.error} onRetry={rules.reload}/></div>}
@@ -744,7 +745,195 @@ function RulesPage({ globalSearch = "" }) {
           </tbody>
         </table>
       </div>
+      {creating && <RuleWizard onClose={() => setCreating(false)} onCreated={rules.reload}/>}
     </div>
+  );
+}
+
+function RuleWizard({ onClose, onCreated }) {
+  const [step, setStep] = useState("match");
+  const [versionMode, setVersionMode] = useState("latest");
+  const [form, setForm] = useState({
+    name: "",
+    enabled: true,
+    property: "appName",
+    operator: "contains",
+    value: "",
+    targetVersion: "latest",
+    maxVersion: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const steps = [
+    ["match", "Match"],
+    ["policy", "Policy"],
+    ["review", "Review"],
+  ];
+  const propertyLabels = {
+    appName: "App name",
+    manufacturer: "Manufacturer",
+    guid: "Product GUID",
+    packageId: "Package ID",
+  };
+  const cleanRule = () => ({
+    name: form.name.trim(),
+    enabled: Boolean(form.enabled),
+    property: form.property,
+    operator: form.operator,
+    value: form.value.trim(),
+    targetVersion: versionMode === "latest" ? "latest" : form.targetVersion.trim(),
+    ...(form.maxVersion.trim() ? { maxVersion: form.maxVersion.trim() } : {}),
+  });
+  const canMatch = form.name.trim() && form.value.trim();
+  const canPolicy = versionMode === "latest" || form.targetVersion.trim();
+  const canReview = canMatch && canPolicy;
+  const goPolicy = (e) => {
+    e.preventDefault();
+    if (canMatch) setStep("policy");
+  };
+  const goReview = (e) => {
+    e.preventDefault();
+    if (canPolicy) setStep("review");
+  };
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!canReview) return;
+    setBusy(true); setError(null);
+    try {
+      await PatchAPI.createRule(cleanRule());
+      onCreated?.();
+      onClose();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="wizard-modal" role="dialog" aria-modal="true">
+        <div className="wizard-head">
+          <div>
+            <h3>New Rule</h3>
+            <p>Define the app match and version policy clients should enforce.</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span></button>
+        </div>
+        <div className="wizard-body">
+          <div className="wizard-steps">
+            {steps.map(([id, label]) => {
+              const done = (id === "match" && canMatch && step !== "match") || (id === "policy" && canPolicy && step === "review");
+              const active = step === id;
+              const unlocked = id === "match" || (id === "policy" && canMatch) || (id === "review" && canReview);
+              return (
+                <button key={id} className={"wizard-step " + (active ? "active " : "") + (done ? "done" : "")} onClick={() => unlocked && setStep(id)}>
+                  <span>{done ? "OK" : "--"}</span>{label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="wizard-panel">
+            {step === "match" && (
+              <form onSubmit={goPolicy} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="form-grid">
+                  <label className="field">
+                    <span>Rule name</span>
+                    <input required value={form.name} onChange={e => set("name", e.target.value)} placeholder="Chrome stable update"/>
+                  </label>
+                  <label className="field">
+                    <span>Status</span>
+                    <select value={form.enabled ? "enabled" : "disabled"} onChange={e => set("enabled", e.target.value === "enabled")}>
+                      <option value="enabled">Enabled</option>
+                      <option value="disabled">Disabled</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Match field</span>
+                    <select value={form.property} onChange={e => set("property", e.target.value)}>
+                      <option value="appName">App name</option>
+                      <option value="manufacturer">Manufacturer</option>
+                      <option value="guid">Product GUID</option>
+                      <option value="packageId">Package ID</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Operator</span>
+                    <select value={form.operator} onChange={e => set("operator", e.target.value)}>
+                      <option value="contains">Contains</option>
+                      <option value="equals">Equals</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Match value</span>
+                  <input required value={form.value} onChange={e => set("value", e.target.value)} placeholder={form.property === "guid" ? "{00000000-0000-0000-0000-000000000000}" : "Google Chrome"}/>
+                </label>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  <span className="muted">Rules match installed app inventory before update tasks are generated.</span>
+                  <button className="btn primary" disabled={!canMatch}>Next</button>
+                </div>
+              </form>
+            )}
+            {step === "policy" && (
+              <form onSubmit={goReview} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="segmented">
+                  <button type="button" className={versionMode === "latest" ? "active" : ""} onClick={() => setVersionMode("latest")}>Latest</button>
+                  <button type="button" className={versionMode === "pinned" ? "active" : ""} onClick={() => setVersionMode("pinned")}>Pinned</button>
+                </div>
+                {versionMode === "pinned" && (
+                  <label className="field">
+                    <span>Target version</span>
+                    <input required value={form.targetVersion === "latest" ? "" : form.targetVersion} onChange={e => set("targetVersion", e.target.value)} placeholder="124.0.6367.119"/>
+                  </label>
+                )}
+                <label className="field">
+                  <span>Maximum current version</span>
+                  <input value={form.maxVersion} onChange={e => set("maxVersion", e.target.value)} placeholder="Optional ceiling before this rule applies"/>
+                </label>
+                <div className="success-card">
+                  <strong>{versionMode === "latest" ? "Track latest available version" : "Pin to an exact version"}</strong>
+                  <span>{versionMode === "latest" ? "Matching apps are driven to the latest version known to the package inventory." : "Matching apps are driven to the version you specify here."}</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  <button type="button" className="btn" onClick={() => setStep("match")}>Back</button>
+                  <button className="btn primary" disabled={!canPolicy}>Review</button>
+                </div>
+              </form>
+            )}
+            {step === "review" && (
+              <form onSubmit={submit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="success-card">
+                  <strong>{form.name.trim()}</strong>
+                  <span>{propertyLabels[form.property]} {form.operator} "{form.value.trim()}"</span>
+                </div>
+                <div className="form-grid">
+                  <div className="field">
+                    <span>Target</span>
+                    <input readOnly value={cleanRule().targetVersion}/>
+                  </div>
+                  <div className="field">
+                    <span>Status</span>
+                    <input readOnly value={form.enabled ? "Enabled" : "Disabled"}/>
+                  </div>
+                  <div className="field">
+                    <span>Maximum current version</span>
+                    <input readOnly value={form.maxVersion.trim() || "None"}/>
+                  </div>
+                </div>
+                {error && <ErrorAlert error={error}/>}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  <button type="button" className="btn" onClick={() => setStep("policy")}>Back</button>
+                  <button className="btn primary" disabled={busy}>{busy ? "Creating..." : "Create rule"}</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      </div>
+    </React.Fragment>
   );
 }
 
@@ -1036,6 +1225,384 @@ function AuditPage({ globalSearch = "" }) {
   );
 }
 
+// ---------- SIEM ----------
+function SiemPage() {
+  const [tenantId, setTenantId] = useState("default");
+  const [form, setForm] = useState(defaultSiemConfig());
+  const [notice, setNotice] = useState(null);
+  const [busy, setBusy] = useState("");
+  const config = useResource(() => PatchAPI.siemConfig(tenantId).catch(() => ({ tenantId, config: defaultSiemConfig() })), [tenantId]);
+  const queue = useResource(() => PatchAPI.siemQueueStatus());
+  useLiveResource(queue, 10_000);
+
+  useEffect(() => {
+    if (config.data?.config) setForm(mergeSiemConfig(config.data.config));
+  }, [config.data]);
+
+  const set = (path, value) => {
+    setForm(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const parts = path.split(".");
+      let cur = next;
+      for (const part of parts.slice(0, -1)) cur = cur[part] = cur[part] || {};
+      cur[parts[parts.length - 1]] = value;
+      return next;
+    });
+  };
+
+  const payload = () => {
+    const next = mergeSiemConfig(form);
+    if (!next.webhook.url) delete next.webhook;
+    if (!next.syslog.host) delete next.syslog;
+    if (!next.sentinel.workspaceId) delete next.sentinel;
+    return next;
+  };
+
+  const run = async (kind) => {
+    setBusy(kind); setNotice(null);
+    try {
+      const result = kind === "save"
+        ? await PatchAPI.saveSiemConfig(tenantId, payload())
+        : kind === "test"
+          ? await PatchAPI.testSiem(tenantId)
+          : await PatchAPI.verifySiem(tenantId);
+      setNotice({ ok: true, text: kind === "save" ? "SIEM configuration saved." : JSON.stringify(result.results || result, null, 2) });
+      config.reload(true);
+      queue.reload(true);
+    } catch (err) {
+      setNotice({ ok: false, text: err?.message || String(err) });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const webhookConfigured = !!form.webhook.url;
+  const syslogConfigured  = !!form.syslog.host;
+  const sentinelConfigured = !!form.sentinel.workspaceId;
+  const queueDepth = queue.loading ? null : (queue.data?.queueDepth ?? 0);
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h2>SIEM integrations</h2>
+          <p>Export security events to Webhook, Syslog, and Microsoft Sentinel</p>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="btn" disabled={busy} onClick={() => run("verify")}>{busy === "verify" ? "Checking…" : "Verify"}</button>
+          <button className="btn" disabled={busy} onClick={() => run("test")}>{busy === "test" ? "Sending…" : "Test"}</button>
+          <button className="btn primary" disabled={busy} onClick={() => run("save")}>{busy === "save" ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+
+      {config.error && <ErrorAlert error={config.error} onRetry={config.reload}/>}
+
+      {notice && (
+        <div className={`siem-notice ${notice.ok ? "ok" : "err"}`}>
+          <span className="siem-notice-icon">
+            {notice.ok
+              ? <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 4L6.5 11 3 7.5"/></svg>
+              : <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 5v4M8 11v1"/><circle cx="8" cy="8" r="6.5"/></svg>}
+          </span>
+          <pre style={{ margin:0, whiteSpace:"pre-wrap", flex:1, fontFamily:"inherit", fontSize:13 }}>{notice.text}</pre>
+          <button className="btn ghost sm" style={{ flexShrink:0 }} onClick={() => setNotice(null)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 1l10 10M11 1 1 11"/></svg>
+          </button>
+        </div>
+      )}
+
+      {/* Config strip */}
+      <div className="siem-config-strip">
+        <div className="siem-config-group">
+          <span className="siem-config-label">Tenant</span>
+          <input
+            className="siem-config-input"
+            value={tenantId}
+            onChange={e => setTenantId(e.target.value || "default")}
+          />
+        </div>
+        <div className="siem-config-sep"/>
+        <div className="siem-config-group">
+          <span className="siem-config-label">Export mode</span>
+          <div className="segmented">
+            {["minimal","standard","full"].map(m => (
+              <button key={m} className={form.mode === m ? "active" : ""} onClick={() => set("mode", m)}>{m}</button>
+            ))}
+          </div>
+        </div>
+        <div className="siem-config-sep"/>
+        <div className="siem-config-group" style={{ marginLeft:"auto" }}>
+          <span className="siem-config-label">Queue depth</span>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span className={`siem-queue-dot ${queueDepth > 0 ? "active" : ""}`}/>
+            <span className="siem-queue-num">{queueDepth === null ? "…" : queueDepth}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Integration cards */}
+      <div className="row-3">
+
+        {/* Webhook */}
+        <div className="card siem-card">
+          <div className="siem-card-accent" style={{ background:"var(--accent)" }}/>
+          <div className="card-head" style={{ gap:12 }}>
+            <div className="siem-card-icon" style={{ background:"var(--accent-soft)", color:"var(--accent)" }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 8c0-3.3 2.7-6 6-6"/>
+                <path d="M14 8c0 3.3-2.7 6-6 6"/>
+                <path d="M9 5l3 3-3 3"/>
+                <path d="M7 11l-3-3 3-3"/>
+              </svg>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:600 }}>Webhook</h3>
+              <div className="sub">HTTPS JSON array export</div>
+            </div>
+            <span className={`pill ${webhookConfigured ? "ok" : ""}`}>{webhookConfigured ? "active" : "not set"}</span>
+          </div>
+          <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <label className="field"><span>URL</span><input value={form.webhook.url} onChange={e => set("webhook.url", e.target.value)} placeholder="https://siem.example/events"/></label>
+            <label className="field"><span>HMAC secret</span><input type="password" value={form.webhook.secret} onChange={e => set("webhook.secret", e.target.value)} placeholder="optional"/></label>
+          </div>
+        </div>
+
+        {/* Syslog */}
+        <div className="card siem-card">
+          <div className="siem-card-accent" style={{ background:"var(--warn)" }}/>
+          <div className="card-head" style={{ gap:12 }}>
+            <div className="siem-card-icon" style={{ background:"var(--warn-soft)", color:"var(--warn)" }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
+                <path d="M4.5 6l2.5 2.5L4.5 11"/>
+                <path d="M9 11h2.5"/>
+              </svg>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:600 }}>Syslog</h3>
+              <div className="sub">RFC5424 UDP or TCP</div>
+            </div>
+            <span className={`pill ${syslogConfigured ? "ok" : ""}`}>{syslogConfigured ? "active" : "not set"}</span>
+          </div>
+          <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <label className="field"><span>Host</span><input value={form.syslog.host} onChange={e => set("syslog.host", e.target.value)} placeholder="syslog.example"/></label>
+            <label className="field"><span>Port</span><input type="number" value={form.syslog.port} onChange={e => set("syslog.port", Number(e.target.value || 514))}/></label>
+            <label className="field"><span>Protocol</span><select className="siem-select" value={form.syslog.protocol} onChange={e => set("syslog.protocol", e.target.value)}><option value="udp">udp</option><option value="tcp">tcp</option></select></label>
+          </div>
+        </div>
+
+        {/* Microsoft Sentinel */}
+        <div className="card siem-card">
+          <div className="siem-card-accent" style={{ background:"oklch(0.55 0.18 290)" }}/>
+          <div className="card-head" style={{ gap:12 }}>
+            <div className="siem-card-icon" style={{ background:"oklch(0.95 0.04 290)", color:"oklch(0.45 0.18 290)" }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 1.5L2 4v4c0 3.3 2.5 5.7 6 6.5 3.5-.8 6-3.2 6-6.5V4L8 1.5z"/>
+                <path d="M5.5 8.5l2 2 3.5-3.5"/>
+              </svg>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:600 }}>Microsoft Sentinel</h3>
+              <div className="sub">Log Analytics Data Collector API</div>
+            </div>
+            <span className={`pill ${sentinelConfigured ? "ok" : ""}`}>{sentinelConfigured ? "active" : "not set"}</span>
+          </div>
+          <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <label className="field"><span>Workspace ID</span><input value={form.sentinel.workspaceId} onChange={e => set("sentinel.workspaceId", e.target.value)} placeholder="workspace-guid"/></label>
+            <label className="field"><span>Shared key</span><input type="password" value={form.sentinel.sharedKey} onChange={e => set("sentinel.sharedKey", e.target.value)} placeholder="base64 key"/></label>
+            <label className="field"><span>Log type</span><input value={form.sentinel.logType} onChange={e => set("sentinel.logType", e.target.value || "OnePatchEvents")}/></label>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+function defaultSiemConfig() {
+  return {
+    mode: "standard",
+    webhook: { url: "", secret: "" },
+    syslog: { host: "", port: 514, protocol: "udp", appName: "1patch" },
+    sentinel: { workspaceId: "", sharedKey: "", logType: "OnePatchEvents" },
+    exportOverrides: {},
+  };
+}
+
+function mergeSiemConfig(config) {
+  const base = defaultSiemConfig();
+  return {
+    ...base,
+    ...config,
+    webhook: { ...base.webhook, ...(config.webhook || {}) },
+    syslog: { ...base.syslog, ...(config.syslog || {}) },
+    sentinel: { ...base.sentinel, ...(config.sentinel || {}) },
+    exportOverrides: config.exportOverrides || {},
+  };
+}
+
+// ---------- Security Posture ----------
+function SecurityPosturePage() {
+  const [tenantId, setTenantId] = useState("default");
+  const [notice, setNotice] = useState(null);
+  const [busy, setBusy] = useState("");
+  const posture = useResource(() => PatchAPI.securityPosture(tenantId), [tenantId]);
+  const report = posture.data;
+  const critical = report?.findingsBySeverity?.critical || [];
+  const findings = report?.findings || [];
+  const safeFixCount = findings.filter(f => f.autoFixAvailable && f.severity !== "critical").length;
+
+  const rerun = () => {
+    setNotice(null);
+    posture.reload(false);
+  };
+  const applySafe = async () => {
+    setBusy("fix");
+    setNotice(null);
+    try {
+      const result = await PatchAPI.fixSecurityPosture(tenantId);
+      setNotice({ ok: true, text: `Applied ${result.applied.length} safe fix${result.applied.length === 1 ? "" : "es"}.` });
+      posture.reload(true);
+    } catch (err) {
+      setNotice({ ok: false, text: err?.message || String(err) });
+    } finally {
+      setBusy("");
+    }
+  };
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `1patch-security-posture-${tenantId}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const scoreTone = report?.score >= 85 ? "ok" : report?.score >= 70 ? "warn" : "crit";
+
+  return (
+    <div className="page posture-page">
+      <div className="page-head">
+        <div>
+          <h2>Security Posture</h2>
+          <p>Auditable setup health for enterprise readiness</p>
+        </div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <label className="posture-tenant">
+            <span>Tenant</span>
+            <input value={tenantId} onChange={e => setTenantId(e.target.value || "default")}/>
+          </label>
+          <button className="btn" onClick={rerun} disabled={posture.loading}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.refresh}</span>Re-run check
+          </button>
+          <button className="btn" onClick={exportJson} disabled={!report}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.download}</span>Export JSON
+          </button>
+          <button className="btn" onClick={() => window.print()} disabled={!report}>Export PDF</button>
+          <button className="btn primary" onClick={applySafe} disabled={!safeFixCount || busy === "fix"}>
+            {busy === "fix" ? "Applying..." : `Apply safe fixes${safeFixCount ? ` (${safeFixCount})` : ""}`}
+          </button>
+        </div>
+      </div>
+
+      {posture.error && <ErrorAlert error={posture.error} onRetry={posture.reload}/>}
+      {notice && <div className="alert" style={{ borderColor: notice.ok ? "var(--ok)" : "var(--crit)", background: notice.ok ? "var(--ok-soft)" : "var(--crit-soft)", color: notice.ok ? "var(--ok)" : "var(--crit)" }}>{notice.text}</div>}
+
+      <div className="posture-hero card">
+        <div className="posture-score">
+          {posture.loading ? <Skeleton w={132} h={132} r={66}/> : <Donut value={report?.score ?? 0}/>}
+        </div>
+        <div className="posture-summary">
+          <div className="pulse-sub">Overall security score</div>
+          <div className={`posture-score-text ${scoreTone}`}>{posture.loading ? "..." : `${report.score}/100`}</div>
+          <div className="posture-meta">
+            <span className={`pill ${modeTone(report?.mode)}`}>{report?.mode || "..."}</span>
+            <span>Last checked {report ? fmtAgo(report.generatedAt) : "..."}</span>
+          </div>
+        </div>
+        <div className="posture-verdict">
+          {posture.loading ? <Skeleton h={80}/> : (
+            <React.Fragment>
+              <strong>{enterpriseVerdict(report.score, critical.length)}</strong>
+              <span>{critical.length ? `${critical.length} critical issue${critical.length === 1 ? "" : "s"} must be fixed first.` : "No critical issues detected in the current posture checks."}</span>
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+
+      {critical.length > 0 && (
+        <div className="card posture-critical">
+          <div className="card-head"><div><h3>Critical issues</h3><div className="sub">Fix these before treating the tenant as enterprise-ready</div></div></div>
+          <div className="card-body posture-finding-list">
+            {critical.map(f => <SecurityFindingCard key={f.id} finding={f} onFix={applySafe} busy={busy}/>)}
+          </div>
+        </div>
+      )}
+
+      <div className="posture-categories">
+        {(report?.categoryBreakdown || []).map(category => (
+          <div className={`posture-category ${category.status}`} key={category.category}>
+            <div>
+              <strong>{category.label}</strong>
+              <span>{category.findingCount ? `${category.findingCount} issue${category.findingCount === 1 ? "" : "s"}` : "No findings"}</span>
+            </div>
+            <span className={`pill ${category.status === "critical" ? "crit" : category.status === "warning" ? "warn" : "ok"}`}>{category.status}</span>
+          </div>
+        ))}
+        {posture.loading && Array.from({ length: 8 }).map((_, i) => <div className="posture-category" key={i}><Skeleton w={130}/><Skeleton w={62}/></div>)}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div><h3>Findings</h3><div className="sub">{posture.loading ? "Loading" : `${findings.length} total`}</div></div>
+        </div>
+        <div className="card-body posture-finding-list">
+          {posture.loading && Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} h={92}/>)}
+          {!posture.loading && findings.length === 0 && <div className="empty">No posture findings detected.</div>}
+          {!posture.loading && findings.map(f => <SecurityFindingCard key={f.id} finding={f} onFix={applySafe} busy={busy}/>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecurityFindingCard({ finding, onFix, busy }) {
+  return (
+    <div className={`posture-finding ${finding.severity}`}>
+      <div className="posture-finding-main">
+        <div className="posture-finding-title">
+          <strong>{finding.title}</strong>
+          <span className={`pill ${severityTone(finding.severity)}`}>{finding.severity}</span>
+        </div>
+        <p>{finding.description}</p>
+        <dl>
+          <dt>Risk</dt><dd>{finding.riskExplanation}</dd>
+          <dt>Fix</dt><dd>{finding.fixSuggestion}</dd>
+        </dl>
+      </div>
+      <div className="posture-finding-actions">
+        {finding.autoFixAvailable
+          ? <button className="btn sm" onClick={onFix} disabled={busy === "fix" || finding.severity === "critical"}>{finding.severity === "critical" ? "Confirm manually" : "Fix"}</button>
+          : <span className="muted">Manual</span>}
+      </div>
+    </div>
+  );
+}
+
+function severityTone(severity) {
+  return severity === "critical" ? "crit" : severity === "high" || severity === "medium" ? "warn" : "accent";
+}
+function modeTone(mode) {
+  return mode === "tinfoil" ? "crit" : mode === "strict" ? "ok" : "warn";
+}
+function enterpriseVerdict(score, criticalCount) {
+  if (criticalCount > 0) return "Not enterprise-ready yet";
+  if (score >= 85) return "Enterprise-ready posture";
+  if (score >= 70) return "Close, with remediation needed";
+  return "Needs security hardening";
+}
+
 // ---------- Device drawer ----------
 function DeviceDrawer({ deviceId, onClose }) {
   const detail = useResource(() => PatchAPI.device(deviceId), [deviceId]);
@@ -1184,5 +1751,5 @@ function DeviceDrawer({ deviceId, onClose }) {
 }
 
 Object.assign(window, {
-  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, DeviceDrawer
+  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer
 });
