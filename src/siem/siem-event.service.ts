@@ -128,7 +128,11 @@ export class SiemEventService {
   private async appendLog(event: SiemEvent): Promise<void> {
     const raw = await this.dragonfly.getJson<SiemEvent[]>(APPEND_LOG_KEY) ?? [];
     raw.push(event);
-    if (raw.length > MAX_APPEND_LOG) raw.splice(0, raw.length - MAX_APPEND_LOG);
+    if (raw.length > MAX_APPEND_LOG) {
+      const removed = raw.length - MAX_APPEND_LOG;
+      raw.splice(0, removed);
+      this.logger.warn(`SIEM append log exceeded ${MAX_APPEND_LOG}; truncated ${removed} oldest event(s) from Dragonfly cache`);
+    }
     await this.dragonfly.setJson(APPEND_LOG_KEY, raw);
   }
 }
@@ -142,8 +146,21 @@ export function computeSiemHash(event: Omit<SiemEvent, 'eventHash'>, previousHas
     severity: event.severity,
     actor: event.actor,
     target: event.target,
+    metadata: canonicalize(event.metadata ?? {}),
     correlationId: event.correlationId,
     previousEventHash: previousHash ?? null,
   });
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalize(nested)]),
+    );
+  }
+  return value;
 }

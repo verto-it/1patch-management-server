@@ -104,11 +104,11 @@ function buildSearchResults(data, query) {
 
   if (include("rule")) {
     const rows = limitResults((data.rules || [])
-      .filter(r => textMatches(term, [r.name, r.property, r.operator, r.value, r.targetVersion, r.enabled ? "enabled" : "disabled"]))
+      .filter(r => textMatches(term, [r.name, r.description, r.trigger?.type, r.trigger?.eventType, JSON.stringify(r.conditionGroup), JSON.stringify(r.actions), r.enabled ? "enabled" : "disabled"]))
       .map(r => ({
         type: "rule",
         title: r.name,
-        meta: `${r.property} ${r.operator} "${r.value}"`,
+        meta: `${r.trigger?.type || "manual"} · ${conditionSummary(r.conditionGroup || { combinator:"AND", conditions:r.conditions || [] })}`,
         target: "rules",
       })));
     if (rows.length) groups.push(["Rules", rows]);

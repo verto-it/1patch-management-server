@@ -2,16 +2,17 @@
 import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import { createHash } from 'crypto';
 import { authenticator } from 'otplib';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { RbacService } from '../rbac/rbac.service';
+import { DragonflyService } from '../storage/dragonfly.service';
 import { MemoryStore } from '../storage/memory.store';
 import { User } from '../types';
 
-// Per-challenge MFA failure tracking (in-memory, cleared on success or expiry)
-const mfaFailures = new Map<string, number>();
+const MFA_FAILURE_TTL_SECONDS = 300;
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -23,6 +24,7 @@ export class AuthService implements OnModuleInit {
     private readonly audit: AuditService,
     private readonly rbac: RbacService,
     private readonly siem: SiemEventService,
+    private readonly dragonfly: DragonflyService,
   ) {
     this.jwt = new JwtService({ secret: process.env.JWT_SECRET ?? '' });
   }
@@ -59,7 +61,7 @@ export class AuthService implements OnModuleInit {
     return this.publicUser(user);
   }
 
-  async login(email: string, password: string, ip?: string, country?: string) {
+  async login(email: string, password: string, ip?: string) {
     const user = this.store.users.find((c) => c.email === email.toLowerCase());
     if (!user) {
       this.logger.warn(`Login attempt for unknown email ${email} from IP ${ip}`);
@@ -101,14 +103,15 @@ export class AuthService implements OnModuleInit {
 
     user.failedAttempts = 0;
 
+    const country = countryFromIp(ip);
     if (user.lastLoginCountry && country && user.lastLoginCountry !== country) {
-      this.logger.warn(`Possible impossible travel for user ${user.id}: ${user.lastLoginCountry} -> ${country} (client-reported)`);
+      this.logger.warn(`Possible impossible travel for user ${user.id}: ${user.lastLoginCountry} -> ${country}`);
       this.audit.record(user.id, 'auth.impossible_travel_review', user.id, {
         previousCountry: user.lastLoginCountry, currentCountry: country,
-        note: 'country is client-reported — verify with server-side IP geolocation', ip,
+        note: 'country derived server-side from request IP', ip,
       });
     }
-    user.lastLoginCountry = country;
+    if (country) user.lastLoginCountry = country;
     await this.store.persist();
 
     if (user.mfaEnabled) {
@@ -122,7 +125,7 @@ export class AuthService implements OnModuleInit {
     return this.issueSession(user, ip);
   }
 
-  verifyMfa(challengeToken: string, code: string, ip?: string) {
+  async verifyMfa(challengeToken: string, code: string, ip?: string) {
     let decoded: { sub: string; purpose: string };
     try {
       decoded = this.jwt.verify(challengeToken) as { sub: string; purpose: string };
@@ -136,7 +139,8 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid MFA challenge');
     }
 
-    const attempts = (mfaFailures.get(challengeToken) ?? 0) + 1;
+    const failureKey = this.mfaFailureKey(challengeToken);
+    const attempts = ((await this.dragonfly.getJson<number>(failureKey)) ?? 0) + 1;
     if (attempts > 5) {
       this.logger.warn(`MFA brute-force detected for user ${decoded.sub} — challenge invalidated after ${attempts} attempts`);
       throw new UnauthorizedException('Too many MFA attempts — please log in again');
@@ -144,7 +148,7 @@ export class AuthService implements OnModuleInit {
 
     const user = this.store.users.find((c) => c.id === decoded.sub);
     if (!user?.mfaSecret || !authenticator.check(code, user.mfaSecret)) {
-      mfaFailures.set(challengeToken, attempts);
+      await this.dragonfly.setJsonEx(failureKey, attempts, MFA_FAILURE_TTL_SECONDS);
       this.audit.record(decoded.sub, 'auth.mfa_failed', decoded.sub, { ip, attempts });
       this.siem.emit({
         tenantId: 'system', type: 'auth.mfa.failed', severity: attempts >= 3 ? 'high' : 'medium',
@@ -155,7 +159,7 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid MFA code');
     }
 
-    mfaFailures.delete(challengeToken);
+    await this.dragonfly.del(failureKey);
     this.siem.emit({
       tenantId: 'system', type: 'auth.mfa.success', severity: 'low',
       actor: { userId: user.id, nodeId: null, ip: ip ?? null },
@@ -209,4 +213,16 @@ export class AuthService implements OnModuleInit {
       );
     }
   }
+
+  private mfaFailureKey(challengeToken: string): string {
+    return `1patch:mfa-login-failures:${createHash('sha256').update(challengeToken).digest('hex')}`;
+  }
+}
+
+function countryFromIp(ip?: string): string | undefined {
+  if (!ip) return undefined;
+  // Placeholder for real GeoIP integration. Do not trust client-supplied country.
+  // Private/local addresses intentionally return undefined to avoid false signals.
+  if (/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|::1$|fc|fd)/i.test(ip)) return undefined;
+  return undefined;
 }

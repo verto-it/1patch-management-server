@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
+import { NodesService } from '../nodes/nodes.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { SigningService } from '../signing.service';
 import { MemoryStore } from '../storage/memory.store';
@@ -19,6 +20,7 @@ export class KillSwitchService {
     private readonly siem: SiemEventService,
     private readonly notifications: NotificationService,
     private readonly policy: TenantPolicyService,
+    private readonly nodes: NodesService,
   ) {}
 
   getState(tenantId: string): KillSwitchState | undefined {
@@ -75,6 +77,7 @@ export class KillSwitchService {
       details: { activatedBy: actor.id, reason },
     });
 
+    void this.pushToNodes(state, envelope);
     return state;
   }
 
@@ -104,6 +107,58 @@ export class KillSwitchService {
       message: `Kill switch deactivated for tenant ${tenantId} by ${actor.email}`,
     });
 
+    void this.pushToNodes(existing, envelope);
     return existing;
   }
+
+  /**
+   * Pushes a signed kill-switch envelope to every online backend node.
+   * NODE_MGMT_SECRET must be set on each node for it to accept the payload.
+   * Failures are logged but never throw -- the kill switch is stored locally
+   * regardless of whether nodes are reachable.
+   */
+  private async pushToNodes(
+    state: KillSwitchState,
+    envelope: ReturnType<SigningService['signPayload']>,
+  ): Promise<void> {
+    const secret = process.env.NODE_MGMT_SECRET;
+    if (!secret) {
+      this.logger.error(
+        'NODE_MGMT_SECRET is not set — kill switch state will NOT be pushed to backend nodes. ' +
+        'Tasks cached on nodes will continue to execute until they poll the management server.',
+      );
+      return;
+    }
+    const onlineNodes = this.nodes.onlineNodes();
+    if (onlineNodes.length === 0) {
+      this.logger.warn('Kill switch activated but no online nodes to push to');
+      return;
+    }
+    const results = await Promise.allSettled(
+      onlineNodes.map(async (node) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        try {
+          const res = await fetch(`${node.publicUrl.replace(/\/$/, '')}/node/kill-switch`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ secret, envelope: { ...envelope, payload: state } }),
+            signal: controller.signal,
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          this.logger.log(`Kill switch pushed to nodeId=${node.id}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }),
+    );
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    if (failed > 0) {
+      this.logger.error(
+        `Kill switch push failed for ${failed}/${onlineNodes.length} node(s). ` +
+        `Those nodes will pick up the state on their next heartbeat poll.`,
+      );
+    }
+  }
+
 }

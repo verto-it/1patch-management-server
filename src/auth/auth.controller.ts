@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Logger, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Post, Req, UseGuards } from '@nestjs/common';
 
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
@@ -15,6 +15,7 @@ class SetupOwnerDto {
 }
 
 class LoginDto extends SetupOwnerDto {
+  /** Deprecated: ignored. Country is derived server-side from the request IP. */
   @IsOptional() @IsString() country?: string;
 }
 
@@ -37,13 +38,15 @@ export class AuthController {
   }
 
   @Post('/auth/login')
-  login(@Body() dto: LoginDto, @Headers('x-forwarded-for') ip?: string) {
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    const ip = requestIp(req);
     this.logger.log(`Login attempt for ${dto.email} from IP ${ip}`);
-    return this.auth.login(dto.email, dto.password, ip, dto.country);
+    return this.auth.login(dto.email, dto.password, ip);
   }
 
   @Post('/auth/mfa/verify')
-  verifyMfa(@Body() dto: MfaDto, @Headers('x-forwarded-for') ip?: string) {
+  async verifyMfa(@Body() dto: MfaDto, @Req() req: Request) {
+    const ip = requestIp(req);
     this.logger.log(`MFA verification attempt from IP ${ip}`);
     return this.auth.verifyMfa(dto.challengeToken, dto.code, ip);
   }
@@ -65,4 +68,8 @@ export class AuthController {
   auditLog() {
     return this.audit.list();
   }
+}
+
+function requestIp(req: Request): string | undefined {
+  return req.ip ?? req.socket.remoteAddress ?? undefined;
 }

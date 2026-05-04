@@ -106,6 +106,10 @@ export interface Device {
   publicKey: string;
   lastSeenAt?: string;
   preferredNodeId?: string;
+  group?: string;
+  tags?: string[];
+  deviceTrustScore?: number;
+  riskScore?: number;
 }
 
 export interface InstalledApp {
@@ -119,13 +123,134 @@ export interface InstalledApp {
 
 export interface PatchRule {
   id: string;
+  tenantId?: string;
   name: string;
+  description?: string;
   enabled: boolean;
-  property: 'appName' | 'manufacturer' | 'guid' | 'packageId';
-  operator: 'contains' | 'equals';
-  value: string;
-  targetVersion: 'latest' | string;
+  priority?: number;
+  createdBy?: string;
+  createdAt?: string;
+  trigger?: RuleTrigger;
+  conditions?: RuleCondition[];
+  conditionGroup?: RuleConditionGroup;
+  actions?: RuleAction[];
+  schedule?: RuleSchedule;
+  lastRunAt?: string;
+  executionStats?: RuleExecutionStats;
+  safeMode?: RuleSafeMode;
+  property?: 'appName' | 'manufacturer' | 'guid' | 'packageId';
+  operator?: 'contains' | 'equals';
+  value?: string;
+  targetVersion?: 'latest' | string;
   maxVersion?: string;
+}
+
+export type RuleTriggerType =
+  | 'schedule'
+  | 'event'
+  | 'manual';
+
+export interface RuleTrigger {
+  type: RuleTriggerType;
+  eventType?: 'device.inventory.updated' | 'task.failed' | 'vulnerability.detected';
+}
+
+export interface RuleSchedule {
+  cron?: string;
+  timezone?: string;
+  maintenanceWindow?: {
+    daysOfWeek?: number[];
+    startHourUtc: number;
+    endHourUtc: number;
+  };
+}
+
+export type RuleConditionField =
+  | 'device.os'
+  | 'device.hostname'
+  | 'device.group'
+  | 'device.tag'
+  | 'device.deviceTrustScore'
+  | 'package.outdated'
+  | 'package.name'
+  | 'package.version'
+  | 'lastTask.failed'
+  | 'lastTask.retryCount'
+  | 'currentTime.maintenanceWindow'
+  | 'riskScore';
+
+export type RuleConditionOperator =
+  | 'eq'
+  | 'neq'
+  | 'contains'
+  | 'matches'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte'
+  | 'in';
+
+export interface RuleCondition {
+  field: RuleConditionField;
+  operator: RuleConditionOperator;
+  value: string | number | boolean | string[] | number[];
+}
+
+export interface RuleConditionGroup {
+  combinator: 'AND' | 'OR';
+  conditions: Array<RuleCondition | RuleConditionGroup>;
+}
+
+export type RuleAction =
+  | {
+      type: 'create_patch_task';
+      mode: 'specific_package' | 'all_outdated';
+      packageName?: string;
+      packageId?: string;
+      packageArtifactId?: string;
+      targetVersion?: 'latest' | string;
+      maxDevices?: number;
+    }
+  | {
+      type: 'create_security_task';
+      task: 'refresh_inventory' | 'rescan_device';
+    }
+  | {
+      type: 'notify';
+      channel: 'siem' | 'webhook' | 'email';
+      message: string;
+    }
+  | {
+      type: 'mark_device';
+      tag: string;
+    };
+
+export interface RuleExecutionStats {
+  taskCreatedAt: string[];
+  executionLog: RuleExecutionRecord[];
+}
+
+export interface RuleExecutionRecord {
+  id: string;
+  ruleId: string;
+  tenantId: string;
+  triggeredAt: string;
+  triggeredBy: string;
+  matched: boolean;
+  deviceId?: string;
+  taskIds: string[];
+  riskScore: number;
+  reasons: string[];
+  conflicts: string[];
+  approvalRequired: boolean;
+  rateLimited: boolean;
+  status: 'matched' | 'skipped' | 'failed';
+}
+
+export interface RuleSafeMode {
+  enabled: boolean;
+  autoSignBelowRiskScore?: number;
+  requireApprovalAtRiskScore?: number;
 }
 
 export interface PackageArtifact {
@@ -366,6 +491,11 @@ export type SiemEventType =
   | 'task.revoked'
   | 'task.high_risk_detected'
   | 'task.mass_rollout_detected'
+  | 'rule.triggered'
+  | 'rule.executed'
+  | 'rule.failed'
+  | 'rule.conflict_detected'
+  | 'rule.rate_limited'
   | 'invalid_signature_detected'
   | 'replay_attack_blocked'
   | 'node.registered'
@@ -376,7 +506,8 @@ export type SiemEventType =
   | 'kill_switch.deactivated'
   | 'signing_key.rotated'
   | 'signing_key.revoked'
-  | 'audit.chain.broken';
+  | 'audit.chain.broken'
+  | 'siem.test';
 
 export type SiemSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type SiemMode = 'minimal' | 'standard' | 'full';
@@ -422,15 +553,32 @@ export interface SiemSentinelConfig {
   logType: string;
 }
 
+export interface SiemSplunkConfig {
+  url: string;
+  token: string;
+  index?: string;
+  source?: string;
+}
+
 export interface SiemConfig {
   mode: SiemMode;
+  enabled?: boolean;
   webhook?: SiemWebhookConfig;
   syslog?: SiemSyslogConfig;
   sentinel?: SiemSentinelConfig;
+  splunk?: SiemSplunkConfig;
   exportOverrides?: Partial<Record<SiemEventType, boolean>>;
 }
 
 export interface TenantSiemConfig {
   tenantId: string;
   config: SiemConfig;
+}
+
+export interface SiemHealth {
+  tenantId: string;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  failureCount: number;
+  lastError: string | null;
 }

@@ -95,6 +95,10 @@ window.PatchAPI = {
   refreshInventory:  (id)    => api(`/tasks/refresh-inventory/${id}`,            { method:'POST', body: '{}' }),
   updateAllOutdated: (id)    => api(`/devices/${id}/update-all-outdated`,        { method:'POST', body: '{}' }),
   createRule:        (b)     => api('/rules',                                    { method:'POST', body: JSON.stringify(b) }),
+  updateRule:        (id,b)  => api(`/rules/${id}`,                              { method:'PATCH', body: JSON.stringify(b) }),
   toggleRule:        (id,e)  => api(`/rules/${id}`,                              { method:'PATCH', body: JSON.stringify({ enabled: e }) }),
+  testRule:          (id,b)  => api(`/rules/${id}/test`,                         { method:'POST', body: JSON.stringify(b || {}) }),
+  triggerRule:       (id,b)  => api(`/rules/${id}/trigger`,                      { method:'POST', body: JSON.stringify(b || {}) }),
+  ruleAudit:         (id)    => api(id ? `/rules/${id}/audit` : '/rules/audit'),
   resolveAlarm:      (id)    => api(`/alarms/${id}/resolve`,                     { method:'POST', body: '{}' }),
 };

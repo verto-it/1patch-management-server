@@ -26,6 +26,7 @@ import { Device, UpdateTask, User } from '../types';
 import { NodesService } from '../nodes/nodes.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { KillSwitchService } from './kill-switch.service';
+import { MfaChallengeService } from '../auth/mfa-challenge.service';
 import { TaskAuthorizationService } from './task-authorization.service';
 import { TaskLedgerService } from './task-ledger.service';
 import { TenantPolicyService } from './tenant-policy.service';
@@ -45,6 +46,7 @@ export class TasksController {
     private readonly ledger: TaskLedgerService,
     private readonly killSwitch: KillSwitchService,
     private readonly policy: TenantPolicyService,
+    private readonly mfaChallenge: MfaChallengeService,
   ) {}
 
   // ── Admin: list all tasks ──────────────────────────────────────────────────
@@ -118,12 +120,39 @@ export class TasksController {
 
     // Auto-advance refresh_inventory through the pipeline (low-risk, no external packages)
     await this.authorization.runSecurityScan(task.id, user);
-    this.authorization.approve(task.id, user, 'auto-refresh');
-    this.authorization.sign(task.id, user);
-    return this.authorization.promoteToExecutable(task.id);
+    // Only call approve when MFA is not required for refresh_inventory — no fake challenge ID
+    const p = this.policy.get(task.tenantId ?? 'default');
+    if (!p.requireMfaForTaskSigning) {
+      await this.authorization.approve(task.id, user, '');
+      this.authorization.sign(task.id, user);
+      return this.authorization.promoteToExecutable(task.id);
+    }
+    return task;
   }
 
-  // ── Step 2: Security scan ──────────────────────────────────────────────────
+  // -- MFA challenge: issue
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('tasks:approve')
+  @Post('/mfa-challenge/issue')
+  async issueMfaChallenge(@CurrentUser() user: User) {
+    const challengeId = await this.mfaChallenge.issueChallenge(user.id);
+    return { challengeId };
+  }
+
+  // -- MFA challenge: verify (submit TOTP code; verified challengeId is single-use for 2 min)
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('tasks:approve')
+  @Post('/mfa-challenge/verify')
+  async verifyMfaChallenge(
+    @Body() body: { challengeId: string; totpCode: string },
+    @CurrentUser() user: User,
+  ) {
+    if (!body.challengeId || !body.totpCode) throw new BadRequestException('challengeId and totpCode are required');
+    await this.mfaChallenge.verifyChallenge(user.id, body.challengeId, body.totpCode);
+    return { verified: true };
+  }
+
+    // ── Step 2: Security scan ──────────────────────────────────────────────────
 
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
@@ -137,13 +166,12 @@ export class TasksController {
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:approve')
   @Post('/:id/approve')
-  approve(
+  async approve(
     @Param('id') id: string,
-    @Body() body: { mfaChallengeId: string },
+    @Body() body: { mfaChallengeId?: string },
     @CurrentUser() user: User,
   ) {
-    if (!body.mfaChallengeId) throw new BadRequestException('mfaChallengeId is required');
-    return this.authorization.approve(id, user, body.mfaChallengeId);
+    return this.authorization.approve(id, user, body.mfaChallengeId ?? '');
   }
 
   // ── Step 4: Sign ───────────────────────────────────────────────────────────

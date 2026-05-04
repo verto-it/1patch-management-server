@@ -196,10 +196,11 @@ describe('MtlsNodeGuard', () => {
     process.env.NODE_API_SECRET = originalSecret;
   });
 
-  // ── (7) Dev mode — plain HTTP allowed outside production ──────────────────
+  // ── (7) Dev mode — plain HTTP allowed only with explicit MTLS_DISABLED ─────
 
-  it('accepts dev-mode plain-HTTP request (no getPeerCertificate) outside production', () => {
+  it('accepts dev-mode plain-HTTP request only when MTLS_DISABLED=true outside production', () => {
     process.env.NODE_ENV = 'development';
+    process.env.MTLS_DISABLED = 'true';
 
     const socket = {}; // no getPeerCertificate — plain HTTP
     const nodeId = 'dev-node-abc';
@@ -217,6 +218,7 @@ describe('MtlsNodeGuard', () => {
 
     expect(result).toBe(true);
     expect(reqContainer[NODE_ID_KEY]).toBe(nodeId);
+    delete process.env.MTLS_DISABLED;
   });
 
   it('rejects dev-mode plain-HTTP request in production', () => {

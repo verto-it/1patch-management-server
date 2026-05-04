@@ -818,7 +818,11 @@ window.PatchAPI = {
     refreshInventory: (id) => api(`/tasks/refresh-inventory/${id}`, { method: 'POST', body: '{}' }),
     updateAllOutdated: (id) => api(`/devices/${id}/update-all-outdated`, { method: 'POST', body: '{}' }),
     createRule: (b) => api('/rules', { method: 'POST', body: JSON.stringify(b) }),
+    updateRule: (id, b) => api(`/rules/${id}`, { method: 'PATCH', body: JSON.stringify(b) }),
     toggleRule: (id, e) => api(`/rules/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: e }) }),
+    testRule: (id, b) => api(`/rules/${id}/test`, { method: 'POST', body: JSON.stringify(b || {}) }),
+    triggerRule: (id, b) => api(`/rules/${id}/trigger`, { method: 'POST', body: JSON.stringify(b || {}) }),
+    ruleAudit: (id) => api(id ? `/rules/${id}/audit` : '/rules/audit'),
     resolveAlarm: (id) => api(`/alarms/${id}/resolve`, { method: 'POST', body: '{}' }),
 };
 
@@ -1677,22 +1681,26 @@ function PackagesPage({ globalSearch = "" }) {
 }
 // ---------- Rules ----------
 function RulesPage({ globalSearch = "" }) {
-    const [creating, setCreating] = useState(false);
+    const [editing, setEditing] = useState(null);
+    const [testing, setTesting] = useState(null);
     const rules = useResource(() => PatchAPI.rules());
+    const audit = useResource(() => PatchAPI.ruleAudit());
     useLiveResource(rules, 10000);
+    useLiveResource(audit, 10000);
     const toggle = async (r) => { try {
         await PatchAPI.toggleRule(r.id, !r.enabled);
     }
     finally {
         rules.reload();
+        audit.reload(true);
     } };
-    const rows = (rules.data || []).filter(r => textMatches(globalSearch, [r.name, r.property, r.operator, r.value, r.targetVersion, r.enabled ? "enabled" : "disabled"]));
+    const rows = (rules.data || []).filter(r => textMatches(globalSearch, [r.name, r.description, r.trigger?.type, r.trigger?.eventType, JSON.stringify(r.conditionGroup), JSON.stringify(r.actions), r.enabled ? "enabled" : "disabled"]));
     return (React.createElement("div", { className: "page" },
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
-                React.createElement("h2", null, "Patch rules"),
-                React.createElement("p", null, "Automatically generate update tasks when devices fall out of compliance")),
-            React.createElement("button", { className: "btn primary", onClick: () => setCreating(true) },
+                React.createElement("h2", null, "Rules Engine"),
+                React.createElement("p", null, "Policy automation that creates visible, scanned task drafts through the signed pipeline")),
+            React.createElement("button", { className: "btn primary", onClick: () => setEditing(defaultRule()) },
                 React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.plus),
                 "New rule")),
         React.createElement("div", { className: "card" },
@@ -1702,90 +1710,82 @@ function RulesPage({ globalSearch = "" }) {
                 React.createElement("thead", null,
                     React.createElement("tr", null,
                         React.createElement("th", null, "Name"),
-                        React.createElement("th", null, "Match"),
-                        React.createElement("th", null, "Target"),
+                        React.createElement("th", null, "Trigger"),
+                        React.createElement("th", null, "Conditions"),
+                        React.createElement("th", null, "Actions"),
+                        React.createElement("th", null, "Last run"),
                         React.createElement("th", null, "Status"),
                         React.createElement("th", null))),
                 React.createElement("tbody", null,
-                    rules.loading && React.createElement(SkeletonRows, { n: 4, cols: 5 }),
+                    rules.loading && React.createElement(SkeletonRows, { n: 4, cols: 7 }),
                     !rules.loading && rows.length === 0 && React.createElement("tr", null,
-                        React.createElement("td", { colSpan: 5, style: { padding: 24, color: "var(--text-3)" } }, "No rules configured.")),
+                        React.createElement("td", { colSpan: 7, style: { padding: 24, color: "var(--text-3)" } }, "No rules configured.")),
                     !rules.loading && rows.map(r => (React.createElement("tr", { key: r.id },
                         React.createElement("td", null,
-                            React.createElement("strong", { style: { fontWeight: 500 } }, r.name)),
+                            React.createElement("strong", { style: { fontWeight: 500 } }, r.name),
+                            React.createElement("div", { className: "muted", style: { fontSize: 12 } }, r.description || `Priority ${r.priority ?? 100}`)),
                         React.createElement("td", { className: "mono muted" },
-                            r.property,
-                            " ",
-                            r.operator,
-                            " \"",
-                            r.value,
-                            "\""),
-                        React.createElement("td", { className: "mono" }, r.targetVersion),
+                            r.trigger?.type || "manual",
+                            r.trigger?.eventType ? ` · ${r.trigger.eventType}` : ""),
+                        React.createElement("td", { className: "mono muted" }, conditionSummary(r.conditionGroup || { combinator: "AND", conditions: r.conditions || [] })),
+                        React.createElement("td", { className: "mono muted" }, (r.actions || []).map(actionSummary).join(", ")),
+                        React.createElement("td", { className: "muted" }, fmtAgo(r.lastRunAt)),
                         React.createElement("td", null,
                             React.createElement("button", { onClick: (e) => { e.stopPropagation(); toggle(r); }, style: { border: 0, padding: 0, background: "transparent", cursor: "pointer" } },
                                 React.createElement("span", { className: "pill " + (r.enabled ? "ok" : "") },
                                     React.createElement("span", { className: "dot" }),
                                     r.enabled ? "Enabled" : "Disabled"))),
-                        React.createElement("td", null,
-                            React.createElement("button", { className: "btn sm ghost" }, "Edit")))))))),
-        creating && React.createElement(RuleWizard, { onClose: () => setCreating(false), onCreated: rules.reload })));
+                        React.createElement("td", { style: { whiteSpace: "nowrap" } },
+                            React.createElement("button", { className: "btn sm ghost", onClick: () => setTesting(r) }, "Test"),
+                            React.createElement("button", { className: "btn sm", onClick: () => setEditing(r) }, "Edit")))))))),
+        React.createElement("div", { className: "card" },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, "Rule audit"),
+                    React.createElement("div", { className: "sub" }, "Recent triggered, executed, failed, rate-limited, and conflict records"))),
+            React.createElement("div", { className: "card-body tight", style: { overflowX: "auto" } },
+                React.createElement("table", { className: "tbl" },
+                    React.createElement("thead", null,
+                        React.createElement("tr", null,
+                            React.createElement("th", null, "Rule"),
+                            React.createElement("th", null, "Device"),
+                            React.createElement("th", null, "Result"),
+                            React.createElement("th", null, "Risk"),
+                            React.createElement("th", null, "Tasks"),
+                            React.createElement("th", null, "Why"),
+                            React.createElement("th", null, "Time"))),
+                    React.createElement("tbody", null,
+                        audit.loading && React.createElement(SkeletonRows, { n: 4, cols: 7 }),
+                        !audit.loading && (audit.data || []).slice(0, 8).map(e => (React.createElement("tr", { key: e.id },
+                            React.createElement("td", { className: "mono" }, e.ruleId),
+                            React.createElement("td", { className: "mono muted" }, e.deviceId || "—"),
+                            React.createElement("td", null,
+                                React.createElement("span", { className: "pill " + (e.status === "failed" ? "crit" : e.matched ? "ok" : "") }, e.status)),
+                            React.createElement("td", { className: "mono" }, e.riskScore),
+                            React.createElement("td", { className: "mono muted" }, (e.taskIds || []).length),
+                            React.createElement("td", { className: "muted", style: { maxWidth: 420, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, (e.conflicts || []).concat(e.reasons || []).join(" · ")),
+                            React.createElement("td", { className: "muted" }, fmtAgo(e.triggeredAt))))),
+                        !audit.loading && (audit.data || []).length === 0 && React.createElement("tr", null,
+                            React.createElement("td", { colSpan: 7, style: { padding: 24, color: "var(--text-3)" } }, "No rule executions yet.")))))),
+        editing && React.createElement(RuleWizard, { rule: editing, onClose: () => setEditing(null), onCreated: () => { rules.reload(); audit.reload(true); } }),
+        testing && React.createElement(RuleTester, { rule: testing, onClose: () => setTesting(null), onExecuted: () => { rules.reload(); audit.reload(true); } })));
 }
-function RuleWizard({ onClose, onCreated }) {
-    const [step, setStep] = useState("match");
-    const [versionMode, setVersionMode] = useState("latest");
-    const [form, setForm] = useState({
-        name: "",
-        enabled: true,
-        property: "appName",
-        operator: "contains",
-        value: "",
-        targetVersion: "latest",
-        maxVersion: "",
-    });
+function RuleWizard({ rule, onClose, onCreated }) {
+    const [step, setStep] = useState("trigger");
+    const [form, setForm] = useState(() => normalizeRuleForm(rule));
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
-    const steps = [
-        ["match", "Match"],
-        ["policy", "Policy"],
-        ["review", "Review"],
-    ];
-    const propertyLabels = {
-        appName: "App name",
-        manufacturer: "Manufacturer",
-        guid: "Product GUID",
-        packageId: "Package ID",
-    };
-    const cleanRule = () => ({
-        name: form.name.trim(),
-        enabled: Boolean(form.enabled),
-        property: form.property,
-        operator: form.operator,
-        value: form.value.trim(),
-        targetVersion: versionMode === "latest" ? "latest" : form.targetVersion.trim(),
-        ...(form.maxVersion.trim() ? { maxVersion: form.maxVersion.trim() } : {}),
-    });
-    const canMatch = form.name.trim() && form.value.trim();
-    const canPolicy = versionMode === "latest" || form.targetVersion.trim();
-    const canReview = canMatch && canPolicy;
-    const goPolicy = (e) => {
+    const save = async (e) => {
         e.preventDefault();
-        if (canMatch)
-            setStep("policy");
-    };
-    const goReview = (e) => {
-        e.preventDefault();
-        if (canPolicy)
-            setStep("review");
-    };
-    const submit = async (e) => {
-        e.preventDefault();
-        if (!canReview)
-            return;
         setBusy(true);
         setError(null);
         try {
-            await PatchAPI.createRule(cleanRule());
+            const payload = rulePayload(form);
+            if (form.id)
+                await PatchAPI.updateRule(form.id, payload);
+            else
+                await PatchAPI.createRule(payload);
             onCreated?.();
             onClose();
         }
@@ -1796,94 +1796,210 @@ function RuleWizard({ onClose, onCreated }) {
             setBusy(false);
         }
     };
+    const tabs = [["trigger", "Trigger"], ["conditions", "Conditions"], ["actions", "Actions"], ["schedule", "Schedule"], ["preview", "Preview"]];
     return (React.createElement(React.Fragment, null,
         React.createElement("div", { className: "drawer-backdrop", onClick: onClose }),
         React.createElement("div", { className: "wizard-modal", role: "dialog", "aria-modal": "true" },
             React.createElement("div", { className: "wizard-head" },
                 React.createElement("div", null,
-                    React.createElement("h3", null, "New Rule"),
-                    React.createElement("p", null, "Define the app match and version policy clients should enforce.")),
+                    React.createElement("h3", null, form.id ? "Edit Rule" : "New Rule"),
+                    React.createElement("p", null, "Rules create auditable task drafts; clients still only receive signed tasks.")),
                 React.createElement("button", { className: "icon-btn", onClick: onClose },
                     React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.close))),
-            React.createElement("div", { className: "wizard-body" },
-                React.createElement("div", { className: "wizard-steps" }, steps.map(([id, label]) => {
-                    const done = (id === "match" && canMatch && step !== "match") || (id === "policy" && canPolicy && step === "review");
-                    const active = step === id;
-                    const unlocked = id === "match" || (id === "policy" && canMatch) || (id === "review" && canReview);
-                    return (React.createElement("button", { key: id, className: "wizard-step " + (active ? "active " : "") + (done ? "done" : ""), onClick: () => unlocked && setStep(id) },
-                        React.createElement("span", null, done ? "OK" : "--"),
-                        label));
-                })),
-                React.createElement("div", { className: "wizard-panel" },
-                    step === "match" && (React.createElement("form", { onSubmit: goPolicy, style: { display: "flex", flexDirection: "column", gap: 14 } },
+            React.createElement("form", { className: "wizard-body", onSubmit: save },
+                React.createElement("div", { className: "wizard-steps" }, tabs.map(([id, label]) => React.createElement("button", { type: "button", key: id, className: "wizard-step " + (step === id ? "active" : ""), onClick: () => setStep(id) },
+                    React.createElement("span", null, id === step ? ">>" : "--"),
+                    label))),
+                React.createElement("div", { className: "wizard-panel", style: { display: "flex", flexDirection: "column", gap: 14 } },
+                    step === "trigger" && (React.createElement(React.Fragment, null,
                         React.createElement("div", { className: "form-grid" },
                             React.createElement("label", { className: "field" },
-                                React.createElement("span", null, "Rule name"),
-                                React.createElement("input", { required: true, value: form.name, onChange: e => set("name", e.target.value), placeholder: "Chrome stable update" })),
+                                React.createElement("span", null, "Name"),
+                                React.createElement("input", { required: true, value: form.name, onChange: e => set("name", e.target.value), placeholder: "Auto patch Chrome weekly" })),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Tenant"),
+                                React.createElement("input", { value: form.tenantId, onChange: e => set("tenantId", e.target.value || "default") })),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Priority"),
+                                React.createElement("input", { type: "number", value: form.priority, onChange: e => set("priority", Number(e.target.value || 100)) })),
                             React.createElement("label", { className: "field" },
                                 React.createElement("span", null, "Status"),
                                 React.createElement("select", { value: form.enabled ? "enabled" : "disabled", onChange: e => set("enabled", e.target.value === "enabled") },
                                     React.createElement("option", { value: "enabled" }, "Enabled"),
-                                    React.createElement("option", { value: "disabled" }, "Disabled"))),
+                                    React.createElement("option", { value: "disabled" }, "Disabled")))),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Description"),
+                            React.createElement("input", { value: form.description, onChange: e => set("description", e.target.value), placeholder: "Weekly low-risk browser patch policy" })),
+                        React.createElement("div", { className: "form-grid" },
                             React.createElement("label", { className: "field" },
-                                React.createElement("span", null, "Match field"),
-                                React.createElement("select", { value: form.property, onChange: e => set("property", e.target.value) },
-                                    React.createElement("option", { value: "appName" }, "App name"),
-                                    React.createElement("option", { value: "manufacturer" }, "Manufacturer"),
-                                    React.createElement("option", { value: "guid" }, "Product GUID"),
-                                    React.createElement("option", { value: "packageId" }, "Package ID"))),
+                                React.createElement("span", null, "Trigger"),
+                                React.createElement("select", { value: form.triggerType, onChange: e => set("triggerType", e.target.value) },
+                                    React.createElement("option", { value: "manual" }, "Manual"),
+                                    React.createElement("option", { value: "schedule" }, "Schedule"),
+                                    React.createElement("option", { value: "event" }, "Event"))),
+                            form.triggerType === "event" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Event"),
+                                React.createElement("select", { value: form.eventType, onChange: e => set("eventType", e.target.value) },
+                                    React.createElement("option", { value: "device.inventory.updated" }, "device.inventory.updated"),
+                                    React.createElement("option", { value: "task.failed" }, "task.failed"),
+                                    React.createElement("option", { value: "vulnerability.detected" }, "vulnerability.detected"))),
+                            form.triggerType === "schedule" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Cron"),
+                                React.createElement("input", { value: form.cron, onChange: e => set("cron", e.target.value), placeholder: "0 2 * * 0" }))))),
+                    step === "conditions" && (React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "segmented" },
+                            React.createElement("button", { type: "button", className: form.combinator === "AND" ? "active" : "", onClick: () => set("combinator", "AND") }, "AND"),
+                            React.createElement("button", { type: "button", className: form.combinator === "OR" ? "active" : "", onClick: () => set("combinator", "OR") }, "OR")),
+                        form.conditions.map((condition, index) => (React.createElement("div", { className: "form-grid", key: index },
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Field"),
+                                React.createElement("select", { value: condition.field, onChange: e => updateCondition(setForm, index, { field: e.target.value }) }, conditionFields.map(f => React.createElement("option", { key: f, value: f }, f)))),
                             React.createElement("label", { className: "field" },
                                 React.createElement("span", null, "Operator"),
-                                React.createElement("select", { value: form.operator, onChange: e => set("operator", e.target.value) },
-                                    React.createElement("option", { value: "contains" }, "Contains"),
-                                    React.createElement("option", { value: "equals" }, "Equals")))),
-                        React.createElement("label", { className: "field" },
-                            React.createElement("span", null, "Match value"),
-                            React.createElement("input", { required: true, value: form.value, onChange: e => set("value", e.target.value), placeholder: form.property === "guid" ? "{00000000-0000-0000-0000-000000000000}" : "Google Chrome" })),
-                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
-                            React.createElement("span", { className: "muted" }, "Rules match installed app inventory before update tasks are generated."),
-                            React.createElement("button", { className: "btn primary", disabled: !canMatch }, "Next")))),
-                    step === "policy" && (React.createElement("form", { onSubmit: goReview, style: { display: "flex", flexDirection: "column", gap: 14 } },
-                        React.createElement("div", { className: "segmented" },
-                            React.createElement("button", { type: "button", className: versionMode === "latest" ? "active" : "", onClick: () => setVersionMode("latest") }, "Latest"),
-                            React.createElement("button", { type: "button", className: versionMode === "pinned" ? "active" : "", onClick: () => setVersionMode("pinned") }, "Pinned")),
-                        versionMode === "pinned" && (React.createElement("label", { className: "field" },
-                            React.createElement("span", null, "Target version"),
-                            React.createElement("input", { required: true, value: form.targetVersion === "latest" ? "" : form.targetVersion, onChange: e => set("targetVersion", e.target.value), placeholder: "124.0.6367.119" }))),
-                        React.createElement("label", { className: "field" },
-                            React.createElement("span", null, "Maximum current version"),
-                            React.createElement("input", { value: form.maxVersion, onChange: e => set("maxVersion", e.target.value), placeholder: "Optional ceiling before this rule applies" })),
-                        React.createElement("div", { className: "success-card" },
-                            React.createElement("strong", null, versionMode === "latest" ? "Track latest available version" : "Pin to an exact version"),
-                            React.createElement("span", null, versionMode === "latest" ? "Matching apps are driven to the latest version known to the package inventory." : "Matching apps are driven to the version you specify here.")),
-                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
-                            React.createElement("button", { type: "button", className: "btn", onClick: () => setStep("match") }, "Back"),
-                            React.createElement("button", { className: "btn primary", disabled: !canPolicy }, "Review")))),
-                    step === "review" && (React.createElement("form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: 14 } },
-                        React.createElement("div", { className: "success-card" },
-                            React.createElement("strong", null, form.name.trim()),
-                            React.createElement("span", null,
-                                propertyLabels[form.property],
-                                " ",
-                                form.operator,
-                                " \"",
-                                form.value.trim(),
-                                "\"")),
+                                React.createElement("select", { value: condition.operator, onChange: e => updateCondition(setForm, index, { operator: e.target.value }) }, conditionOperators.map(o => React.createElement("option", { key: o, value: o }, o)))),
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Value"),
+                                React.createElement("input", { value: String(condition.value), onChange: e => updateCondition(setForm, index, { value: parseConditionValue(e.target.value) }) })),
+                            React.createElement("button", { type: "button", className: "btn sm", onClick: () => removeCondition(setForm, index) }, "Remove")))),
+                        React.createElement("button", { type: "button", className: "btn", onClick: () => set("conditions", [...form.conditions, { field: "device.os", operator: "eq", value: "windows" }]) },
+                            React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.plus),
+                            "Add condition"))),
+                    step === "actions" && (React.createElement(React.Fragment, null,
                         React.createElement("div", { className: "form-grid" },
-                            React.createElement("div", { className: "field" },
-                                React.createElement("span", null, "Target"),
-                                React.createElement("input", { readOnly: true, value: cleanRule().targetVersion })),
-                            React.createElement("div", { className: "field" },
-                                React.createElement("span", null, "Status"),
-                                React.createElement("input", { readOnly: true, value: form.enabled ? "Enabled" : "Disabled" })),
-                            React.createElement("div", { className: "field" },
-                                React.createElement("span", null, "Maximum current version"),
-                                React.createElement("input", { readOnly: true, value: form.maxVersion.trim() || "None" }))),
-                        error && React.createElement(ErrorAlert, { error: error }),
-                        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
-                            React.createElement("button", { type: "button", className: "btn", onClick: () => setStep("policy") }, "Back"),
-                            React.createElement("button", { className: "btn primary", disabled: busy }, busy ? "Creating..." : "Create rule")))))))));
+                            React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Action"),
+                                React.createElement("select", { value: form.actionType, onChange: e => set("actionType", e.target.value) },
+                                    React.createElement("option", { value: "create_patch_task" }, "Create patch task"),
+                                    React.createElement("option", { value: "create_security_task" }, "Create security task"),
+                                    React.createElement("option", { value: "notify" }, "Notify SIEM"),
+                                    React.createElement("option", { value: "mark_device" }, "Mark device"))),
+                            form.actionType === "create_patch_task" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Patch mode"),
+                                React.createElement("select", { value: form.patchMode, onChange: e => set("patchMode", e.target.value) },
+                                    React.createElement("option", { value: "all_outdated" }, "All outdated packages"),
+                                    React.createElement("option", { value: "specific_package" }, "Specific package"))),
+                            form.actionType === "create_patch_task" && form.patchMode === "specific_package" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Package"),
+                                React.createElement("input", { value: form.packageName, onChange: e => set("packageName", e.target.value), placeholder: "Google Chrome" })),
+                            form.actionType === "create_patch_task" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Target version"),
+                                React.createElement("input", { value: form.targetVersion, onChange: e => set("targetVersion", e.target.value || "latest") })),
+                            form.actionType === "create_security_task" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Security task"),
+                                React.createElement("select", { value: form.securityTask, onChange: e => set("securityTask", e.target.value) },
+                                    React.createElement("option", { value: "refresh_inventory" }, "Refresh inventory"))),
+                            form.actionType === "notify" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Message"),
+                                React.createElement("input", { value: form.notifyMessage, onChange: e => set("notifyMessage", e.target.value) })),
+                            form.actionType === "mark_device" && React.createElement("label", { className: "field" },
+                                React.createElement("span", null, "Tag"),
+                                React.createElement("input", { value: form.tag, onChange: e => set("tag", e.target.value), placeholder: "needs-review" }))),
+                        React.createElement("div", { className: "success-card" },
+                            React.createElement("strong", null, "Safety boundary"),
+                            React.createElement("span", null, "No action can run commands, hide tasks, disable the kill switch, skip SIEM, or bypass scan, approval, signing, ledger, and delay gates.")))),
+                    step === "schedule" && (React.createElement("div", { className: "form-grid" },
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Maintenance start UTC"),
+                            React.createElement("input", { type: "number", min: "0", max: "23", value: form.startHourUtc, onChange: e => set("startHourUtc", Number(e.target.value || 0)) })),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Maintenance end UTC"),
+                            React.createElement("input", { type: "number", min: "1", max: "24", value: form.endHourUtc, onChange: e => set("endHourUtc", Number(e.target.value || 24)) })),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Safe mode approval risk"),
+                            React.createElement("input", { type: "number", min: "0", max: "100", value: form.requireApprovalAtRiskScore, onChange: e => set("requireApprovalAtRiskScore", Number(e.target.value || 60)) })),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Max devices"),
+                            React.createElement("input", { type: "number", min: "1", max: "25", value: form.maxDevices, onChange: e => set("maxDevices", Number(e.target.value || 25)) })))),
+                    step === "preview" && (React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "success-card" },
+                            React.createElement("strong", null, form.name || "Untitled rule"),
+                            React.createElement("span", null,
+                                form.triggerType,
+                                " trigger \u00B7 ",
+                                form.combinator,
+                                " conditions \u00B7 ",
+                                actionSummary(rulePayload(form).actions[0]))),
+                        React.createElement("pre", { className: "mono", style: { whiteSpace: "pre-wrap", maxHeight: 260, overflow: "auto", background: "var(--bg-sub)", border: "1px solid var(--line)", padding: 12, borderRadius: 6 } }, JSON.stringify(rulePayload(form), null, 2)))),
+                    error && React.createElement(ErrorAlert, { error: error }),
+                    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+                        React.createElement("button", { type: "button", className: "btn", onClick: onClose }, "Cancel"),
+                        React.createElement("button", { className: "btn primary", disabled: busy || !form.name.trim() }, busy ? "Saving..." : "Save rule")))))));
 }
+function RuleTester({ rule, onClose, onExecuted }) {
+    const devices = useResource(() => PatchAPI.devices());
+    const [deviceId, setDeviceId] = useState("");
+    const [result, setResult] = useState(null);
+    const [busy, setBusy] = useState("");
+    const sampleId = deviceId || devices.data?.[0]?.id || "";
+    const test = async () => { setBusy("test"); try {
+        setResult(await PatchAPI.testRule(rule.id, { deviceId: sampleId }));
+    }
+    finally {
+        setBusy("");
+    } };
+    const run = async () => { setBusy("run"); try {
+        setResult({ executed: await PatchAPI.triggerRule(rule.id, { deviceId: sampleId }) });
+        onExecuted?.();
+    }
+    finally {
+        setBusy("");
+    } };
+    return (React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "drawer-backdrop", onClick: onClose }),
+        React.createElement("div", { className: "output-dialog" },
+            React.createElement("div", { className: "output-dialog-box" },
+                React.createElement("div", { className: "output-dialog-head" },
+                    React.createElement("h3", null, "Test Rule"),
+                    React.createElement("button", { className: "icon-btn", onClick: onClose }, Icon.close)),
+                React.createElement("div", { style: { padding: 16, display: "flex", flexDirection: "column", gap: 14 } },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Sample device"),
+                        React.createElement("select", { value: sampleId, onChange: e => setDeviceId(e.target.value) }, (devices.data || []).map(d => React.createElement("option", { key: d.id, value: d.id }, d.hostname || d.id)))),
+                    React.createElement("div", { style: { display: "flex", gap: 8 } },
+                        React.createElement("button", { className: "btn primary", onClick: test, disabled: !sampleId || busy }, busy === "test" ? "Testing..." : "Test rule"),
+                        React.createElement("button", { className: "btn", onClick: run, disabled: !sampleId || busy }, "Manual trigger")),
+                    result && !result.executed && React.createElement("div", { className: "success-card" },
+                        React.createElement("strong", null, result.wouldTrigger ? "Would trigger" : "Would not trigger"),
+                        React.createElement("span", null,
+                            "Risk ",
+                            result.riskScore,
+                            "/100 \u00B7 ",
+                            (result.actions || []).reduce((n, a) => n + (a.taskDrafts || []).length, 0),
+                            " task draft(s) \u00B7 ",
+                            result.approvalRequired ? "approval required" : "standard pipeline")),
+                    result?.executed && React.createElement("div", { className: "success-card" },
+                        React.createElement("strong", null, "Manual trigger submitted"),
+                        React.createElement("span", null,
+                            result.executed.length,
+                            " execution record(s) created.")),
+                    result && React.createElement("pre", { className: "mono", style: { whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto", background: "var(--bg-sub)", border: "1px solid var(--line)", padding: 12, borderRadius: 6 } }, JSON.stringify(result, null, 2)))))));
+}
+const conditionFields = ["device.os", "device.hostname", "device.group", "device.tag", "device.deviceTrustScore", "package.outdated", "package.name", "package.version", "lastTask.failed", "lastTask.retryCount", "currentTime.maintenanceWindow", "riskScore"];
+const conditionOperators = ["eq", "neq", "contains", "matches", "lt", "lte", "gt", "gte", "in"];
+function defaultRule() {
+    return { enabled: true, tenantId: "default", name: "", description: "", priority: 100, trigger: { type: "manual" }, conditionGroup: { combinator: "AND", conditions: [{ field: "package.outdated", operator: "eq", value: true }] }, actions: [{ type: "create_patch_task", mode: "all_outdated", targetVersion: "latest", maxDevices: 25 }], schedule: { maintenanceWindow: { startHourUtc: 0, endHourUtc: 6 } }, safeMode: { enabled: true, requireApprovalAtRiskScore: 60 } };
+}
+function normalizeRuleForm(rule) {
+    const r = rule || defaultRule();
+    const action = (r.actions || defaultRule().actions)[0];
+    return { id: r.id, tenantId: r.tenantId || "default", name: r.name || "", description: r.description || "", enabled: r.enabled !== false, priority: r.priority ?? 100, triggerType: r.trigger?.type || "manual", eventType: r.trigger?.eventType || "device.inventory.updated", cron: r.schedule?.cron || "0 2 * * 0", combinator: r.conditionGroup?.combinator || "AND", conditions: r.conditionGroup?.conditions?.filter(c => !c.combinator) || [], actionType: action.type, patchMode: action.mode || "all_outdated", packageName: action.packageName || "", targetVersion: action.targetVersion || "latest", securityTask: action.task || "refresh_inventory", notifyMessage: action.message || "Rule matched", tag: action.tag || "rule-matched", startHourUtc: r.schedule?.maintenanceWindow?.startHourUtc ?? 0, endHourUtc: r.schedule?.maintenanceWindow?.endHourUtc ?? 6, requireApprovalAtRiskScore: r.safeMode?.requireApprovalAtRiskScore ?? 60, maxDevices: action.maxDevices || 25 };
+}
+function rulePayload(form) {
+    const action = form.actionType === "create_patch_task" ? { type: "create_patch_task", mode: form.patchMode, packageName: form.packageName || undefined, targetVersion: form.targetVersion || "latest", maxDevices: form.maxDevices } : form.actionType === "create_security_task" ? { type: "create_security_task", task: form.securityTask } : form.actionType === "notify" ? { type: "notify", channel: "siem", message: form.notifyMessage || "Rule matched" } : { type: "mark_device", tag: form.tag || "rule-matched" };
+    return { tenantId: form.tenantId || "default", name: form.name.trim(), description: form.description.trim(), enabled: form.enabled, priority: Number(form.priority || 100), trigger: { type: form.triggerType, ...(form.triggerType === "event" ? { eventType: form.eventType } : {}) }, conditionGroup: { combinator: form.combinator, conditions: form.conditions }, actions: [action], schedule: { cron: form.triggerType === "schedule" ? form.cron : undefined, maintenanceWindow: { startHourUtc: Number(form.startHourUtc), endHourUtc: Number(form.endHourUtc) } }, safeMode: { enabled: true, requireApprovalAtRiskScore: Number(form.requireApprovalAtRiskScore || 60) } };
+}
+function updateCondition(setForm, index, patch) { setForm(prev => ({ ...prev, conditions: prev.conditions.map((c, i) => i === index ? { ...c, ...patch } : c) })); }
+function removeCondition(setForm, index) { setForm(prev => ({ ...prev, conditions: prev.conditions.filter((_, i) => i !== index) })); }
+function parseConditionValue(value) { if (value === "true")
+    return true; if (value === "false")
+    return false; const n = Number(value); return value.trim() !== "" && Number.isFinite(n) ? n : value; }
+function conditionSummary(group) { const count = group?.conditions?.length || 0; return `${group?.combinator || "AND"} · ${count} condition${count === 1 ? "" : "s"}`; }
+function actionSummary(action) { if (!action)
+    return "none"; if (action.type === "create_patch_task")
+    return action.mode === "all_outdated" ? "patch all outdated" : `patch ${action.packageName || action.packageId || "package"}`; if (action.type === "create_security_task")
+    return action.task; if (action.type === "notify")
+    return `notify ${action.channel}`; if (action.type === "mark_device")
+    return `tag ${action.tag}`; return action.type; }
 // ---------- Tasks ----------
 function TasksPage({ globalSearch = "" }) {
     const [filter, setFilter] = useState("all");
@@ -2694,11 +2810,11 @@ function buildSearchResults(data, query) {
     }
     if (include("rule")) {
         const rows = limitResults((data.rules || [])
-            .filter(r => textMatches(term, [r.name, r.property, r.operator, r.value, r.targetVersion, r.enabled ? "enabled" : "disabled"]))
+            .filter(r => textMatches(term, [r.name, r.description, r.trigger?.type, r.trigger?.eventType, JSON.stringify(r.conditionGroup), JSON.stringify(r.actions), r.enabled ? "enabled" : "disabled"]))
             .map(r => ({
             type: "rule",
             title: r.name,
-            meta: `${r.property} ${r.operator} "${r.value}"`,
+            meta: `${r.trigger?.type || "manual"} · ${conditionSummary(r.conditionGroup || { combinator: "AND", conditions: r.conditions || [] })}`,
             target: "rules",
         })));
         if (rows.length)

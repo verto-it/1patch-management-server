@@ -5,7 +5,6 @@ import {
   Controller,
   Delete,
   Get,
-  Logger,
   Param,
   Post,
   Put,
@@ -21,17 +20,12 @@ import { SiemConfig, User } from '../types';
 import { SiemConfigService } from './siem-config.service';
 import { SiemEventService } from './siem-event.service';
 import { SiemPipelineWorker } from './siem-pipeline.worker';
-import { SentinelExporter } from './exporters/sentinel.exporter';
-import { SyslogExporter } from './exporters/syslog.exporter';
-import { WebhookExporter } from './exporters/webhook.exporter';
 import { AuditService } from '../audit/audit.service';
 
 @ApiTags('siem')
 @Controller('/siem')
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SiemController {
-  private readonly logger = new Logger(SiemController.name);
-
   constructor(
     private readonly configs: SiemConfigService,
     private readonly eventService: SiemEventService,
@@ -78,15 +72,63 @@ export class SiemController {
     return { deleted: true, tenantId };
   }
 
+  // ── Health ──────────────────────────────────────────────────────────────────
+
+  @RequirePermission('audit:read')
+  @Get('/health')
+  listHealth() {
+    return this.configs.listAllHealth();
+  }
+
+  @RequirePermission('audit:read')
+  @Get('/health/:tenantId')
+  async getHealth(@Param('tenantId') tenantId: string) {
+    return this.configs.getHealth(tenantId);
+  }
+
   // ── Test ────────────────────────────────────────────────────────────────────
 
   /**
-   * 1patch siem test
-   * Sends a synthetic test event through every configured exporter for a tenant.
+   * Wizard test endpoint — send a test event using config supplied in the request
+   * body without requiring the config to be saved first.
+   */
+  @RequirePermission('tasks:manage')
+  @Post('/test')
+  async testWithConfig(
+    @Body() body: { tenantId: string; config: SiemConfig },
+    @CurrentUser() user: User,
+  ) {
+    const { tenantId, config } = body;
+    if (!tenantId || !config) {
+      throw new BadRequestException('tenantId and config are required');
+    }
+
+    const testEvent = buildTestEvent(tenantId, user.id);
+    const exporters = this.worker.buildExporters(config);
+    if (exporters.length === 0) {
+      return { sent: false, reason: 'No exporters configured in the provided config' };
+    }
+
+    const results: Array<{ exporter: string; ok: boolean; error?: string }> = [];
+    for (const exporter of exporters) {
+      try {
+        await exporter.send([testEvent]);
+        results.push({ exporter: exporter.name, ok: true });
+      } catch (err) {
+        results.push({ exporter: exporter.name, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    this.audit.record(user.id, 'siem.test_sent', tenantId, { results, unsaved: true }, tenantId);
+    return { sent: true, eventId: testEvent.eventId, results };
+  }
+
+  /**
+   * Test using already-saved config for a tenant.
    */
   @RequirePermission('tasks:manage')
   @Post('/test/:tenantId')
-  async test(
+  async testSaved(
     @Param('tenantId') tenantId: string,
     @CurrentUser() user: User,
   ) {
@@ -115,10 +157,6 @@ export class SiemController {
 
   // ── Verify ──────────────────────────────────────────────────────────────────
 
-  /**
-   * 1patch siem verify
-   * Checks connectivity and credentials for every configured exporter.
-   */
   @RequirePermission('tasks:manage')
   @Post('/verify/:tenantId')
   async verify(
@@ -179,11 +217,14 @@ function buildTestEvent(tenantId: string, userId: string) {
     eventId: uuid(),
     timestamp: new Date().toISOString(),
     tenantId,
-    type: 'auth.login.success' as const,
+    type: 'siem.test' as const,
     severity: 'low' as const,
     actor: { userId, nodeId: null, ip: null },
     target: { taskId: null, deviceId: null, nodeId: null },
-    metadata: { test: true, source: '1patch-siem-test' },
+    metadata: {
+      message: '1Patch SIEM integration working',
+      source: '1patch-siem-test',
+    },
     correlationId: null,
   };
 }

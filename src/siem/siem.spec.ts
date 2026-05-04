@@ -1,8 +1,10 @@
 import { filterEvents } from './exporter.interface';
 import { SentinelExporter } from './exporters/sentinel.exporter';
+import { SplunkExporter } from './exporters/splunk.exporter';
 import { SyslogExporter } from './exporters/syslog.exporter';
 import { SiemEventService } from './siem-event.service';
 import { SiemPipelineWorker } from './siem-pipeline.worker';
+import { SiemConfigService } from './siem-config.service';
 import { SiemEvent } from '../types';
 
 const baseEvent: SiemEvent = {
@@ -94,7 +96,7 @@ describe('SIEM pipeline', () => {
       drain: jest.fn(async () => events),
       deadLetter: jest.fn(async () => undefined),
     };
-    const configService = { get: jest.fn(async () => ({ mode: 'minimal' })) };
+    const configService = { get: jest.fn(async () => ({ mode: 'minimal' })), recordSuccess: jest.fn(async () => undefined), recordFailure: jest.fn(async () => undefined) };
     const worker = new SiemPipelineWorker(eventService as any, configService as any);
     jest.spyOn(worker, 'buildExporters').mockReturnValue([
       { name: 'failing-test-exporter', send: jest.fn(async () => { throw new Error('nope'); }) },
@@ -102,5 +104,96 @@ describe('SIEM pipeline', () => {
 
     await expect(worker.flush()).resolves.toBeUndefined();
     expect(eventService.deadLetter).toHaveBeenCalledWith(events);
+  });
+
+  // ── Splunk exporter ──────────────────────────────────────────────────────────
+
+  it('rejects non-HTTPS Splunk URLs', () => {
+    expect(() => new SplunkExporter({ url: 'http://splunk:8088/services/collector', token: 'tok' }))
+      .toThrow('must use HTTPS');
+  });
+
+  it('sends Splunk HEC events with correct Authorization header and newline-delimited body', async () => {
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn(async () => ({ ok: true, status: 200, text: async () => '' }));
+    (global as any).fetch = fetchMock;
+    try {
+      const exporter = new SplunkExporter({
+        url: 'https://splunk.example.com:8088/services/collector',
+        token: 'test-hec-token',
+        index: 'onepatch',
+      });
+      await exporter.send([baseEvent, { ...baseEvent, eventId: '22222' }]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('https://splunk.example.com:8088/services/collector');
+      expect((init.headers as Record<string, string>)['Authorization']).toBe('Splunk test-hec-token');
+
+      const lines = (init.body as string).split('\n');
+      expect(lines).toHaveLength(2);
+      const first = JSON.parse(lines[0]);
+      expect(first.index).toBe('onepatch');
+      expect(typeof first.time).toBe('number');
+      expect(first.event.eventId).toBe(baseEvent.eventId);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  // ── Health tracking ──────────────────────────────────────────────────────────
+
+  it('recordSuccess resets failure count and clears lastError', async () => {
+    const kv = new Map<string, unknown>();
+    const dragonfly = {
+      getJson: jest.fn(async (key: string) => kv.get(key) ?? null),
+      setJson: jest.fn(async (key: string, value: unknown) => { kv.set(key, value); }),
+    };
+    const service = new SiemConfigService(dragonfly as any);
+
+    await service.recordFailure('tenant-a', 'connection refused');
+    await service.recordFailure('tenant-a', 'timeout');
+    let health = await service.getHealth('tenant-a');
+    expect(health.failureCount).toBe(2);
+    expect(health.lastError).toBe('timeout');
+
+    await service.recordSuccess('tenant-a');
+    health = await service.getHealth('tenant-a');
+    expect(health.failureCount).toBe(0);
+    expect(health.lastError).toBeNull();
+    expect(health.lastSuccessAt).not.toBeNull();
+    expect(health.lastFailureAt).not.toBeNull();
+  });
+
+  it('returns default health state for unknown tenants', async () => {
+    const dragonfly = {
+      getJson: jest.fn(async () => null),
+      setJson: jest.fn(async () => undefined),
+    };
+    const service = new SiemConfigService(dragonfly as any);
+    const health = await service.getHealth('unknown-tenant');
+    expect(health).toEqual({
+      tenantId: 'unknown-tenant',
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      failureCount: 0,
+      lastError: null,
+    });
+  });
+
+  it('skips flush for tenants with enabled=false', async () => {
+    const events = [baseEvent];
+    const eventService = { drain: jest.fn(async () => events), deadLetter: jest.fn() };
+    const configService = {
+      get: jest.fn(async () => ({ mode: 'full', enabled: false })),
+      recordSuccess: jest.fn(),
+      recordFailure: jest.fn(),
+    };
+    const worker = new SiemPipelineWorker(eventService as any, configService as any);
+    const buildSpy = jest.spyOn(worker, 'buildExporters');
+
+    await worker.flush();
+
+    expect(buildSpy).not.toHaveBeenCalled();
   });
 });

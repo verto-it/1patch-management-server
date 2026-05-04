@@ -8,6 +8,7 @@ import { PostgresService } from '../storage/postgres.service';
 import { KillSwitchService } from './kill-switch.service';
 import { NotificationService } from './notification.service';
 import { SecurityGateService } from './security-gate.service';
+import { MfaChallengeService } from '../auth/mfa-challenge.service';
 import { TaskAuthorizationService } from './task-authorization.service';
 import { TaskLedgerService } from './task-ledger.service';
 import { TasksController } from './tasks.controller';
@@ -29,9 +30,11 @@ import { VirusTotalService } from './virustotal.service';
     TaskLedgerService,
     NotificationService,
     KillSwitchService,
+    MfaChallengeService,
     TaskAuthorizationService,
   ],
   exports: [
+    MfaChallengeService,
     TaskAuthorizationService,
     TaskLedgerService,
     KillSwitchService,

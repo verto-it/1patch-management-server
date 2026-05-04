@@ -1,6 +1,7 @@
 // AGPL-3.0-only
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { SentinelExporter } from './exporters/sentinel.exporter';
+import { SplunkExporter } from './exporters/splunk.exporter';
 import { SyslogExporter } from './exporters/syslog.exporter';
 import { WebhookExporter } from './exporters/webhook.exporter';
 import { EventExporter, filterEvents } from './exporter.interface';
@@ -37,7 +38,6 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
 
     this.logger.debug(`SIEM flush: draining ${batch.length} event(s)`);
 
-    // Group by tenantId so each tenant uses its own config
     const byTenant = new Map<string, SiemEvent[]>();
     for (const event of batch) {
       const list = byTenant.get(event.tenantId) ?? [];
@@ -47,8 +47,8 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
 
     for (const [tenantId, tenantEvents] of byTenant) {
       const config = await this.configs.get(tenantId);
-      if (!config) {
-        this.logger.debug(`No SIEM config for tenant=${tenantId} — skipping ${tenantEvents.length} event(s)`);
+      if (!config || config.enabled === false) {
+        this.logger.debug(`SIEM disabled or unconfigured for tenant=${tenantId} — skipping ${tenantEvents.length} event(s)`);
         continue;
       }
       await this.exportForTenant(tenantId, tenantEvents, config);
@@ -83,6 +83,7 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
     for (let attempt = 1; attempt <= MAX_EXPORTER_RETRIES; attempt++) {
       try {
         await exporter.send(events);
+        await this.configs.recordSuccess(tenantId).catch(() => undefined);
         return;
       } catch (err) {
         lastErr = err;
@@ -93,7 +94,8 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
         if (attempt < MAX_EXPORTER_RETRIES) await sleep(1_000 * attempt);
       }
     }
-    // All retries exhausted — dead-letter these events
+    const errorMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    await this.configs.recordFailure(tenantId, errorMsg).catch(() => undefined);
     this.logger.error(
       `SIEM exporter '${exporter.name}' failed after ${MAX_EXPORTER_RETRIES} retries` +
       ` (tenant=${tenantId}). Moving ${events.length} event(s) to DLQ.`,
@@ -107,6 +109,11 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
       if (config.webhook?.url) exporters.push(new WebhookExporter(config.webhook));
     } catch (err) {
       this.logger.error(`Webhook exporter config invalid: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      if (config.splunk?.url) exporters.push(new SplunkExporter(config.splunk));
+    } catch (err) {
+      this.logger.error(`Splunk exporter config invalid: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (config.syslog?.host) exporters.push(new SyslogExporter(config.syslog));
     if (config.sentinel?.workspaceId) exporters.push(new SentinelExporter(config.sentinel));

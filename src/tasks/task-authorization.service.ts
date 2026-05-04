@@ -9,6 +9,7 @@ import {
 import { createHash } from 'crypto';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
+import { MfaChallengeService } from '../auth/mfa-challenge.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { SigningService } from '../signing.service';
 import { MemoryStore } from '../storage/memory.store';
@@ -42,6 +43,7 @@ export class TaskAuthorizationService {
     private readonly ledger: TaskLedgerService,
     private readonly killSwitch: KillSwitchService,
     private readonly notifications: NotificationService,
+    private readonly mfaChallenge: MfaChallengeService,
   ) {}
 
   // ── Step 1: Create draft ────────────────────────────────────────────────────
@@ -167,7 +169,7 @@ export class TaskAuthorizationService {
 
   // ── Step 3: MFA approval ────────────────────────────────────────────────────
 
-  approve(taskId: string, approver: User, mfaChallengeId: string): UpdateTask {
+  async approve(taskId: string, approver: User, mfaChallengeId: string): Promise<UpdateTask> {
     const task = this.requireTask(taskId);
     if (task.status !== 'security_scanned') {
       throw new BadRequestException(`Task must be 'security_scanned' before approval (current: ${task.status})`);
@@ -180,8 +182,10 @@ export class TaskAuthorizationService {
     const tenantId = task.tenantId ?? 'default';
     const p = this.policy.get(tenantId);
 
-    if (p.requireMfaForTaskSigning && !mfaChallengeId) {
-      throw new BadRequestException('MFA challenge ID is required for task approval');
+    if (p.requireMfaForTaskSigning) {
+      if (!mfaChallengeId) throw new BadRequestException('mfaChallengeId is required for task approval');
+      // Cryptographically verify and atomically consume the challenge (single-use)
+      await this.mfaChallenge.consumeVerifiedChallenge(approver.id, mfaChallengeId);
     }
 
     // Prevent same user approving more than once

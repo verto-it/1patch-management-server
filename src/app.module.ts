@@ -19,6 +19,7 @@ import { NodesService } from './nodes/nodes.service';
 import { PackagesController } from './packages.controller';
 import { RbacService } from './rbac/rbac.service';
 import { RulesController } from './rules/rules.controller';
+import { RulesService } from './rules/rules.service';
 import { SetupController } from './setup.controller';
 import { SigningService } from './signing.service';
 import { VaultPkiService } from './vault/vault-pki.service';
@@ -42,6 +43,7 @@ import { SiemConfigService } from './siem/siem-config.service';
 import { SiemController } from './siem/siem.controller';
 import { SiemEventService } from './siem/siem-event.service';
 import { SiemPipelineWorker } from './siem/siem-pipeline.worker';
+import { MfaChallengeService } from './auth/mfa-challenge.service';
 import { SecurityPostureController } from './security-posture/security-posture.controller';
 import { SecurityPostureService } from './security-posture/security-posture.service';
 
@@ -76,6 +78,8 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
     SiemEventService,
     SiemPipelineWorker,
     SecurityPostureService,
+    RulesService,
+    MfaChallengeService,
   ],
 })
 export class AppModule {}

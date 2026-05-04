@@ -5,6 +5,11 @@ NestJS control plane for 1Patch. Owns setup, authentication, RBAC, tenants, app/
 **Port:** `4100`
 **License:** AGPL-3.0-only
 
+## Docs
+
+- Agent API: [`docs/agent-api.md`](docs/agent-api.md)
+- Rules Engine: [`docs/rules-engine.md`](docs/rules-engine.md)
+
 ---
 
 ## Prerequisites

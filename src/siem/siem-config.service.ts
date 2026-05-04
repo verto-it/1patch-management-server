@@ -1,14 +1,14 @@
 // AGPL-3.0-only
 import { Injectable, Logger } from '@nestjs/common';
 import { DragonflyService } from '../storage/dragonfly.service';
-import { SiemConfig, TenantSiemConfig } from '../types';
+import { SiemConfig, SiemHealth, TenantSiemConfig } from '../types';
 
 const CONFIG_KEY = '1patch:siem:configs';
+const HEALTH_KEY = '1patch:siem:health';
 
 @Injectable()
 export class SiemConfigService {
   private readonly logger = new Logger(SiemConfigService.name);
-  /** In-process cache to avoid Redis round-trips on every flush */
   private cache = new Map<string, SiemConfig>();
 
   constructor(private readonly dragonfly: DragonflyService) {}
@@ -41,8 +41,61 @@ export class SiemConfigService {
     return this.loadAll();
   }
 
+  // ── Health tracking ──────────────────────────────────────────────────────────
+
+  async getHealth(tenantId: string): Promise<SiemHealth> {
+    const all = await this.loadAllHealth();
+    return all.find((h) => h.tenantId === tenantId) ?? {
+      tenantId,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      failureCount: 0,
+      lastError: null,
+    };
+  }
+
+  async listAllHealth(): Promise<SiemHealth[]> {
+    return this.loadAllHealth();
+  }
+
+  async recordSuccess(tenantId: string): Promise<void> {
+    const all = await this.loadAllHealth();
+    const idx = all.findIndex((h) => h.tenantId === tenantId);
+    const existing = idx >= 0 ? all[idx] : null;
+    const entry: SiemHealth = {
+      tenantId,
+      lastSuccessAt: new Date().toISOString(),
+      lastFailureAt: existing?.lastFailureAt ?? null,
+      failureCount: 0,
+      lastError: null,
+    };
+    if (idx >= 0) all[idx] = entry; else all.push(entry);
+    await this.dragonfly.setJson(HEALTH_KEY, all);
+  }
+
+  async recordFailure(tenantId: string, error: string): Promise<void> {
+    const all = await this.loadAllHealth();
+    const idx = all.findIndex((h) => h.tenantId === tenantId);
+    const existing = idx >= 0 ? all[idx] : null;
+    const entry: SiemHealth = {
+      tenantId,
+      lastSuccessAt: existing?.lastSuccessAt ?? null,
+      lastFailureAt: new Date().toISOString(),
+      failureCount: (existing?.failureCount ?? 0) + 1,
+      lastError: error,
+    };
+    if (idx >= 0) all[idx] = entry; else all.push(entry);
+    await this.dragonfly.setJson(HEALTH_KEY, all);
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────────────
+
   private async loadAll(): Promise<TenantSiemConfig[]> {
     return await this.dragonfly.getJson<TenantSiemConfig[]>(CONFIG_KEY) ?? [];
+  }
+
+  private async loadAllHealth(): Promise<SiemHealth[]> {
+    return await this.dragonfly.getJson<SiemHealth[]>(HEALTH_KEY) ?? [];
   }
 
   private validate(config: SiemConfig): void {
@@ -51,6 +104,9 @@ export class SiemConfigService {
     }
     if (config.webhook?.url && !config.webhook.url.startsWith('https://')) {
       throw new Error('Webhook URL must use HTTPS');
+    }
+    if (config.splunk?.url && !config.splunk.url.startsWith('https://')) {
+      throw new Error('Splunk HEC URL must use HTTPS');
     }
   }
 }

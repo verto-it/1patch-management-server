@@ -50,6 +50,30 @@ export class DragonflyService implements OnModuleDestroy {
     }
   }
 
+  async setJsonEx(key: string, value: unknown, ttlSeconds: number) {
+    if (!this.client) return;
+    if (!(await this.ensureConnected())) return;
+    try {
+      await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+      this.lastError = undefined;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Dragonfly is not available yet: ${this.lastError}`);
+    }
+  }
+
+  async del(key: string) {
+    if (!this.client) return;
+    if (!(await this.ensureConnected())) return;
+    try {
+      await this.client.del(key);
+      this.lastError = undefined;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Dragonfly is not available yet: ${this.lastError}`);
+    }
+  }
+
   async onModuleDestroy() {
     if (this.client?.status === 'ready') await this.client.quit();
   }
