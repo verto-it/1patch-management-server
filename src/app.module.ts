@@ -20,6 +20,8 @@ import { PackagesController } from './packages.controller';
 import { RbacService } from './rbac/rbac.service';
 import { RulesController } from './rules/rules.controller';
 import { RulesService } from './rules/rules.service';
+import { RuleTemplatesController } from './rules/rule-templates.controller';
+import { RuleTemplatesService } from './rules/rule-templates.service';
 import { SetupController } from './setup.controller';
 import { SigningService } from './signing.service';
 import { VaultPkiService } from './vault/vault-pki.service';
@@ -57,7 +59,7 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
   ],
   controllers: [
     AppController, AuthController, NodesController, AgentController,
-    AppsController, RulesController, DevicesController, DashboardController,
+    AppsController, RulesController, RuleTemplatesController, DevicesController, DashboardController,
     DashboardHistoryController, AlarmsController, AuditController, SiemController, SecurityPostureController,
     DashboardUiController, TasksController, SetupController, PackagesController,
   ],
@@ -79,6 +81,7 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
     SiemPipelineWorker,
     SecurityPostureService,
     RulesService,
+    RuleTemplatesService,
     MfaChallengeService,
   ],
 })

@@ -63,14 +63,26 @@ describe('extractNodeId()', () => {
 describe('MtlsNodeGuard', () => {
   let guard: MtlsNodeGuard;
   const originalEnv = process.env.NODE_ENV;
+  const originalMtlsDisabled = process.env.MTLS_DISABLED;
+  const originalTlsCertPath = process.env.TLS_CERT_PATH;
+  const originalTlsKeyPath = process.env.TLS_KEY_PATH;
+  const originalTlsCaPath = process.env.TLS_CA_PATH;
 
   beforeEach(() => {
     guard = new MtlsNodeGuard();
     process.env.NODE_ENV = 'production';
+    delete process.env.MTLS_DISABLED;
+    delete process.env.TLS_CERT_PATH;
+    delete process.env.TLS_KEY_PATH;
+    delete process.env.TLS_CA_PATH;
   });
 
   afterEach(() => {
-    process.env.NODE_ENV = originalEnv;
+    restoreEnv('NODE_ENV', originalEnv);
+    restoreEnv('MTLS_DISABLED', originalMtlsDisabled);
+    restoreEnv('TLS_CERT_PATH', originalTlsCertPath);
+    restoreEnv('TLS_KEY_PATH', originalTlsKeyPath);
+    restoreEnv('TLS_CA_PATH', originalTlsCaPath);
   });
 
   // ── (1) No client certificate ──────────────────────────────────────────────
@@ -196,9 +208,9 @@ describe('MtlsNodeGuard', () => {
     process.env.NODE_API_SECRET = originalSecret;
   });
 
-  // ── (7) Dev mode — plain HTTP allowed only with explicit MTLS_DISABLED ─────
+  // ── (7) Dev mode — plain HTTP allowed when mTLS is explicitly disabled ─────
 
-  it('accepts dev-mode plain-HTTP request only when MTLS_DISABLED=true outside production', () => {
+  it('accepts dev-mode plain-HTTP request when MTLS_DISABLED=true outside production', () => {
     process.env.NODE_ENV = 'development';
     process.env.MTLS_DISABLED = 'true';
 
@@ -218,7 +230,27 @@ describe('MtlsNodeGuard', () => {
 
     expect(result).toBe(true);
     expect(reqContainer[NODE_ID_KEY]).toBe(nodeId);
-    delete process.env.MTLS_DISABLED;
+  });
+
+  it('accepts dev-mode plain-HTTP request when the management server has no TLS configured', () => {
+    process.env.NODE_ENV = 'development';
+
+    const socket = {}; // no getPeerCertificate — plain HTTP
+    const nodeId = 'dev-node-from-header';
+    const reqContainer: Record<string, unknown> = {
+      socket,
+      body: {},
+      path: '/tasks/node/dev-node-from-header/pending',
+      header: (name: string) => (name === 'x-node-id' ? nodeId : undefined),
+    };
+    const ctx = {
+      switchToHttp: () => ({ getRequest: () => reqContainer }),
+    } as unknown as ExecutionContext;
+
+    const result = guard.canActivate(ctx);
+
+    expect(result).toBe(true);
+    expect(reqContainer[NODE_ID_KEY]).toBe(nodeId);
   });
 
   it('rejects dev-mode plain-HTTP request in production', () => {
@@ -230,3 +262,8 @@ describe('MtlsNodeGuard', () => {
     expect(() => guard.canActivate(ctx)).toThrow('mTLS client certificate required');
   });
 });
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

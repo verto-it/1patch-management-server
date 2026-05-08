@@ -8,10 +8,12 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "sidebar": "labelled"
 }/*EDITMODE-END*/;
 
-const CATEGORY_IDS = ["overview", "devices", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit", "siem", "security-posture"];
-const SEARCH_TYPES = ["device", "app", "package", "rule", "task", "node", "alarm", "audit"];
+const CATEGORY_IDS = ["overview", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit", "siem", "security-posture"];
+const SEARCH_TYPES = ["device", "group", "app", "package", "rule", "task", "node", "alarm", "audit"];
 const SEARCH_ALIASES = {
   devices: "device",
+  groups: "group",
+  "device-groups": "group",
   apps: "app",
   packages: "package",
   rules: "rule",
@@ -24,6 +26,7 @@ const SEARCH_ALIASES = {
 };
 const SEARCH_TYPE_TO_CATEGORY = {
   device: "devices",
+  group: "device-groups",
   app: "apps",
   package: "packages",
   rule: "rules",
@@ -76,6 +79,27 @@ function buildSearchResults(data, query) {
         deviceId: d.id,
       })));
     if (rows.length) groups.push(["Devices", rows]);
+  }
+
+  if (include("group")) {
+    const groupMap = new Map();
+    for (const device of data.devices || []) {
+      const name = device.group || "ungrouped";
+      const row = groupMap.get(name) || { name, count: 0, online: 0, samples: [] };
+      row.count += 1;
+      row.online += device.online ? 1 : 0;
+      if (row.samples.length < 3) row.samples.push(device.hostname || device.id);
+      groupMap.set(name, row);
+    }
+    const rows = limitResults([...groupMap.values()]
+      .filter(g => textMatches(term, [g.name, ...g.samples]))
+      .map(g => ({
+        type: "group",
+        title: g.name,
+        meta: `${g.count} devices · ${g.online} online`,
+        target: "device-groups",
+      })));
+    if (rows.length) groups.push(["Device Groups", rows]);
   }
 
   if (include("app")) {
@@ -263,6 +287,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
   const NAV = [
     { id:"overview", label:"Overview",  icon: Icon.dashboard },
     { id:"devices",  label:"Devices",   icon: Icon.devices,  count: counts.devices },
+    { id:"device-groups", label:"Groups", icon: Icon.groups },
     { id:"apps",     label:"Apps",      icon: Icon.apps },
     { id:"packages", label:"Packages",  icon: Icon.packages },
     { id:"rules",    label:"Rules",     icon: Icon.rules },
@@ -283,6 +308,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
   const Page = {
     overview: <OverviewPage onNav={setTab} onOpenDevice={setOpenDevice}/>,
     devices:  <DevicesPage onOpenDevice={setOpenDevice} globalSearch={pageSearchTerm("devices")}/>,
+    "device-groups": <DeviceGroupsPage onOpenDevice={setOpenDevice} globalSearch={pageSearchTerm("device-groups")}/>,
     apps:     <AppsPage globalSearch={pageSearchTerm("apps")}/>,
     packages: <PackagesPage globalSearch={pageSearchTerm("packages")}/>,
     rules:    <RulesPage globalSearch={pageSearchTerm("rules")}/>,

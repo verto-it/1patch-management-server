@@ -63,6 +63,20 @@ export class RulesService {
       actor: { userId: actor.id },
       metadata: { ruleId: rule.id, lifecycle: 'created' },
     });
+    if (rule.sourceTemplateId) {
+      this.audit.record(actor.id, 'rule.created_from_template', rule.id, {
+        templateId: rule.sourceTemplateId,
+        templateName: rule.sourceTemplateName,
+        enabled: rule.enabled,
+      }, rule.tenantId);
+      this.siem.emit({
+        tenantId: rule.tenantId ?? 'default',
+        type: 'rule.created_from_template',
+        severity: 'low',
+        actor: { userId: actor.id },
+        metadata: { ruleId: rule.id, templateId: rule.sourceTemplateId, enabled: rule.enabled },
+      });
+    }
     return rule;
   }
 
@@ -274,6 +288,9 @@ export class RulesService {
 
   private validateRule(rule: PatchRule) {
     for (const action of rule.actions ?? []) {
+      if (!['create_patch_task', 'create_security_task', 'notify', 'mark_device', 'block_task_creation'].includes((action as any).type)) {
+        throw new BadRequestException(`Unsupported rule action type: ${(action as any).type ?? 'missing'}`);
+      }
       if (action.type === 'create_security_task' && action.task === 'rescan_device') {
         throw new BadRequestException('rescan_device is reserved until the signed task pipeline supports it');
       }
@@ -282,6 +299,9 @@ export class RulesService {
       }
       if (action.type === 'mark_device' && !/^[A-Za-z0-9._:-]{1,48}$/.test(action.tag)) {
         throw new BadRequestException('Device tags must be 1-48 characters and contain only letters, numbers, dot, underscore, colon, or dash');
+      }
+      if (action.type === 'block_task_creation' && !clean(action.reason)) {
+        throw new BadRequestException('Block actions require a reason');
       }
     }
   }
@@ -322,6 +342,8 @@ function normalizeRule(input: Partial<PatchRule>, actor: User): PatchRule {
     value: input.value,
     targetVersion: input.targetVersion,
     maxVersion: input.maxVersion,
+    sourceTemplateId: input.sourceTemplateId,
+    sourceTemplateName: input.sourceTemplateName,
   };
 }
 
@@ -386,13 +408,18 @@ function valuesForField(field: RuleCondition['field'], context: ReturnType<typeo
     case 'device.group': return [context.device.group ?? ''];
     case 'device.tag': return context.device.tags ?? [];
     case 'device.deviceTrustScore': return [context.device.deviceTrustScore ?? 100];
+    case 'device.lastInventoryAgeHours': return [hoursSince(context.device.lastSeenAt)];
     case 'package.outdated': return context.packages.map((pkg) => pkg.outdated);
     case 'package.name': return context.packages.flatMap((pkg) => [pkg.name, pkg.packageId ?? '']);
+    case 'package.severity': return context.packages.map((pkg) => (pkg as any).severity ?? 'unknown');
     case 'package.version': return context.packages.map((pkg) => pkg.version);
     case 'lastTask.failed': return [context.lastTask?.status === 'failed'];
     case 'lastTask.retryCount': return [context.retryCount];
+    case 'lastTask.failureRetryable': return [isRetryableFailure(context.lastTask?.output)];
     case 'currentTime.maintenanceWindow': return [isNowInWindow(context.rule.schedule?.maintenanceWindow)];
     case 'riskScore': return [context.riskScore];
+    case 'task.sourceHostTrusted': return [true];
+    case 'task.hashPresent': return [true];
   }
 }
 
@@ -414,6 +441,7 @@ function actionDrafts(action: RuleAction, context: ReturnType<typeof buildContex
   if (action.type === 'create_security_task') {
     return action.task === 'refresh_inventory' ? [{ type: 'refresh_inventory', targetVersion: 'latest', deviceId: context.device.id }] : [];
   }
+  if (action.type === 'block_task_creation') return [];
   if (action.type !== 'create_patch_task') return [];
   const candidates = context.packages.filter((pkg) => {
     if (action.mode === 'all_outdated') return pkg.outdated;
@@ -497,6 +525,16 @@ function ruleMaxDevices(rule: PatchRule) {
     .map((action) => action.maxDevices)
     .filter((value): value is number => Number.isFinite(value));
   return Math.max(1, Math.min(DEFAULT_MAX_DEVICES_PER_EXECUTION, ...fromActions, DEFAULT_MAX_DEVICES_PER_EXECUTION));
+}
+
+function isRetryableFailure(output?: string) {
+  if (!output) return false;
+  return /(timeout|network|locked|reboot|busy|temporar|retry)/i.test(output);
+}
+
+function hoursSince(iso?: string) {
+  if (!iso) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - new Date(iso).getTime()) / 36e5);
 }
 
 function safeRegex(pattern: string) {

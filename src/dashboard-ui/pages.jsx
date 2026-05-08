@@ -336,11 +336,12 @@ function DevicesPage({ onOpenDevice, globalSearch = "" }) {
   const [q, setQ] = useState("");
   const activeQ = globalSearch || q;
   const [enrolling, setEnrolling] = useState(false);
+  const [manualDevice, setManualDevice] = useState(false);
   const devices = useResource(() => PatchAPI.devices());
   useLiveResource(devices, 2_500);
   const rows = (devices.data || []).filter(d => {
     const platform = d.platform || (/(windows|win)/i.test(d.os || "") ? "windows" : "linux");
-    if (!textMatches(activeQ, [d.hostname, formatOs(d.os), d.os, d.site, d.id, d.preferredNodeId])) return false;
+    if (!textMatches(activeQ, [d.hostname, formatOs(d.os), d.os, d.site, d.id, d.preferredNodeId, d.group, ...(d.tags || [])])) return false;
     if (filter === "windows" && platform !== "windows") return false;
     if (filter === "linux"   && platform !== "linux") return false;
     if (filter === "online"  && !d.online) return false;
@@ -353,6 +354,7 @@ function DevicesPage({ onOpenDevice, globalSearch = "" }) {
         <div><h2>Devices</h2><p>{devices.loading ? "Loading…" : `${(devices.data || []).length} managed endpoints`}</p></div>
         <div style={{ display:"flex", gap:8 }}>
           <button className="btn"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.download}</span>Export CSV</button>
+          <button className="btn" onClick={() => setManualDevice(true)}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Manual device</button>
           <button className="btn primary" onClick={() => setEnrolling(true)}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add clients</button>
         </div>
       </div>
@@ -394,7 +396,135 @@ function DevicesPage({ onOpenDevice, globalSearch = "" }) {
         </div>
       </div>
       {enrolling && <ClientEnrollmentWizard onClose={() => setEnrolling(false)} onCreated={devices.reload}/>}
+      {manualDevice && <ManualDeviceDialog groups={buildDeviceGroupOptions(devices.data || [])} onClose={() => setManualDevice(false)} onCreated={() => { devices.reload(); setManualDevice(false); }}/>}
     </div>
+  );
+}
+
+function DeviceGroupsPage({ onOpenDevice, globalSearch = "" }) {
+  const [selected, setSelected] = useState("all");
+  const [q, setQ] = useState("");
+  const [manualDevice, setManualDevice] = useState(false);
+  const devices = useResource(() => PatchAPI.devices());
+  useLiveResource(devices, 2_500);
+  const groups = useMemo(() => buildDeviceGroupOptions(devices.data || []), [devices.data]);
+  const activeQ = globalSearch || q;
+  const visibleGroups = groups.filter(group => textMatches(activeQ, [group.name, ...group.samples, ...group.tags]));
+  const selectedGroup = selected === "all" ? null : groups.find(group => group.name === selected);
+  const groupDevices = (devices.data || []).filter(device => selected === "all" || (device.group || "ungrouped") === selected);
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Device Groups</h2><p>{devices.loading ? "Loading…" : `${groups.length} groups across ${(devices.data || []).length} devices`}</p></div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="btn" onClick={() => setManualDevice(true)}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Manual device</button>
+          <button className="btn primary" onClick={() => setSelected("all")}>All groups</button>
+        </div>
+      </div>
+      <div className="card">
+        <div className="filterbar">
+          <div className="searchbox" style={{ width:280 }}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.search}</span>
+            <input placeholder="Search groups, hostnames, tags…" value={globalSearch || q} onChange={e => setQ(e.target.value)}/>
+          </div>
+          <div style={{ flex:1 }}/>
+          <span className="muted">{visibleGroups.length} visible</span>
+        </div>
+        {devices.error && <div style={{ padding:16 }}><ErrorAlert error={devices.error} onRetry={devices.reload}/></div>}
+        <div className="device-group-board">
+          <button className={"device-group-card large " + (selected === "all" ? "active" : "")} onClick={() => setSelected("all")}>
+            <strong>All devices</strong>
+            <span>{(devices.data || []).length} endpoints</span>
+            <em>Fleet-wide scope for rules and inventory views</em>
+          </button>
+          {visibleGroups.map(group => (
+            <button className={"device-group-card large " + (selected === group.name ? "active" : "")} key={group.name} onClick={() => setSelected(group.name)}>
+              <strong>{group.name}</strong>
+              <span>{group.count} devices · {group.online} online</span>
+              <em>{group.windows} Windows · {group.linux} Linux · {group.samples.join(", ") || "no samples"}</em>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-head">
+          <div><h3>{selectedGroup ? selectedGroup.name : "All devices"}</h3><div className="sub">{selectedGroup ? `${selectedGroup.count} devices in this group` : "Devices across every group"}</div></div>
+        </div>
+        <div className="card-body tight" style={{ overflowX:"auto" }}>
+          <table className="tbl">
+            <thead><tr><th>Hostname</th><th>Group</th><th>OS</th><th>Tags</th><th>Last seen</th><th>Status</th></tr></thead>
+            <tbody>
+              {devices.loading && <SkeletonRows n={6} cols={6}/>}
+              {!devices.loading && groupDevices.length === 0 && <tr><td colSpan={6} style={{ padding:24, color:"var(--text-3)" }}>No devices in this group.</td></tr>}
+              {!devices.loading && groupDevices.map(device => {
+                const platform = device.platform || (/(windows|win)/i.test(device.os || "") ? "windows" : "linux");
+                return (
+                  <tr key={device.id} onClick={() => onOpenDevice(device.id)}>
+                    <td><div style={{ display:"flex", alignItems:"center", gap:8 }}><OsIcon platform={platform}/><span className="mono">{device.hostname}</span></div></td>
+                    <td className="mono muted">{device.group || "ungrouped"}</td>
+                    <td className="muted">{formatOs(device.os)}</td>
+                    <td className="muted">{(device.tags || []).join(", ") || "—"}</td>
+                    <td className="muted">{fmtAgo(device.lastSeenAt)}</td>
+                    <td><StatusPill status={device.online ? "online" : "offline"}/></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {manualDevice && <ManualDeviceDialog groups={groups} onClose={() => setManualDevice(false)} onCreated={() => { devices.reload(); setManualDevice(false); }}/>}
+    </div>
+  );
+}
+
+function ManualDeviceDialog({ groups, onClose, onCreated }) {
+  const [form, setForm] = useState({ tenantId:"default", hostname:"", os:"windows", group:groups[0]?.name || "ungrouped", tags:"", preferredNodeId:"", deviceTrustScore:80, riskScore:"" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError(null);
+    try {
+      await PatchAPI.createDevice({
+        tenantId: form.tenantId,
+        hostname: form.hostname,
+        os: form.os,
+        group: form.group,
+        tags: form.tags,
+        preferredNodeId: form.preferredNodeId || undefined,
+        deviceTrustScore: Number(form.deviceTrustScore || 80),
+        riskScore: form.riskScore === "" ? undefined : Number(form.riskScore),
+      });
+      onCreated?.();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="output-dialog"><div className="output-dialog-box">
+        <div className="output-dialog-head"><h3>Add Manual Device</h3><button className="icon-btn" onClick={onClose}>{Icon.close}</button></div>
+        <form onSubmit={submit} style={{ padding:16, display:"flex", flexDirection:"column", gap:14 }}>
+          <div className="form-grid">
+            <label className="field"><span>Hostname</span><input required value={form.hostname} onChange={e => set("hostname", e.target.value)} placeholder="prod-win-042"/></label>
+            <label className="field"><span>Tenant</span><input value={form.tenantId} onChange={e => set("tenantId", e.target.value || "default")}/></label>
+            <label className="field"><span>Operating system</span><select value={form.os} onChange={e => set("os", e.target.value)}><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option></select></label>
+            <label className="field"><span>Device group</span><GroupSelect groups={groups} value={form.group} onChange={value => set("group", value)}/></label>
+            <label className="field"><span>Preferred node</span><input value={form.preferredNodeId} onChange={e => set("preferredNodeId", e.target.value)} placeholder="optional"/></label>
+            <label className="field"><span>Trust score</span><input type="number" min="0" max="100" value={form.deviceTrustScore} onChange={e => set("deviceTrustScore", e.target.value)}/></label>
+          </div>
+          <label className="field"><span>Tags</span><input value={form.tags} onChange={e => set("tags", e.target.value)} placeholder="production, browser-critical"/></label>
+          <div className="success-card"><strong>Manual inventory record</strong><span>This creates a visible device record for planning, grouping, and rules. It will not receive executable tasks until it enrolls through a real client/node path.</span></div>
+          {error && <ErrorAlert error={error}/>}
+          <div style={{ display:"flex", justifyContent:"space-between", gap:8 }}><button type="button" className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !form.hostname.trim()}>{busy ? "Adding..." : "Add device"}</button></div>
+        </form>
+      </div></div>
+    </React.Fragment>
   );
 }
 
@@ -783,11 +913,39 @@ function RulesPage({ globalSearch = "" }) {
 }
 
 function RuleWizard({ rule, onClose, onCreated }) {
-  const [step, setStep] = useState("trigger");
+  const [step, setStep] = useState(() => rule?.id ? "trigger" : "templates");
   const [form, setForm] = useState(() => normalizeRuleForm(rule));
+  const templates = useResource(() => PatchAPI.ruleTemplates(form.tenantId || "default").catch(() => DASHBOARD_RULE_TEMPLATES), [form.tenantId]);
+  const [templateCategory, setTemplateCategory] = useState("Recommended");
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templateInputs, setTemplateInputs] = useState({});
+  const [templatePreview, setTemplatePreview] = useState(null);
+  const devices = useResource(() => PatchAPI.devices(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const templateRows = templates.data || [];
+  const deviceGroups = useMemo(() => buildDeviceGroupOptions(devices.data || []), [devices.data]);
+  const templateCategories = ["Recommended","Patch Automation","Security / Inventory","Failure Handling","Compliance","Notifications"];
+  const selectedTemplate = templateRows.find(t => t.id === selectedTemplateId) || templateRows.find(t => t.category === templateCategory) || templateRows[0];
+  useEffect(() => {
+    if (!selectedTemplateId && selectedTemplate?.id) setSelectedTemplateId(selectedTemplate.id);
+  }, [selectedTemplateId, selectedTemplate?.id]);
+  const useTemplate = async () => {
+    if (!selectedTemplate) return;
+    setBusy(true); setError(null);
+    try {
+      const inputs = withTemplateDefaults(selectedTemplate, templateInputs, form.tenantId);
+      const result = await PatchAPI.createRuleDraftFromTemplate(selectedTemplate.id, inputs).catch(() => clientRuleDraftFromTemplate(selectedTemplate, inputs, form.tenantId || "default"));
+      setForm(normalizeRuleForm(result.draftRule));
+      setTemplatePreview(result.preview);
+      setStep("preview");
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
   const save = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -803,7 +961,7 @@ function RuleWizard({ rule, onClose, onCreated }) {
       setBusy(false);
     }
   };
-  const tabs = [["trigger","Trigger"],["conditions","Conditions"],["actions","Actions"],["schedule","Schedule"],["preview","Preview"]];
+  const tabs = [...(form.id ? [] : [["templates","Templates"]]), ["trigger","Trigger"],["conditions","Conditions"],["actions","Actions"],["schedule","Schedule"],["preview","Preview"]];
   return (
     <React.Fragment>
       <div className="drawer-backdrop" onClick={onClose}/>
@@ -817,18 +975,102 @@ function RuleWizard({ rule, onClose, onCreated }) {
             {tabs.map(([id,label]) => <button type="button" key={id} className={"wizard-step " + (step === id ? "active" : "")} onClick={() => setStep(id)}><span>{id === step ? ">>" : "--"}</span>{label}</button>)}
           </div>
           <div className="wizard-panel" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            {step === "templates" && (
+              <React.Fragment>
+                <div className="template-market-head">
+                  <div>
+                    <h4>Start from template</h4>
+                    <p>Pick a safe blueprint, fill the missing inputs, then review the disabled draft before saving.</p>
+                  </div>
+                  <button type="button" className="btn" onClick={() => setStep("trigger")}>Blank rule</button>
+                </div>
+                {templates.error && <ErrorAlert error={templates.error} onRetry={templates.reload}/>}
+                <div className="template-category-row">
+                  {templateCategories.map(category => (
+                    <button type="button" key={category} className={category === templateCategory ? "active" : ""} onClick={() => { setTemplateCategory(category); const first = templateRows.find(t => t.category === category); if (first) setSelectedTemplateId(first.id); }}>
+                      {category}
+                    </button>
+                  ))}
+                </div>
+                <div className="template-market-grid">
+                  {templates.loading && Array.from({ length:4 }).map((_, i) => <div className="template-market-card" key={i}><div className="skel" style={{ height:16, width:"70%" }}/><div className="skel" style={{ height:42 }}/></div>)}
+                  {!templates.loading && templateRows.filter(t => t.category === templateCategory).map(template => (
+                    <button type="button" key={template.id} className={"template-market-card " + (selectedTemplate?.id === template.id ? "selected" : "")} onClick={() => setSelectedTemplateId(template.id)}>
+                      <div className="template-market-card-top">
+                        <strong>{template.name}</strong>
+                        <span className={"risk-badge " + template.riskLevel}>{template.riskLevel}</span>
+                      </div>
+                      <p>{template.description}</p>
+                      <div className="template-badges">
+                        <span>{template.recommendedSecurityMode}</span>
+                        <span>{template.trigger?.type || "manual"}</span>
+                        <span>{(template.requiredInputs || []).length || "no"} inputs</span>
+                      </div>
+                      <div className="template-does">
+                        {(template.explanation || []).slice(0, 3).map(item => <em key={item}>{item}</em>)}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {selectedTemplate && (
+                  <div className="template-detail-panel">
+                    <div className="template-detail-main">
+                      <div className="template-section-title">What this template does</div>
+                      <ul className="template-check-list">{(selectedTemplate.explanation || []).map(item => <li key={item}>{item}</li>)}</ul>
+                      <div className="template-section-title">Safety defaults</div>
+                      <ul className="template-check-list">{(selectedTemplate.safety || []).map(item => <li key={item}>{item}</li>)}</ul>
+                    </div>
+                    <div className="template-input-panel">
+                      <div className="template-section-title">Required inputs</div>
+                      {(selectedTemplate.requiredInputs || []).length === 0 && <div className="muted">No missing inputs. You can generate the draft now.</div>}
+                      {(selectedTemplate.requiredInputs || []).map(input => (
+                        input.type === "device_group" ? (
+                          <DeviceGroupPicker
+                            key={input.id}
+                            input={input}
+                            groups={deviceGroups}
+                            loading={devices.loading}
+                            value={templateInputs[input.id] ?? input.defaultValue ?? ""}
+                            onChange={value => setTemplateInputs(prev => ({ ...prev, [input.id]: value }))}
+                          />
+                        ) : input.type === "maintenance_window" ? (
+                          <MaintenanceWindowPicker
+                            key={input.id}
+                            input={input}
+                            value={templateInputs[input.id] ?? input.defaultValue}
+                            onChange={value => setTemplateInputs(prev => ({ ...prev, [input.id]: value }))}
+                          />
+                        ) : (
+                          <label className="field" key={input.id}>
+                            <span>{input.label}</span>
+                            <input
+                              type={input.type === "number" ? "number" : "text"}
+                              value={templateInputDisplay(templateInputs[input.id] ?? input.defaultValue ?? "")}
+                              onChange={e => setTemplateInputs(prev => ({ ...prev, [input.id]: parseTemplateInput(input, e.target.value) }))}
+                              placeholder={input.description}
+                            />
+                          </label>
+                        )
+                      ))}
+                      <button type="button" className="btn primary" disabled={busy} onClick={useTemplate}>{busy ? "Generating..." : "Use template"}</button>
+                    </div>
+                  </div>
+                )}
+                {error && <ErrorAlert error={error}/>}
+              </React.Fragment>
+            )}
             {step === "trigger" && (
               <React.Fragment>
                 <div className="form-grid">
                   <label className="field"><span>Name</span><input required value={form.name} onChange={e => set("name", e.target.value)} placeholder="Auto patch Chrome weekly"/></label>
                   <label className="field"><span>Tenant</span><input value={form.tenantId} onChange={e => set("tenantId", e.target.value || "default")}/></label>
                   <label className="field"><span>Priority</span><input type="number" value={form.priority} onChange={e => set("priority", Number(e.target.value || 100))}/></label>
-                  <label className="field"><span>Status</span><select value={form.enabled ? "enabled" : "disabled"} onChange={e => set("enabled", e.target.value === "enabled")}><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label>
+                  <label className="field"><span>Status</span><select value={form.enabled ? "enabled" : "disabled"} onChange={e => set("enabled", e.target.value === "enabled")}><option value="disabled">Disabled</option><option value="enabled">Enabled</option></select></label>
                 </div>
                 <label className="field"><span>Description</span><input value={form.description} onChange={e => set("description", e.target.value)} placeholder="Weekly low-risk browser patch policy"/></label>
                 <div className="form-grid">
                   <label className="field"><span>Trigger</span><select value={form.triggerType} onChange={e => set("triggerType", e.target.value)}><option value="manual">Manual</option><option value="schedule">Schedule</option><option value="event">Event</option></select></label>
-                  {form.triggerType === "event" && <label className="field"><span>Event</span><select value={form.eventType} onChange={e => set("eventType", e.target.value)}><option value="device.inventory.updated">device.inventory.updated</option><option value="task.failed">task.failed</option><option value="vulnerability.detected">vulnerability.detected</option></select></label>}
+                  {form.triggerType === "event" && <label className="field"><span>Event</span><select value={form.eventType} onChange={e => set("eventType", e.target.value)}><option value="device.inventory.updated">device.inventory.updated</option><option value="task.failed">task.failed</option><option value="vulnerability.detected">vulnerability.detected</option><option value="package.high_priority.detected">package.high_priority.detected</option><option value="task.security_scan.completed">task.security_scan.completed</option><option value="rule.task_candidate.created">rule.task_candidate.created</option></select></label>}
                   {form.triggerType === "schedule" && <label className="field"><span>Cron</span><input value={form.cron} onChange={e => set("cron", e.target.value)} placeholder="0 2 * * 0"/></label>}
                 </div>
               </React.Fragment>
@@ -853,13 +1095,14 @@ function RuleWizard({ rule, onClose, onCreated }) {
             {step === "actions" && (
               <React.Fragment>
                 <div className="form-grid">
-                  <label className="field"><span>Action</span><select value={form.actionType} onChange={e => set("actionType", e.target.value)}><option value="create_patch_task">Create patch task</option><option value="create_security_task">Create security task</option><option value="notify">Notify SIEM</option><option value="mark_device">Mark device</option></select></label>
+                  <label className="field"><span>Action</span><select value={form.actionType} onChange={e => set("actionType", e.target.value)}><option value="create_patch_task">Create patch task</option><option value="create_security_task">Create security task</option><option value="notify">Notify SIEM</option><option value="mark_device">Mark device</option><option value="block_task_creation">Block task creation</option></select></label>
                   {form.actionType === "create_patch_task" && <label className="field"><span>Patch mode</span><select value={form.patchMode} onChange={e => set("patchMode", e.target.value)}><option value="all_outdated">All outdated packages</option><option value="specific_package">Specific package</option></select></label>}
                   {form.actionType === "create_patch_task" && form.patchMode === "specific_package" && <label className="field"><span>Package</span><input value={form.packageName} onChange={e => set("packageName", e.target.value)} placeholder="Google Chrome"/></label>}
                   {form.actionType === "create_patch_task" && <label className="field"><span>Target version</span><input value={form.targetVersion} onChange={e => set("targetVersion", e.target.value || "latest")}/></label>}
                   {form.actionType === "create_security_task" && <label className="field"><span>Security task</span><select value={form.securityTask} onChange={e => set("securityTask", e.target.value)}><option value="refresh_inventory">Refresh inventory</option></select></label>}
                   {form.actionType === "notify" && <label className="field"><span>Message</span><input value={form.notifyMessage} onChange={e => set("notifyMessage", e.target.value)}/></label>}
                   {form.actionType === "mark_device" && <label className="field"><span>Tag</span><input value={form.tag} onChange={e => set("tag", e.target.value)} placeholder="needs-review"/></label>}
+                  {form.actionType === "block_task_creation" && <label className="field"><span>Reason</span><input value={form.blockReason} onChange={e => set("blockReason", e.target.value)} placeholder="Unsafe automation candidate"/></label>}
                 </div>
                 <div className="success-card"><strong>Safety boundary</strong><span>No action can run commands, hide tasks, disable the kill switch, skip SIEM, or bypass scan, approval, signing, ledger, and delay gates.</span></div>
               </React.Fragment>
@@ -869,11 +1112,11 @@ function RuleWizard({ rule, onClose, onCreated }) {
                 <label className="field"><span>Maintenance start UTC</span><input type="number" min="0" max="23" value={form.startHourUtc} onChange={e => set("startHourUtc", Number(e.target.value || 0))}/></label>
                 <label className="field"><span>Maintenance end UTC</span><input type="number" min="1" max="24" value={form.endHourUtc} onChange={e => set("endHourUtc", Number(e.target.value || 24))}/></label>
                 <label className="field"><span>Safe mode approval risk</span><input type="number" min="0" max="100" value={form.requireApprovalAtRiskScore} onChange={e => set("requireApprovalAtRiskScore", Number(e.target.value || 60))}/></label>
-                <label className="field"><span>Max devices</span><input type="number" min="1" max="25" value={form.maxDevices} onChange={e => set("maxDevices", Number(e.target.value || 25))}/></label>
               </div>
             )}
             {step === "preview" && (
               <React.Fragment>
+                {templatePreview && <div className="template-preview-box"><strong>Review before saving</strong><ul>{(templatePreview.summary || []).map(item => <li key={item}>{item}</li>)}</ul><span>Estimated affected devices: {templatePreview.estimatedAffectedDevices ?? "unknown"} · Risk: {templatePreview.riskLevel} · Mode: {templatePreview.securityMode}</span></div>}
                 <div className="success-card"><strong>{form.name || "Untitled rule"}</strong><span>{form.triggerType} trigger · {form.combinator} conditions · {actionSummary(rulePayload(form).actions[0])}</span></div>
                 <pre className="mono" style={{ whiteSpace:"pre-wrap", maxHeight:260, overflow:"auto", background:"var(--bg-sub)", border:"1px solid var(--line)", padding:12, borderRadius:6 }}>{JSON.stringify(rulePayload(form), null, 2)}</pre>
               </React.Fragment>
@@ -915,20 +1158,191 @@ function RuleTester({ rule, onClose, onExecuted }) {
   );
 }
 
-const conditionFields = ["device.os","device.hostname","device.group","device.tag","device.deviceTrustScore","package.outdated","package.name","package.version","lastTask.failed","lastTask.retryCount","currentTime.maintenanceWindow","riskScore"];
+const conditionFields = ["device.os","device.hostname","device.group","device.tag","device.deviceTrustScore","device.lastInventoryAgeHours","package.outdated","package.name","package.severity","package.version","lastTask.failed","lastTask.retryCount","lastTask.failureRetryable","currentTime.maintenanceWindow","riskScore","task.sourceHostTrusted","task.hashPresent"];
 const conditionOperators = ["eq","neq","contains","matches","lt","lte","gt","gte","in"];
 
+function withTemplateDefaults(template, values, tenantId) {
+  const out = { ...values, tenantId };
+  (template.requiredInputs || []).forEach(input => {
+    if (out[input.id] === undefined || out[input.id] === "") out[input.id] = input.defaultValue;
+  });
+  return out;
+}
+function templateInputDisplay(value) {
+  if (value && typeof value === "object") {
+    if (Number.isFinite(value.startHourUtc) && Number.isFinite(value.endHourUtc)) return `${value.startHourUtc}-${value.endHourUtc}`;
+    return JSON.stringify(value);
+  }
+  return value ?? "";
+}
+function parseTemplateInput(input, value) {
+  if (input.type === "number") return Number(value || 0);
+  if (input.type === "maintenance_window") {
+    const match = String(value).match(/(\d{1,2})\D+(\d{1,2})/);
+    return { daysOfWeek:[0], startHourUtc: match ? Number(match[1]) : 3, endHourUtc: match ? Number(match[2]) : 5 };
+  }
+  return value;
+}
+function buildDeviceGroupOptions(devices) {
+  const groups = new Map();
+  for (const device of devices || []) {
+    const name = device.group || "ungrouped";
+    const current = groups.get(name) || { name, count:0, online:0, windows:0, linux:0, tags:new Set(), samples:[] };
+    const platform = device.platform || (/(windows|win)/i.test(device.os || "") ? "windows" : /(linux|ubuntu|debian|rhel|fedora|suse)/i.test(device.os || "") ? "linux" : "other");
+    current.count += 1;
+    current.online += device.online ? 1 : 0;
+    current.windows += platform === "windows" ? 1 : 0;
+    current.linux += platform === "linux" ? 1 : 0;
+    (device.tags || []).forEach(tag => current.tags.add(tag));
+    if (current.samples.length < 3) current.samples.push(device.hostname || device.id);
+    groups.set(name, current);
+  }
+  return [...groups.values()].map(group => ({ ...group, tags:[...group.tags].sort() })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function GroupSelect({ groups, value, onChange }) {
+  const [query, setQuery] = useState(value || "");
+  const matches = groups.filter(group => textMatches(query, [group.name, ...group.samples, ...group.tags])).slice(0, 8);
+  useEffect(() => setQuery(value || ""), [value]);
+  return (
+    <div className="group-select">
+      <div className="group-select-search">
+        <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.search}</span>
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search groups..." />
+      </div>
+      <div className="group-option-list">
+        {matches.map(group => (
+          <button type="button" key={group.name} className={"group-option " + (value === group.name ? "selected" : "")} onClick={() => { onChange(group.name); setQuery(group.name); }}>
+            <strong>{group.name}</strong>
+            <span>{group.count} devices · {group.online} online</span>
+            <em>{group.samples.join(", ") || "No sample devices"}</em>
+          </button>
+        ))}
+        {matches.length === 0 && query.trim() && (
+          <button type="button" className="group-option create" onClick={() => onChange(query.trim())}>
+            <strong>Create "{query.trim()}"</strong><span>Use this new group name</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+function DeviceGroupPicker({ input, groups, loading, value, onChange }) {
+  return (
+    <div className="field">
+      <span>{input.label}</span>
+      {loading ? <div className="skel" style={{ height:42, borderRadius:6 }}/> : <GroupSelect groups={groups} value={value} onChange={onChange}/>}
+      <small className="field-hint">{groups.length ? "Search and select an existing device group, or type a new one." : "No groups found yet. Add or enroll devices to build group options."}</small>
+    </div>
+  );
+}
+function MaintenanceWindowPicker({ input, value, onChange }) {
+  const current = value && typeof value === "object" ? value : { daysOfWeek:[0], startHourUtc:3, endHourUtc:5 };
+  const selectedDays = new Set(current.daysOfWeek?.length ? current.daysOfWeek : [0]);
+  const setDay = (day) => {
+    const next = new Set(selectedDays);
+    next.has(day) ? next.delete(day) : next.add(day);
+    onChange({ ...current, daysOfWeek:[...next].sort((a, b) => a - b) });
+  };
+  const setHour = (key, raw) => {
+    const hour = Math.max(0, Math.min(key === "endHourUtc" ? 24 : 23, Number(raw)));
+    const next = { ...current, [key]: hour };
+    if (next.endHourUtc <= next.startHourUtc) {
+      if (key === "startHourUtc") next.endHourUtc = Math.min(24, next.startHourUtc + 1);
+      else next.startHourUtc = Math.max(0, next.endHourUtc - 1);
+    }
+    onChange(next);
+  };
+  const presets = [
+    ["sun-3-5", "Sun 03-05", { daysOfWeek:[0], startHourUtc:3, endHourUtc:5 }],
+    ["sat-sun-2-6", "Weekend 02-06", { daysOfWeek:[0,6], startHourUtc:2, endHourUtc:6 }],
+    ["daily-1-3", "Daily 01-03", { daysOfWeek:[0,1,2,3,4,5,6], startHourUtc:1, endHourUtc:3 }],
+  ];
+  return (
+    <div className="field maintenance-picker">
+      <span>{input.label}</span>
+      <div className="maintenance-presets">
+        {presets.map(([id, label, preset]) => <button type="button" key={id} onClick={() => onChange(preset)}>{label}</button>)}
+      </div>
+      <div className="dow-picker">
+        {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((label, day) => (
+          <button type="button" key={label} className={selectedDays.has(day) ? "active" : ""} onClick={() => setDay(day)}>{label}</button>
+        ))}
+      </div>
+      <div className="time-range">
+        <label><span>Start</span><select value={current.startHourUtc} onChange={e => setHour("startHourUtc", e.target.value)}>{hourOptions(0, 23)}</select></label>
+        <label><span>End</span><select value={current.endHourUtc} onChange={e => setHour("endHourUtc", e.target.value)}>{hourOptions(1, 24)}</select></label>
+      </div>
+      <div className="window-summary">UTC window · {daysLabel([...selectedDays])} · {formatHour(current.startHourUtc)}-{formatHour(current.endHourUtc)}</div>
+      <small className="field-hint">Tasks are still delayed, scanned, approved, and signed by policy before dispatch.</small>
+    </div>
+  );
+}
+function hourOptions(min, max) {
+  const items = [];
+  for (let hour = min; hour <= max; hour++) items.push(<option key={hour} value={hour}>{formatHour(hour)}</option>);
+  return items;
+}
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+function daysLabel(days) {
+  if (days.length === 7) return "Daily";
+  return days.map(day => ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][day]).join(", ");
+}
+function clientRuleDraftFromTemplate(template, inputs, tenantId) {
+  const rule = {
+    id: undefined,
+    tenantId,
+    name: template.name,
+    description: `${template.description}\n\nCreated from template: ${template.name}`,
+    enabled: false,
+    priority:100,
+    trigger: template.trigger || { type:"manual" },
+    conditionGroup: replaceTemplateValues(template.conditions || { combinator:"AND", conditions:[] }, inputs),
+    actions: (template.actions || []).map(action => replaceTemplateValues(action, inputs)),
+    schedule: { ...(template.schedule || {}), maintenanceWindow: inputs.maintenanceWindow || template.schedule?.maintenanceWindow },
+    safeMode:{ enabled:true, requireApprovalAtRiskScore: template.recommendedSecurityMode === "tinfoil" ? 40 : template.recommendedSecurityMode === "strict" ? 50 : 60 },
+    sourceTemplateId: template.id,
+    sourceTemplateName: template.name,
+  };
+  return {
+    draftRule: rule,
+    preview: {
+      summary: [`target devices in group ${inputs.targetDeviceGroup || "selected group"}`, ...(template.explanation || []), "start disabled for review before saving", "use the normal task security pipeline"],
+      estimatedAffectedDevices: null,
+      riskLevel: template.riskLevel || "medium",
+      requiredApprovals: ["tenant policy"],
+      securityMode: template.recommendedSecurityMode || "normal",
+    },
+  };
+}
+function replaceTemplateValues(value, inputs) {
+  if (typeof value === "string" && value.startsWith("$input.")) return inputs[value.slice(7)];
+  if (Array.isArray(value)) return value.map(item => replaceTemplateValues(item, inputs));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, replaceTemplateValues(nested, inputs)]));
+  return value;
+}
+const DASHBOARD_RULE_TEMPLATES = [
+  { id:"weekly-browser-updates", name:"Weekly Browser Updates", description:"Patch Chrome, Edge, and Firefox on Windows during a maintenance window.", category:"Recommended", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["browser","windows"], trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.os", operator:"eq", value:"windows" },{ field:"package.name", operator:"in", value:["Google Chrome","Microsoft Edge","Mozilla Firefox","Chrome","Edge","Firefox"] },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[{ id:"targetDeviceGroup", label:"Target device group", type:"device_group", required:true, description:"Select the group to target." },{ id:"maintenanceWindow", label:"Maintenance window", type:"maintenance_window", required:true, description:"UTC hours", defaultValue:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }], explanation:["update Chrome, Edge, and Firefox when they are outdated","use delayed execution and security scanning before dispatch"], safety:["delayed execution required","security scan required","disabled by default"] },
+  { id:"critical-patch-fast-track", name:"Critical Patch Fast Track", description:"Fast-track critical package drafts while keeping production behind approval gates.", category:"Recommended", recommendedSecurityMode:"tinfoil", riskLevel:"high", trigger:{ type:"event", eventType:"vulnerability.detected" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"neq", value:"production" },{ field:"package.severity", operator:"eq", value:"critical" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" },{ type:"notify", channel:"siem", message:"Critical patch fast-track draft created" }], requiredInputs:[], explanation:["create patch task drafts for critical packages","send a SIEM notification"], safety:["MFA approval required","high-risk approval policy applies"] },
+  { id:"refresh-inventory-daily", name:"Refresh Inventory Daily", description:"Refresh stale inventory on a daily schedule.", category:"Security / Inventory", recommendedSecurityMode:"normal", riskLevel:"low", trigger:{ type:"schedule" }, schedule:{ cron:"0 1 * * *" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.lastInventoryAgeHours", operator:"gt", value:24 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" }], requiredInputs:[{ id:"targetDeviceGroup", label:"Target device group", type:"device_group", required:true, description:"Select the group to refresh." }], explanation:["refresh inventory for devices older than 24 hours"], safety:["low risk","uses supported signed refresh task"] },
+  { id:"retry-failed-updates", name:"Retry Failed Updates", description:"Retry transient failures with capped exponential backoff.", category:"Failure Handling", recommendedSecurityMode:"strict", riskLevel:"medium", trigger:{ type:"event", eventType:"task.failed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"lastTask.failed", operator:"eq", value:true },{ field:"lastTask.retryCount", operator:"lt", value:"$input.retryLimit" },{ field:"lastTask.failureRetryable", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest", retryLimit:"$input.retryLimit", backoff:"exponential", maxDevices:1 }], requiredInputs:[{ id:"retryLimit", label:"Retry limit", type:"number", required:true, description:"Maximum attempts", defaultValue:2 }], explanation:["create one retry task when the failure is retryable"], safety:["exponential backoff","retry count prevents loops"] },
+  { id:"patch-test-group-first", name:"Patch Test Group First", description:"Patch test devices before any production rollout.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"low", trigger:{ type:"schedule" }, schedule:{ cron:"0 2 * * 0" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"test" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[], explanation:["create patch task drafts only for the test group"], safety:["no production devices affected"] },
+  { id:"notify-on-high-risk-task", name:"Notify on High-Risk Task", description:"Notify security systems when a task scan returns high risk.", category:"Notifications", recommendedSecurityMode:"normal", riskLevel:"low", trigger:{ type:"event", eventType:"task.security_scan.completed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"riskScore", operator:"gte", value:70 }] }, actions:[{ type:"notify", channel:"siem", message:"High-risk task detected by rule template" }], requiredInputs:[], explanation:["send SIEM and configured notifications for high-risk task scans"], safety:["no execution action"] },
+  { id:"production-maintenance-window-only", name:"Production Maintenance Window Only", description:"Permit production patch drafts only inside a configured maintenance window.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"high", trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"production" },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[{ id:"maintenanceWindow", label:"Maintenance window", type:"maintenance_window", required:true, description:"UTC hours", defaultValue:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }], explanation:["create production patch task drafts only during the configured window"], safety:["delayed execution required","approval required"] },
+  { id:"block-unsafe-automation", name:"Block Unsafe Automation", description:"Block unsafe automation candidates and notify admins.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"low", trigger:{ type:"event", eventType:"rule.task_candidate.created" }, schedule:{}, conditions:{ combinator:"OR", conditions:[{ field:"riskScore", operator:"gte", value:90 },{ field:"task.sourceHostTrusted", operator:"eq", value:false },{ field:"task.hashPresent", operator:"eq", value:false }] }, actions:[{ type:"block_task_creation", reason:"Unsafe automation candidate" },{ type:"notify", channel:"siem", message:"Blocked unsafe automation candidate" }], requiredInputs:[], explanation:["do not create an executable task","notify admins and SIEM"], safety:["no hidden task","no arbitrary command"] },
+];
 function defaultRule() {
-  return { enabled:true, tenantId:"default", name:"", description:"", priority:100, trigger:{ type:"manual" }, conditionGroup:{ combinator:"AND", conditions:[{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest", maxDevices:25 }], schedule:{ maintenanceWindow:{ startHourUtc:0, endHourUtc:6 } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:60 } };
+  return { enabled:true, tenantId:"default", name:"", description:"", priority:100, trigger:{ type:"manual" }, conditionGroup:{ combinator:"AND", conditions:[{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], schedule:{ maintenanceWindow:{ startHourUtc:0, endHourUtc:6 } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:60 } };
 }
 function normalizeRuleForm(rule) {
   const r = rule || defaultRule();
   const action = (r.actions || defaultRule().actions)[0];
-  return { id:r.id, tenantId:r.tenantId || "default", name:r.name || "", description:r.description || "", enabled:r.enabled !== false, priority:r.priority ?? 100, triggerType:r.trigger?.type || "manual", eventType:r.trigger?.eventType || "device.inventory.updated", cron:r.schedule?.cron || "0 2 * * 0", combinator:r.conditionGroup?.combinator || "AND", conditions:r.conditionGroup?.conditions?.filter(c => !c.combinator) || [], actionType:action.type, patchMode:action.mode || "all_outdated", packageName:action.packageName || "", targetVersion:action.targetVersion || "latest", securityTask:action.task || "refresh_inventory", notifyMessage:action.message || "Rule matched", tag:action.tag || "rule-matched", startHourUtc:r.schedule?.maintenanceWindow?.startHourUtc ?? 0, endHourUtc:r.schedule?.maintenanceWindow?.endHourUtc ?? 6, requireApprovalAtRiskScore:r.safeMode?.requireApprovalAtRiskScore ?? 60, maxDevices:action.maxDevices || 25 };
+  return { id:r.id, tenantId:r.tenantId || "default", name:r.name || "", description:r.description || "", enabled:r.enabled !== false, priority:r.priority ?? 100, triggerType:r.trigger?.type || "manual", eventType:r.trigger?.eventType || "device.inventory.updated", cron:r.schedule?.cron || "0 2 * * 0", combinator:r.conditionGroup?.combinator || "AND", conditions:r.conditionGroup?.conditions?.filter(c => !c.combinator) || [], actionType:action.type, patchMode:action.mode || "all_outdated", packageName:action.packageName || "", targetVersion:action.targetVersion || "latest", securityTask:action.task || "refresh_inventory", notifyMessage:action.message || "Rule matched", tag:action.tag || "rule-matched", blockReason:action.reason || "Unsafe automation candidate", startHourUtc:r.schedule?.maintenanceWindow?.startHourUtc ?? 0, endHourUtc:r.schedule?.maintenanceWindow?.endHourUtc ?? 6, requireApprovalAtRiskScore:r.safeMode?.requireApprovalAtRiskScore ?? 60, sourceTemplateId:r.sourceTemplateId, sourceTemplateName:r.sourceTemplateName };
 }
 function rulePayload(form) {
-  const action = form.actionType === "create_patch_task" ? { type:"create_patch_task", mode:form.patchMode, packageName:form.packageName || undefined, targetVersion:form.targetVersion || "latest", maxDevices:form.maxDevices } : form.actionType === "create_security_task" ? { type:"create_security_task", task:form.securityTask } : form.actionType === "notify" ? { type:"notify", channel:"siem", message:form.notifyMessage || "Rule matched" } : { type:"mark_device", tag:form.tag || "rule-matched" };
-  return { tenantId:form.tenantId || "default", name:form.name.trim(), description:form.description.trim(), enabled:form.enabled, priority:Number(form.priority || 100), trigger:{ type:form.triggerType, ...(form.triggerType === "event" ? { eventType:form.eventType } : {}) }, conditionGroup:{ combinator:form.combinator, conditions:form.conditions }, actions:[action], schedule:{ cron:form.triggerType === "schedule" ? form.cron : undefined, maintenanceWindow:{ startHourUtc:Number(form.startHourUtc), endHourUtc:Number(form.endHourUtc) } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:Number(form.requireApprovalAtRiskScore || 60) } };
+  const action = form.actionType === "create_patch_task" ? { type:"create_patch_task", mode:form.patchMode, packageName:form.packageName || undefined, targetVersion:form.targetVersion || "latest" } : form.actionType === "create_security_task" ? { type:"create_security_task", task:form.securityTask } : form.actionType === "notify" ? { type:"notify", channel:"siem", message:form.notifyMessage || "Rule matched" } : form.actionType === "block_task_creation" ? { type:"block_task_creation", reason:form.blockReason || "Unsafe automation candidate" } : { type:"mark_device", tag:form.tag || "rule-matched" };
+  return { tenantId:form.tenantId || "default", name:form.name.trim(), description:form.description.trim(), enabled:form.enabled, priority:Number(form.priority || 100), trigger:{ type:form.triggerType, ...(form.triggerType === "event" ? { eventType:form.eventType } : {}) }, conditionGroup:{ combinator:form.combinator, conditions:form.conditions }, actions:[action], schedule:{ cron:form.triggerType === "schedule" ? form.cron : undefined, maintenanceWindow:{ startHourUtc:Number(form.startHourUtc), endHourUtc:Number(form.endHourUtc) } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:Number(form.requireApprovalAtRiskScore || 60) }, sourceTemplateId:form.sourceTemplateId, sourceTemplateName:form.sourceTemplateName };
 }
 function updateCondition(setForm, index, patch) { setForm(prev => ({ ...prev, conditions: prev.conditions.map((c,i) => i === index ? { ...c, ...patch } : c) })); }
 function removeCondition(setForm, index) { setForm(prev => ({ ...prev, conditions: prev.conditions.filter((_, i) => i !== index) })); }
@@ -1752,3 +2166,4 @@ function DeviceDrawer({ deviceId, onClose }) {
 Object.assign(window, {
   OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer
 });
+

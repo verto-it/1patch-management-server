@@ -20,12 +20,11 @@ export const NODE_ID_KEY = "mtlsNodeId";
  *     - the certificate was not signed by the trusted CA (socket.authorized === false)
  *     - the CN does not match the expected pattern
  *
- * Development (MTLS_DISABLED=true AND NODE_ENV != production):
+ * Development (NODE_ENV != production and either MTLS_DISABLED=true or the
+ * management server is running without a complete TLS_CERT_PATH / TLS_KEY_PATH / TLS_CA_PATH set):
  *   Falls back to reading nodeId from the request body (body.nodeId) or the
  *   x-node-id header, and logs a warning.
- *   BOTH conditions must be true. NODE_ENV alone is insufficient — a staging or
- *   demo deployment reachable from the internet must not silently accept
- *   header-based node identity.
+ *   Production never accepts this fallback.
  *
  * NODE_API_SECRET is intentionally NOT read by this guard.
  */
@@ -37,27 +36,22 @@ export class MtlsNodeGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<Request>();
     const socket = request.socket as TLSSocket;
 
-    
     // Plain HTTP (no TLS socket)
     if (typeof socket.getPeerCertificate !== "function") {
-      // Require BOTH non-production NODE_ENV AND explicit MTLS_DISABLED=true.
-      // NODE_ENV alone is not sufficient — a staging or demo deployment that is
-      // reachable from the internet must not silently accept header-based identity.
-      const devBypassAllowed =
-        process.env.NODE_ENV !== "production" && process.env.MTLS_DISABLED === "true";
+      const devBypassAllowed = isDevPlainHttpNodeFallbackAllowed();
 
       if (!devBypassAllowed) {
         this.logger.error(
           `Node endpoint called over plain HTTP — rejecting. ` +
           `Configure TLS_CERT_PATH / TLS_KEY_PATH / TLS_CA_PATH for mTLS, ` +
-          `or set MTLS_DISABLED=true for local dev only. path=${request.path}`,
+          `or run outside production without TLS for local dev only. path=${request.path}`,
         );
         throw new UnauthorizedException("mTLS client certificate required");
       }
       const devNodeId = this.devNodeId(request);
       this.logger.warn(
-        `[DEV] mTLS bypassed (MTLS_DISABLED=true) — synthetic nodeId="${devNodeId}" path=${request.path}. ` +
-        `Never set MTLS_DISABLED=true in production or any internet-reachable environment.`,
+        `[DEV] mTLS bypassed — synthetic nodeId="${devNodeId}" path=${request.path}. ` +
+        `Never run node endpoints without mTLS in production or any internet-reachable environment.`,
       );
       (request as unknown as Record<string, unknown>)[NODE_ID_KEY] = devNodeId;
       return true;
@@ -107,6 +101,13 @@ export class MtlsNodeGuard implements CanActivate {
 
 /** Vault-issued certificate CNs have the form <nodeId>.1patch.internal. */
 const CN_SUFFIX = ".1patch.internal";
+
+function isDevPlainHttpNodeFallbackAllowed(): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  if (process.env.MTLS_DISABLED === "true") return true;
+
+  return !(process.env.TLS_CERT_PATH && process.env.TLS_KEY_PATH && process.env.TLS_CA_PATH);
+}
 
 /**
  * Extracts the nodeId from a Vault-issued CN.

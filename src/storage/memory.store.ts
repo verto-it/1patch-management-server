@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { computeEventHash } from '../audit/audit.hash';
 import {
   Alarm, AuditEvent, BackendNode, ClientEnrollment, Device,
-  InstalledApp, KillSwitchState, PackageArtifact, PatchRule,
+  InstalledApp, KillSwitchState, PackageArtifact, PatchRule, RuleTemplate,
   TaskLedgerEntry, UpdateTask, User,
 } from '../types';
 import { DragonflyService } from './dragonfly.service';
@@ -26,6 +26,7 @@ export class MemoryStore implements OnModuleInit {
   installedApps: InstalledApp[] = [];
   packages: PackageArtifact[] = [];
   rules: PatchRule[] = [];
+  ruleTemplates: RuleTemplate[] = [];
   tasks: UpdateTask[] = [];
   alarms: Alarm[] = [];
   auditEvents: AuditEvent[] = [];
@@ -43,6 +44,7 @@ export class MemoryStore implements OnModuleInit {
       installedApps: loaded.installedApps ?? [],
       packages: loaded.packages ?? [],
       rules: loaded.rules ?? [],
+      ruleTemplates: (loaded as any).ruleTemplates ?? [],
       tasks: loaded.tasks ?? [],
       alarms: loaded.alarms ?? [],
       auditEvents: loaded.auditEvents ?? [],
@@ -56,6 +58,7 @@ export class MemoryStore implements OnModuleInit {
     this.installedApps = snapshot.installedApps;
     this.packages = snapshot.packages;
     this.rules = snapshot.rules;
+    this.ruleTemplates = (snapshot as any).ruleTemplates ?? [];
     this.tasks = snapshot.tasks;
     this.alarms = snapshot.alarms;
     this.auditEvents = snapshot.auditEvents;
@@ -91,6 +94,7 @@ export class MemoryStore implements OnModuleInit {
       installedApps: this.installedApps,
       packages: this.packages,
       rules: this.rules,
+      ruleTemplates: this.ruleTemplates,
       tasks: this.tasks,
       alarms: this.alarms,
       auditEvents: this.auditEvents,

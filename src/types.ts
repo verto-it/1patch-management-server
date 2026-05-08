@@ -143,6 +143,8 @@ export interface PatchRule {
   value?: string;
   targetVersion?: 'latest' | string;
   maxVersion?: string;
+  sourceTemplateId?: string;
+  sourceTemplateName?: string;
 }
 
 export type RuleTriggerType =
@@ -152,7 +154,7 @@ export type RuleTriggerType =
 
 export interface RuleTrigger {
   type: RuleTriggerType;
-  eventType?: 'device.inventory.updated' | 'task.failed' | 'vulnerability.detected';
+  eventType?: 'device.inventory.updated' | 'task.failed' | 'vulnerability.detected' | 'package.high_priority.detected' | 'task.security_scan.completed' | 'rule.task_candidate.created';
 }
 
 export interface RuleSchedule {
@@ -171,13 +173,18 @@ export type RuleConditionField =
   | 'device.group'
   | 'device.tag'
   | 'device.deviceTrustScore'
+  | 'device.lastInventoryAgeHours'
   | 'package.outdated'
   | 'package.name'
+  | 'package.severity'
   | 'package.version'
   | 'lastTask.failed'
   | 'lastTask.retryCount'
+  | 'lastTask.failureRetryable'
   | 'currentTime.maintenanceWindow'
-  | 'riskScore';
+  | 'riskScore'
+  | 'task.sourceHostTrusted'
+  | 'task.hashPresent';
 
 export type RuleConditionOperator =
   | 'eq'
@@ -210,6 +217,8 @@ export type RuleAction =
       packageArtifactId?: string;
       targetVersion?: 'latest' | string;
       maxDevices?: number;
+      retryLimit?: number;
+      backoff?: 'none' | 'linear' | 'exponential';
     }
   | {
       type: 'create_security_task';
@@ -223,7 +232,41 @@ export type RuleAction =
   | {
       type: 'mark_device';
       tag: string;
+    }
+  | {
+      type: 'block_task_creation';
+      reason: string;
     };
+
+export interface RuleTemplateInput {
+  id: string;
+  label: string;
+  type: 'string' | 'number' | 'device_group' | 'maintenance_window' | 'package_name' | 'boolean';
+  required: boolean;
+  description: string;
+  defaultValue?: string | number | boolean | string[] | { daysOfWeek?: number[]; startHourUtc: number; endHourUtc: number };
+}
+
+export interface RuleTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: 'Recommended' | 'Patch Automation' | 'Security / Inventory' | 'Failure Handling' | 'Compliance' | 'Notifications';
+  recommendedSecurityMode: TenantPolicy['securityMode'];
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  tags: string[];
+  trigger: RuleTrigger;
+  conditions: RuleConditionGroup;
+  actions: RuleAction[];
+  schedule: RuleSchedule;
+  requiredInputs: RuleTemplateInput[];
+  explanation: string[];
+  safety: string[];
+  custom?: boolean;
+  tenantId?: string;
+  createdBy?: string;
+  createdAt?: string;
+}
 
 export interface RuleExecutionStats {
   taskCreatedAt: string[];
@@ -496,6 +539,10 @@ export type SiemEventType =
   | 'rule.failed'
   | 'rule.conflict_detected'
   | 'rule.rate_limited'
+  | 'rule_template.selected'
+  | 'rule_template.draft_created'
+  | 'rule_template.custom_created'
+  | 'rule.created_from_template'
   | 'invalid_signature_detected'
   | 'replay_attack_blocked'
   | 'node.registered'

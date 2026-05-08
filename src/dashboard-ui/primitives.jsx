@@ -2,6 +2,7 @@
 const Icon = {
   dashboard: (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>),
   devices:  (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="8" rx="1"/><path d="M5 14h6M8 11v3"/></svg>),
+  groups:   (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2.5" width="5" height="4" rx="1"/><rect x="9" y="2.5" width="5" height="4" rx="1"/><rect x="5.5" y="9.5" width="5" height="4" rx="1"/><path d="M4.5 6.5v1.2c0 .7.4 1.3 1.1 1.6M11.5 6.5v1.2c0 .7-.4 1.3-1.1 1.6"/></svg>),
   apps:     (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/></svg>),
   packages: (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2 2 5v6l6 3 6-3V5L8 2zM2 5l6 3 6-3M8 8v6"/></svg>),
   rules:    (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4h7M3 8h10M3 12h6"/><circle cx="12" cy="4" r="1.5"/><circle cx="11" cy="12" r="1.5"/></svg>),

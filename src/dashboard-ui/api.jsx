@@ -71,6 +71,9 @@ window.PatchAPI = {
   coverageHistory:   (d=30)  => api(`/dashboard/coverage-history?days=${d}`),
   devices:           (q)     => api('/devices' + (q ? `?q=${encodeURIComponent(q)}` : '')),
   device:            (id)    => api(`/devices/${id}`),
+  deviceGroups:      (t='default') => api(`/devices/groups?tenantId=${encodeURIComponent(t)}`),
+  createDevice:      (b)     => api('/devices',                                  { method:'POST', body: JSON.stringify(b) }),
+  updateDevice:      (id,b)  => api(`/devices/${id}`,                            { method:'PATCH', body: JSON.stringify(b) }),
   createDeviceEnrollment: (b) => api('/devices/enrollments',                    { method:'POST', body: JSON.stringify(b) }),
   apps:              (q)     => api('/apps' + (q ? `?q=${encodeURIComponent(q)}` : '')),
   packages:          ()      => api('/packages'),
@@ -99,6 +102,8 @@ window.PatchAPI = {
   toggleRule:        (id,e)  => api(`/rules/${id}`,                              { method:'PATCH', body: JSON.stringify({ enabled: e }) }),
   testRule:          (id,b)  => api(`/rules/${id}/test`,                         { method:'POST', body: JSON.stringify(b || {}) }),
   triggerRule:       (id,b)  => api(`/rules/${id}/trigger`,                      { method:'POST', body: JSON.stringify(b || {}) }),
+  ruleTemplates:     (t='default') => api(`/rule-templates?tenantId=${encodeURIComponent(t)}`),
+  createRuleDraftFromTemplate: (id,b) => api(`/rule-templates/${encodeURIComponent(id)}/create-draft`, { method:'POST', body: JSON.stringify(b || {}) }),
   ruleAudit:         (id)    => api(id ? `/rules/${id}/audit` : '/rules/audit'),
   resolveAlarm:      (id)    => api(`/alarms/${id}/resolve`,                     { method:'POST', body: '{}' }),
 };

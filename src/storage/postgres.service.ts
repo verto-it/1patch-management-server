@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { Pool } from 'pg';
 import {
   Alarm, AuditEvent, BackendNode, ClientEnrollment, Device, InstalledApp,
-  KillSwitchState, PackageArtifact, PatchRule, SiemEvent, TaskLedgerEntry,
+  KillSwitchState, PackageArtifact, PatchRule, RuleTemplate, SiemEvent, TaskLedgerEntry,
   UpdateTask, User,
 } from '../types';
 
@@ -14,6 +14,7 @@ export interface StoreSnapshot {
   installedApps: InstalledApp[];
   packages: PackageArtifact[];
   rules: PatchRule[];
+  ruleTemplates?: RuleTemplate[];
   tasks: UpdateTask[];
   alarms: Alarm[];
   auditEvents: AuditEvent[];
@@ -707,6 +708,7 @@ export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {
     installedApps: [...snapshot.installedApps],
     packages: uniqueById(snapshot.packages),
     rules: uniqueById(snapshot.rules),
+    ruleTemplates: uniqueById(snapshot.ruleTemplates ?? []),
     tasks: uniqueById(snapshot.tasks),
     alarms: uniqueById(snapshot.alarms),
     auditEvents: uniqueById(snapshot.auditEvents),
