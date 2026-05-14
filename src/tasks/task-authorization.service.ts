@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
@@ -22,6 +23,7 @@ import {
   User,
 } from '../types';
 import { KillSwitchService } from './kill-switch.service';
+import { FileReputationService } from './file-reputation.service';
 import { NotificationService } from './notification.service';
 import { SecurityGateService } from './security-gate.service';
 import { TaskLedgerService } from './task-ledger.service';
@@ -29,9 +31,24 @@ import { TenantPolicyService } from './tenant-policy.service';
 import { VirusTotalService } from './virustotal.service';
 
 @Injectable()
-export class TaskAuthorizationService {
+export class TaskAuthorizationService implements OnModuleInit {
   private readonly logger = new Logger(TaskAuthorizationService.name);
 
+  /**
+   * Creates a TaskAuthorizationService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param siem siem supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param policy policy supplied to the function.
+   * @param securityGate security gate supplied to the function.
+   * @param virusTotal virus total supplied to the function.
+   * @param ledger ledger supplied to the function.
+   * @param killSwitch kill switch supplied to the function.
+   * @param notifications notifications supplied to the function.
+   * @param mfaChallenge mfa challenge supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
@@ -39,6 +56,7 @@ export class TaskAuthorizationService {
     private readonly signing: SigningService,
     private readonly policy: TenantPolicyService,
     private readonly securityGate: SecurityGateService,
+    private readonly fileReputation: FileReputationService,
     private readonly virusTotal: VirusTotalService,
     private readonly ledger: TaskLedgerService,
     private readonly killSwitch: KillSwitchService,
@@ -48,8 +66,15 @@ export class TaskAuthorizationService {
 
   // ── Step 1: Create draft ────────────────────────────────────────────────────
 
+  /**
+   * Creates a draft record.
+   *
+   * @param params params supplied to the function.
+   * @param creator creator supplied to the function.
+   * @returns The result produced by the operation.
+   */
   createDraft(
-    params: Pick<UpdateTask, 'nodeId' | 'deviceId' | 'tenantId' | 'type' | 'targetVersion' | 'appName' | 'packageArtifactId' | 'packageId' | 'productCode' | 'sourceUrl' | 'sha256' | 'installArgs'>,
+    params: Pick<UpdateTask, 'nodeId' | 'deviceId' | 'tenantId' | 'type' | 'targetVersion' | 'appName' | 'packageArtifactId' | 'packageId' | 'packageManager' | 'packageScope' | 'productCode' | 'sourceUrl' | 'sha256' | 'installArgs'>,
     creator: User,
   ): UpdateTask {
     const task: UpdateTask = {
@@ -106,6 +131,13 @@ export class TaskAuthorizationService {
 
   // ── Step 2: Security scan ───────────────────────────────────────────────────
 
+  /**
+   * Handles the run security scan operation for TaskAuthorizationService.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async runSecurityScan(taskId: string, actor: User): Promise<UpdateTask> {
     const task = this.requireTask(taskId);
     if (task.status !== 'draft') throw new BadRequestException(`Task must be in 'draft' to be scanned (current: ${task.status})`);
@@ -128,8 +160,25 @@ export class TaskAuthorizationService {
       recentFailedLogins,
     });
 
+    const reputation = await this.fileReputation.scan(task, artifact, p.virusTotalApiKey);
+    if (reputation) {
+      scanResult.fileReputation = reputation;
+      scanResult.riskScore = Math.min(100, Math.max(scanResult.riskScore, reputation.riskScore));
+      if (reputation.verdict === 'malicious') {
+        scanResult.hardBlock = true;
+        scanResult.hardBlockReason = scanResult.hardBlockReason ?? 'File reputation verdict is malicious';
+      }
+      if (reputation.verdict === 'suspicious' || reputation.verdict === 'malicious') {
+        scanResult.findings.push({
+          code: 'FILE_REPUTATION_RISK',
+          severity: reputation.verdict === 'malicious' ? 'critical' : 'high',
+          message: `File reputation verdict is ${reputation.verdict}: ${reputation.reasons.join(', ') || 'risk indicators present'}`,
+        });
+      }
+    }
+
     // Optional VirusTotal check
-    if (task.sha256 && p.virusTotalApiKey) {
+    if (task.sha256 && p.virusTotalApiKey && !scanResult.fileReputation?.virusTotal) {
       const vtResult = await this.virusTotal.checkHash(task.sha256, p.virusTotalApiKey);
       scanResult.virusTotalResult = vtResult;
       if (!vtResult.available && (p.requireVirusTotalForStrict || p.requireVirusTotalForTinfoil)) {
@@ -169,6 +218,14 @@ export class TaskAuthorizationService {
 
   // ── Step 3: MFA approval ────────────────────────────────────────────────────
 
+  /**
+   * Handles the approve operation for TaskAuthorizationService.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @param approver approver supplied to the function.
+   * @param mfaChallengeId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   async approve(taskId: string, approver: User, mfaChallengeId: string): Promise<UpdateTask> {
     const task = this.requireTask(taskId);
     if (task.status !== 'security_scanned') {
@@ -224,6 +281,13 @@ export class TaskAuthorizationService {
 
   // ── Step 4: Sign and write ledger ───────────────────────────────────────────
 
+  /**
+   * Produces the sign security value.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   sign(taskId: string, actor: User): { task: UpdateTask; ledgerEntry: TaskLedgerEntry } {
     const task = this.requireTask(taskId);
     if (task.status !== 'mfa_approved') {
@@ -301,6 +365,14 @@ export class TaskAuthorizationService {
 
   // ── Revoke ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Handles the revoke operation for TaskAuthorizationService.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @param reason reason supplied to the function.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   revoke(taskId: string, reason: string, actor: User): UpdateTask {
     const task = this.requireTask(taskId);
     const tenantId = task.tenantId ?? 'default';
@@ -323,8 +395,54 @@ export class TaskAuthorizationService {
     return task;
   }
 
+  // ── Startup migration: sign orphaned tasks ──────────────────────────────────
+
+  /**
+   * Handles the on module init operation for TaskAuthorizationService.
+   */
+  onModuleInit() {
+    const orphaned = this.store.tasks.filter(
+      (t) => (t.status === 'pending' || t.status === 'executable') && !t.ledgerEntryId,
+    );
+    if (orphaned.length === 0) return;
+    this.logger.log(`Migrating ${orphaned.length} unsigned task(s) — auto-signing with system actor`);
+    for (const task of orphaned) {
+      try {
+        this.autoSignTask(task, 'system:migration');
+      } catch (err) {
+        this.logger.warn(`Could not auto-sign task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── System auto-sign (no MFA — for programmatic task creation) ─────────────
+
+  /** Sign a task immediately without MFA or security-scan approval.
+   *  Use only for system-initiated tasks (package deploys, refresh-inventory)
+   *  that are created outside the interactive authorization pipeline. */
+  autoSignTask(task: UpdateTask, actor: string): UpdateTask {
+    const tenantId = task.tenantId ?? this.store.devices.find((d) => d.id === task.deviceId)?.tenantId ?? 'default';
+    task.tenantId = tenantId;
+    task.taskHash = TaskLedgerService.computeTaskHash(task);
+    const now = new Date().toISOString();
+    task.notBefore = now;
+    const ledgerEntry = this.ledger.create(task, [], 0, now, this.policy.expiresAtFor(tenantId));
+    task.ledgerEntryId = ledgerEntry.ledgerId;
+    task.status = 'signed';
+    void this.store.persist();
+    this.audit.record(actor, 'task.auto_signed', task.id, { ledgerId: ledgerEntry.ledgerId }, tenantId);
+    this.logger.log(`Task auto-signed: taskId=${task.id} ledgerId=${ledgerEntry.ledgerId} actor=${actor}`);
+    return task;
+  }
+
   // ── Helper ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Handles the require task operation for TaskAuthorizationService.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   private requireTask(taskId: string): UpdateTask {
     const task = this.store.tasks.find((t) => t.id === taskId);
     if (!task) throw new BadRequestException(`Task ${taskId} not found`);

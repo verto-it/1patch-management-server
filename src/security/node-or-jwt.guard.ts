@@ -16,8 +16,19 @@ import { NODE_ID_KEY, extractNodeId } from './mtls-node.guard';
 export class NodeOrJwtGuard implements CanActivate {
   private readonly logger = new Logger(NodeOrJwtGuard.name);
 
+  /**
+   * Creates a NodeOrJwtGuard instance with its required collaborators.
+   *
+   * @param jwt jwt supplied to the function.
+   */
   constructor(private readonly jwt: JwtService) {}
 
+  /**
+   * Validates can activate rules.
+   *
+   * @param context context supplied to the function.
+   * @returns The result produced by the operation.
+   */
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
 
@@ -36,6 +47,12 @@ export class NodeOrJwtGuard implements CanActivate {
     throw new UnauthorizedException('Valid mTLS client certificate or authenticated user JWT required');
   }
 
+  /**
+   * Handles the try jwt operation for NodeOrJwtGuard.
+   *
+   * @param request Incoming HTTP request context.
+   * @returns The result produced by the operation.
+   */
   private tryJwt(request: Request): boolean {
     const supplied = request.header('authorization')?.replace(/^Bearer\s+/i, '');
     if (!supplied) return false;

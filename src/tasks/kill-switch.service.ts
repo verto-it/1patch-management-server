@@ -13,6 +13,17 @@ import { TenantPolicyService } from './tenant-policy.service';
 export class KillSwitchService {
   private readonly logger = new Logger(KillSwitchService.name);
 
+  /**
+   * Creates a KillSwitchService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param siem siem supplied to the function.
+   * @param notifications notifications supplied to the function.
+   * @param policy policy supplied to the function.
+   * @param nodes nodes supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly signing: SigningService,
@@ -23,17 +34,35 @@ export class KillSwitchService {
     private readonly nodes: NodesService,
   ) {}
 
+  /**
+   * Gets the state value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   getState(tenantId: string): KillSwitchState | undefined {
     return this.store.killSwitchStates.find((s) => s.tenantId === tenantId) ??
            this.store.killSwitchStates.find((s) => s.tenantId === 'global');
   }
 
+  /**
+   * Handles the is active operation for KillSwitchService.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   isActive(tenantId: string): boolean {
     const state = this.getState(tenantId);
     return state?.active === true;
   }
 
   
+  /**
+   * Gets the signed state value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   getSignedState(tenantId: string): { state: KillSwitchState; envelope: ReturnType<SigningService['signPayload']> } | null {
     const state = this.getState(tenantId);
     if (!state) return null;
@@ -41,6 +70,14 @@ export class KillSwitchService {
     return { state, envelope };
   }
 
+  /**
+   * Changes the activate state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @param reason reason supplied to the function.
+   * @returns The result produced by the operation.
+   */
   activate(tenantId: string, actor: User, reason?: string): KillSwitchState {
     const existing = this.store.killSwitchStates.find((s) => s.tenantId === tenantId);
     const now = new Date().toISOString();
@@ -81,6 +118,13 @@ export class KillSwitchService {
     return state;
   }
 
+  /**
+   * Changes the deactivate state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   deactivate(tenantId: string, actor: User): KillSwitchState {
     const existing = this.store.killSwitchStates.find((s) => s.tenantId === tenantId);
     if (!existing || !existing.active) throw new BadRequestException('Kill switch is not active');

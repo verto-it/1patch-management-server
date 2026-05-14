@@ -21,10 +21,20 @@ export class SyslogExporter implements EventExporter {
   private readonly logger = new Logger(SyslogExporter.name);
   private readonly appName: string;
 
+  /**
+   * Creates a SyslogExporter instance with its required collaborators.
+   *
+   * @param config Configuration object used by the operation.
+   */
   constructor(private readonly config: SiemSyslogConfig) {
     this.appName = config.appName ?? '1patch';
   }
 
+  /**
+   * Sends send data to its destination.
+   *
+   * @param events events supplied to the function.
+   */
   async send(events: SiemEvent[]): Promise<void> {
     for (const event of events) {
       const msg = this.formatRfc5424(event);
@@ -32,6 +42,10 @@ export class SyslogExporter implements EventExporter {
     }
   }
 
+  /**
+   * Validates verify rules.
+   * @returns The result produced by the operation.
+   */
   async verify(): Promise<{ ok: boolean; message: string }> {
     try {
       const testEvent: SiemEvent = {
@@ -52,6 +66,12 @@ export class SyslogExporter implements EventExporter {
     }
   }
 
+  /**
+   * Formats the rfc5424 value.
+   *
+   * @param event Event object emitted by the runtime or UI.
+   * @returns The result produced by the operation.
+   */
   private formatRfc5424(event: SiemEvent): string {
     const severity = SEVERITY_MAP[event.severity];
     const pri = FACILITY * 8 + severity;
@@ -73,6 +93,12 @@ export class SyslogExporter implements EventExporter {
     return `<${pri}>1 ${timestamp} ${hostname} ${appName} ${procId} ${msgId} ${structuredData} ${msg}`;
   }
 
+  /**
+   * Builds the structured data payload.
+   *
+   * @param event Event object emitted by the runtime or UI.
+   * @returns The result produced by the operation.
+   */
   private buildStructuredData(event: SiemEvent): string {
     const fields = [
       `eventId="${event.eventId}"`,
@@ -83,12 +109,24 @@ export class SyslogExporter implements EventExporter {
     return `[1patch@1patch ${fields}]`;
   }
 
+  /**
+   * Sends message data to its destination.
+   *
+   * @param msg msg supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private sendMessage(msg: string): Promise<void> {
     return this.config.protocol === 'udp'
       ? this.sendUdp(msg)
       : this.sendTcp(msg);
   }
 
+  /**
+   * Sends udp data to its destination.
+   *
+   * @param msg msg supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private sendUdp(msg: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const client = dgram.createSocket('udp4');
@@ -105,6 +143,12 @@ export class SyslogExporter implements EventExporter {
     });
   }
 
+  /**
+   * Sends tcp data to its destination.
+   *
+   * @param msg msg supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private sendTcp(msg: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: this.config.host, port: this.config.port }, () => {

@@ -14,6 +14,10 @@ const actor: User = {
   oauthLinks: [],
 };
 
+/**
+ * Handles the make store operation.
+ * @returns The result produced by the operation.
+ */
 function makeStore(): any {
   return {
     rules: [],
@@ -32,6 +36,12 @@ function makeStore(): any {
   };
 }
 
+/**
+ * Handles the make template service operation.
+ *
+ * @param mode mode supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function makeTemplateService(mode: 'normal' | 'strict' | 'tinfoil' = 'normal') {
   const store = makeStore();
   const audit = { record: jest.fn() };
@@ -40,6 +50,12 @@ function makeTemplateService(mode: 'normal' | 'strict' | 'tinfoil' = 'normal') {
   return { service: new RuleTemplatesService(store as any, audit as any, siem as any, policy as any), store, audit, siem };
 }
 
+/**
+ * Handles the make rules service operation.
+ *
+ * @param store store supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function makeRulesService(store: any) {
   const audit = { record: jest.fn() };
   const siem = { emit: jest.fn() };
@@ -87,7 +103,8 @@ describe('RuleTemplatesService', () => {
   it('keeps generated rules on the normal task signing and security pipeline', async () => {
     const { service: templates, store } = makeTemplateService();
     const { service: rules, taskAuth } = makeRulesService(store);
-    const draft = templates.createDraft('patch-test-group-first', {
+    const draft = templates.createDraft('critical-patch-fast-track', {
+      packageName: 'Google Chrome',
     }, actor).draftRule;
     const saved = rules.create({ ...draft, enabled: true }, actor);
 
@@ -141,6 +158,50 @@ describe('RuleTemplatesService', () => {
     }, actor);
 
     expect(template.id).toBe('custom-notify-admin');
+    expect(store.ruleTemplates).toHaveLength(1);
+  });
+
+  it('imports a copied template config string for the selected tenant', () => {
+    const { service, store } = makeTemplateService();
+    const configString = JSON.stringify({
+      kind: '1patch.rule-template',
+      version: 1,
+      template: {
+        id: 'notify-admin',
+        name: 'Notify Admin',
+        description: 'Notify via SIEM',
+        category: 'Notifications',
+        trigger: { type: 'manual' },
+        conditions: { combinator: 'AND', conditions: [] },
+        actions: [{ type: 'notify', channel: 'siem', message: 'hello' }],
+        schedule: {},
+      },
+    });
+
+    const template = service.importCustom({ configString, tenantId: 'tenant-a' }, actor);
+
+    expect(template.id).toBe('custom-notify-admin');
+    expect(template.tenantId).toBe('tenant-a');
+    expect(store.ruleTemplates).toHaveLength(1);
+  });
+
+  it('replaces an existing custom template when the same config is imported again', () => {
+    const { service, store } = makeTemplateService();
+    const base = {
+      id: 'notify-admin',
+      name: 'Notify Admin',
+      description: 'Notify via SIEM',
+      category: 'Notifications',
+      trigger: { type: 'manual' },
+      conditions: { combinator: 'AND', conditions: [] },
+      actions: [{ type: 'notify', channel: 'siem', message: 'hello' }],
+      schedule: {},
+    };
+
+    service.importCustom(base, actor);
+    const updated = service.importCustom({ ...base, name: 'Notify Security Admin' }, actor);
+
+    expect(updated.name).toBe('Notify Security Admin');
     expect(store.ruleTemplates).toHaveLength(1);
   });
 });

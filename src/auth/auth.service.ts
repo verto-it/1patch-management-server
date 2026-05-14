@@ -19,6 +19,15 @@ export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
   private readonly jwt: JwtService;
 
+  /**
+   * Creates a AuthService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param rbac rbac supplied to the function.
+   * @param siem siem supplied to the function.
+   * @param dragonfly dragonfly supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
@@ -29,6 +38,9 @@ export class AuthService implements OnModuleInit {
     this.jwt = new JwtService({ secret: process.env.JWT_SECRET ?? '' });
   }
 
+  /**
+   * Handles the on module init operation for AuthService.
+   */
   onModuleInit() {
     const secret = process.env.JWT_SECRET;
     if (!secret || secret.length < 32) {
@@ -41,6 +53,13 @@ export class AuthService implements OnModuleInit {
     this.logger.log('AuthService initialised — JWT_SECRET is configured');
   }
 
+  /**
+   * Creates a owner record.
+   *
+   * @param email email supplied to the function.
+   * @param password password supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async createOwner(email: string, password: string) {
     if (this.store.users.length > 0) throw new BadRequestException('Setup is already complete');
     this.assertPasswordPolicy(password);
@@ -61,6 +80,14 @@ export class AuthService implements OnModuleInit {
     return this.publicUser(user);
   }
 
+  /**
+   * Handles the login operation for AuthService.
+   *
+   * @param email email supplied to the function.
+   * @param password password supplied to the function.
+   * @param ip ip supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async login(email: string, password: string, ip?: string) {
     const user = this.store.users.find((c) => c.email === email.toLowerCase());
     if (!user) {
@@ -71,6 +98,11 @@ export class AuthService implements OnModuleInit {
         metadata: { reason: 'unknown_email' },
       });
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (user.disabled) {
+      this.logger.warn(`Login blocked — account ${user.id} is disabled`);
+      throw new UnauthorizedException('Account is disabled');
     }
 
     if (user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
@@ -122,9 +154,17 @@ export class AuthService implements OnModuleInit {
     }
 
     this.logger.log(`Login successful for ${user.email} (id=${user.id}) from IP ${ip}`);
-    return this.issueSession(user, ip);
+    return this.issueSession(user, ip, 'password');
   }
 
+  /**
+   * Validates mfa rules.
+   *
+   * @param challengeToken Token used to authenticate or authorize the operation.
+   * @param code code supplied to the function.
+   * @param ip ip supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async verifyMfa(challengeToken: string, code: string, ip?: string) {
     let decoded: { sub: string; purpose: string };
     try {
@@ -166,9 +206,15 @@ export class AuthService implements OnModuleInit {
       metadata: { email: user.email },
     });
     this.logger.log(`MFA verified for user ${user.email} (id=${user.id}) from IP ${ip}`);
-    return this.issueSession(user, ip);
+    return this.issueSession(user, ip, 'password+totp');
   }
 
+  /**
+   * Handles the enable mfa operation for AuthService.
+   *
+   * @param userId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   enableMfa(userId: string) {
     const user = this.store.users.find((c) => c.id === userId);
     if (!user) throw new BadRequestException('Unknown user');
@@ -180,27 +226,72 @@ export class AuthService implements OnModuleInit {
     return { secret: user.mfaSecret, otpauth: authenticator.keyuri(user.email, '1Patch', user.mfaSecret) };
   }
 
+  /**
+   * Stores a JWT token hash in the revocation denylist until the token expires.
+   *
+   * @param userId Identifier of the user ending the session.
+   * @param rawToken Bearer token to revoke.
+   * @param ip Optional request IP address for audit and SIEM events.
+   */
+  async logout(userId: string, rawToken: string, ip?: string) {
+    let ttlSeconds = 8 * 3600;
+    try {
+      const decoded = this.jwt.decode(rawToken) as { exp?: number } | null;
+      if (decoded?.exp) {
+        ttlSeconds = Math.max(1, decoded.exp - Math.floor(Date.now() / 1000));
+      }
+    } catch { /* ignore */ }
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    await this.dragonfly.setJsonEx(`1patch:revoked-token:${tokenHash}`, 1, ttlSeconds);
+    this.audit.record(userId, 'auth.logout', userId, { ip });
+    this.siem.emit({
+      tenantId: 'system', type: 'auth.logout', severity: 'low',
+      actor: { userId, nodeId: null, ip: ip ?? null },
+      metadata: {},
+    });
+    this.logger.log(`Logout for user ${userId} — token revoked for ${ttlSeconds}s`);
+  }
+
+  /**
+   * Handles the public user operation for AuthService.
+   *
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   publicUser(user: User) {
     return {
       id: user.id, email: user.email, roles: user.roles,
       permissions: this.rbac.permissionsFor(user.roles),
       mfaEnabled: user.mfaEnabled,
+      disabled: user.disabled === true,
       oauthLinks: user.oauthLinks.map((link) => link.provider),
     };
   }
 
-  private issueSession(user: User, ip?: string) {
+  /**
+   * Handles the issue session operation for AuthService.
+   *
+   * @param user user supplied to the function.
+   * @param ip ip supplied to the function.
+   * @returns The result produced by the operation.
+   */
+  private issueSession(user: User, ip?: string, authMethod = 'password') {
     user.lastLoginAt = new Date().toISOString();
-    const token = this.jwt.sign({ sub: user.id, roles: user.roles }, { expiresIn: '8h' });
-    this.audit.record(user.id, 'auth.login_success', user.id, { ip });
+    const token = this.jwt.sign({ sub: user.id, roles: user.roles, authMethod }, { expiresIn: '8h' });
+    this.audit.record(user.id, 'auth.login_success', user.id, { ip, authMethod });
     this.siem.emit({
       tenantId: 'system', type: 'auth.login.success', severity: 'low',
       actor: { userId: user.id, nodeId: null, ip: ip ?? null },
-      metadata: { email: user.email, roles: user.roles },
+      metadata: { email: user.email, roles: user.roles, authMethod },
     });
-    return { accessToken: token, user: this.publicUser(user) };
+    return { accessToken: token, user: this.publicUser(user), authMethod };
   }
 
+  /**
+   * Validates password policy rules.
+   *
+   * @param password password supplied to the function.
+   */
   private assertPasswordPolicy(password: string) {
     if (
       password.length < 12 ||
@@ -214,11 +305,23 @@ export class AuthService implements OnModuleInit {
     }
   }
 
+  /**
+   * Handles the mfa failure key operation for AuthService.
+   *
+   * @param challengeToken Token used to authenticate or authorize the operation.
+   * @returns The result produced by the operation.
+   */
   private mfaFailureKey(challengeToken: string): string {
     return `1patch:mfa-login-failures:${createHash('sha256').update(challengeToken).digest('hex')}`;
   }
 }
 
+/**
+ * Handles the country from ip operation.
+ *
+ * @param ip ip supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function countryFromIp(ip?: string): string | undefined {
   if (!ip) return undefined;
   // Placeholder for real GeoIP integration. Do not trust client-supplied country.

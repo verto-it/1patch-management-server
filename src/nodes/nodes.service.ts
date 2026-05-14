@@ -1,28 +1,50 @@
+import { readFileSync } from 'fs';
 import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { MemoryStore } from '../storage/memory.store';
-import { BackendNode } from '../types';
+import { BackendNode, Device, NodeCapability } from '../types';
 import { VaultPkiService } from '../vault/vault-pki.service';
+import { NodeRoutingService } from './node-routing.service';
 
 const NODE_ONLINE_TTL_MS = Number(process.env.NODE_ONLINE_TTL_MS ?? 2 * 60_000);
 /** Enrollment tokens are valid for 24 hours from creation. */
 const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60_000;
+const NEW_NODE_INITIAL_TRUST_SCORE = Number(process.env.NEW_NODE_INITIAL_TRUST_SCORE ?? 70);
 
 @Injectable()
 export class NodesService {
   private readonly logger = new Logger(NodesService.name);
 
+  /**
+   * Creates a NodesService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param siem siem supplied to the function.
+   * @param vaultPki vault pki supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
     private readonly siem: SiemEventService,
     private readonly vaultPki: VaultPkiService,
+    private readonly routing: NodeRoutingService,
   ) {}
 
-  async createEnrollment(name: string, publicUrl: string, region?: string, site?: string, actor = 'system') {
+  /**
+   * Creates a enrollment record.
+   *
+   * @param name name supplied to the function.
+   * @param publicUrl URL used by the operation.
+   * @param region region supplied to the function.
+   * @param site site supplied to the function.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
+  async createEnrollment(name: string, publicUrl: string, region?: string, site?: string, actor = 'system', capabilities?: NodeCapability[]) {
     const token = `node_${uuid().replaceAll('-', '')}`;
     const now = new Date().toISOString();
     const node: BackendNode = {
@@ -32,6 +54,11 @@ export class NodesService {
       region,
       site,
       status: 'pending',
+      healthState: 'stale',
+      maintenanceState: 'active',
+      quarantineState: 'none',
+      trustScore: NEW_NODE_INITIAL_TRUST_SCORE,
+      capabilities: capabilities ?? [],
       enrollmentTokenHash: await bcrypt.hash(token, 12),
       enrollmentTokenCreatedAt: now,
     };
@@ -40,16 +67,60 @@ export class NodesService {
     this.audit.record(actor, 'node.enrollment_created', node.id, { name, publicUrl, region, site });
     this.logger.log(`Enrollment created: nodeId=${node.id} name=${name} publicUrl=${publicUrl}`);
 
+    let caCert: string | undefined;
+    if (process.env.TLS_CA_PATH) {
+      try { caCert = readFileSync(process.env.TLS_CA_PATH, 'utf8'); } catch { /* not fatal */ }
+    }
+
     return {
       nodeId: node.id,
       enrollmentToken: token,
       managementUrl: process.env.PUBLIC_URL ?? process.env.MANAGEMENT_URL ?? '',
       nodePublicUrl: publicUrl,
       dragonflyUrl: '',
+      ...(caCert ? { caCert } : {}),
     };
   }
 
-  async register(nodeId: string, enrollmentToken: string, version: string, capacity?: Record<string, unknown>) {
+
+  /**
+   * Re-issues a fresh one-time enrollment token for a node that has already
+   * registered but lost its mTLS certificate (e.g. disk wipe, container rebuild).
+   * The old token hash is replaced and enrollmentTokenUsedAt is cleared so the
+   * node can call /nodes/register again to receive a new Vault mTLS certificate.
+   */
+  async reEnroll(nodeId: string, actor: string) {
+    const node = this.store.backendNodes.find((n) => n.id === nodeId);
+    if (!node) throw new BadRequestException('Unknown node');
+
+    const token = `node_${uuid().replaceAll('-', '')}`;
+    const now = new Date().toISOString();
+    node.enrollmentTokenHash = await bcrypt.hash(token, 12);
+    node.enrollmentTokenCreatedAt = now;
+    node.enrollmentTokenUsedAt = undefined;
+    node.status = 'pending';
+
+    await this.store.persist();
+    this.audit.record(actor, 'node.re_enrollment_created', node.id, { name: node.name });
+    this.logger.log(`Re-enrollment token issued for nodeId=${nodeId} name=${node.name} by actor=${actor}`);
+
+    return {
+      nodeId: node.id,
+      enrollmentToken: token,
+      managementUrl: process.env.PUBLIC_URL ?? process.env.MANAGEMENT_URL ?? '',
+    };
+  }
+
+  /**
+   * Handles the register operation for NodesService.
+   *
+   * @param nodeId Identifier used to locate the target record.
+   * @param enrollmentToken Token used to authenticate or authorize the operation.
+   * @param version version supplied to the function.
+   * @param capacity capacity supplied to the function.
+   * @returns The result produced by the operation.
+   */
+  async register(nodeId: string, enrollmentToken: string, version: string, capacity?: Record<string, unknown>, metadata?: { capabilities?: NodeCapability[]; signingPublicKeyPem?: string; publicUrl?: string; region?: string; site?: string; updateChannel?: string }) {
     const node = this.store.backendNodes.find((n) => n.id === nodeId);
     if (!node) {
       this.logger.warn(`Registration rejected — unknown nodeId=${nodeId}`);
@@ -75,8 +146,22 @@ export class NodesService {
     }
 
     node.status = 'online';
+    node.healthState = 'degraded';
+    node.maintenanceState = node.maintenanceState ?? 'active';
+    node.quarantineState = node.quarantineState ?? 'none';
+    if (!node.firstSeenAt) {
+      node.trustScore = Math.min(node.trustScore ?? NEW_NODE_INITIAL_TRUST_SCORE, NEW_NODE_INITIAL_TRUST_SCORE);
+    } else {
+      node.trustScore = node.trustScore ?? NEW_NODE_INITIAL_TRUST_SCORE;
+    }
     node.version = version;
     node.capacity = capacity ?? node.capacity;
+    node.capabilities = metadata?.capabilities ?? node.capabilities ?? capabilitiesFromCapacity(capacity);
+    node.signingPublicKeyPem = metadata?.signingPublicKeyPem ?? node.signingPublicKeyPem;
+    node.updateChannel = metadata?.updateChannel ?? node.updateChannel;
+    node.publicUrl = metadata?.publicUrl ?? node.publicUrl;
+    node.region = metadata?.region ?? node.region;
+    node.site = metadata?.site ?? node.site;
     const now = new Date().toISOString();
     node.firstSeenAt = node.firstSeenAt ?? now;
     node.lastSeenAt = now;
@@ -107,7 +192,7 @@ export class NodesService {
     }
 
     await this.store.persist();
-    this.audit.record(node.id, 'node.registered', node.id, { version, capacity, tlsSerial: issuedCert?.serial });
+    this.audit.record(node.id, 'node.registered', node.id, { version, capacity, capabilities: node.capabilities, tlsSerial: issuedCert?.serial });
     this.siem.emit({ tenantId: 'system', type: 'node.registered', severity: 'low', actor: { userId: null, nodeId: node.id, ip: null }, target: { taskId: null, deviceId: null, nodeId: node.id }, metadata: { name: node.name, version, tlsSerial: issuedCert?.serial } });
     if (issuedCert) { this.siem.emit({ tenantId: 'system', type: 'node.certificate.issued', severity: 'low', actor: { userId: null, nodeId: node.id, ip: null }, target: { taskId: null, deviceId: null, nodeId: node.id }, metadata: { serial: issuedCert.serial, expiresAt: issuedCert.expiresAt } }); }
     this.logger.log(`Node registered: nodeId=${nodeId} name=${node.name} version=${version}`);
@@ -152,17 +237,29 @@ export class NodesService {
     return { nodeId, renewed: true, tls: issuedCert };
   }
 
-  heartbeat(nodeId: string, capacity?: Record<string, unknown>) {
+  /**
+   * Handles the heartbeat operation for NodesService.
+   *
+   * @param nodeId Identifier used to locate the target record.
+   * @param capacity capacity supplied to the function.
+   * @returns The result produced by the operation.
+   */
+  heartbeat(nodeId: string, capacity?: Record<string, unknown>, signingPublicKeyPem?: string) {
     const node = this.store.backendNodes.find((n) => n.id === nodeId);
     if (!node) {
       this.logger.warn(`Heartbeat from unknown nodeId=${nodeId}`);
       throw new BadRequestException('Unknown node');
     }
     node.status = 'online';
+    if (node.quarantineState !== 'quarantined') node.healthState = 'degraded';
     const now = new Date().toISOString();
     node.firstSeenAt = node.firstSeenAt ?? now;
     node.lastSeenAt = now;
     node.capacity = capacity ?? node.capacity;
+    if (signingPublicKeyPem && !node.signingPublicKeyPem) {
+      node.signingPublicKeyPem = signingPublicKeyPem;
+      this.logger.log(`Self-healed signing public key for nodeId=${nodeId}`);
+    }
     void this.store.persist();
     this.logger.debug(`Heartbeat from nodeId=${nodeId}`);
     return {
@@ -172,6 +269,10 @@ export class NodesService {
     };
   }
 
+  /**
+   * Lists nodes records for the caller.
+   * @returns The result produced by the operation.
+   */
   listNodes() {
     let changed = false;
     const nodes = this.store.backendNodes.map((node) => {
@@ -186,6 +287,13 @@ export class NodesService {
     return nodes;
   }
 
+  /**
+   * Removes the node record or state.
+   *
+   * @param nodeId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async removeNode(nodeId: string, actor = 'system') {
     const index = this.store.backendNodes.findIndex((n) => n.id === nodeId);
     if (index === -1) throw new BadRequestException('Unknown node');
@@ -213,18 +321,32 @@ export class NodesService {
     return { nodeId, removed: true, decommission };
   }
 
+  /**
+   * Handles the online nodes operation for NodesService.
+   * @returns The result produced by the operation.
+   */
   onlineNodes() {
     return this.store.backendNodes.filter((node) => this.resolveStatus(node) === 'online');
   }
 
-  availableNode(preferredNodeId?: string) {
-    if (preferredNodeId) {
-      const node = this.store.backendNodes.find((candidate) => candidate.id === preferredNodeId);
-      return node && this.resolveStatus(node) === 'online' ? node : undefined;
-    }
-    return this.onlineNodes()[0];
+  /**
+   * Handles the available node operation for NodesService.
+   *
+   * @param preferredNodeId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
+  availableNode(preferredNodeId?: string, tenantId = 'default', device?: Device, requiredCapabilities?: NodeCapability[]) {
+    return this.routing.selectBestNode({ tenantId, device, preferredNodeId, requiredCapabilities });
   }
 
+  /**
+   * Handles the decommission node operation for NodesService.
+   *
+   * @param nodeId Identifier used to locate the target record.
+   * @param publicUrl URL used by the operation.
+   * @param decommissionToken Token used to authenticate or authorize the operation.
+   * @returns The result produced by the operation.
+   */
   private async decommissionNode(nodeId: string, publicUrl: string, decommissionToken?: string) {
     if (!decommissionToken) {
       this.logger.warn(`No decommission token stored for nodeId=${nodeId} — cannot authenticate decommission call`);
@@ -251,11 +373,27 @@ export class NodesService {
     }
   }
 
+  /**
+   * Resolves status configuration.
+   *
+   * @param node node supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private resolveStatus(node: BackendNode): BackendNode['status'] {
+    if (node.quarantineState === 'quarantined') return 'offline';
+    if (node.maintenanceState === 'maintenance') return 'offline';
     if (node.status === 'pending' && !node.lastSeenAt) return 'pending';
     if (!node.lastSeenAt) return 'offline';
     const seenAt = new Date(node.lastSeenAt).getTime();
     if (!Number.isFinite(seenAt)) return 'offline';
     return Date.now() - seenAt <= NODE_ONLINE_TTL_MS ? 'online' : 'offline';
   }
+}
+
+function capabilitiesFromCapacity(capacity?: Record<string, unknown>): NodeCapability[] {
+  const raw = capacity?.capabilities;
+  if (Array.isArray(raw)) return raw.filter((item): item is NodeCapability => typeof item === 'string');
+  const result: NodeCapability[] = [];
+  if (capacity?.packageCache) result.push('regional-cache');
+  return result;
 }

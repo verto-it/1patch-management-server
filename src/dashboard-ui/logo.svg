@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 110">
+  <defs>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d6ff1a"/>
+      <stop offset="100%" stop-color="#90cc00"/>
+    </linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b8e800"/>
+      <stop offset="100%" stop-color="#6a9c00"/>
+    </linearGradient>
+    <linearGradient id="c" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c8f010"/>
+      <stop offset="100%" stop-color="#84b800"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shield body (D-shape, front face) -->
+  <path d="M18,48 L18,88 Q18,104 34,104 Q62,104 78,88 Q90,74 90,56 Q90,40 78,28 L18,28 Z"
+        fill="url(#b)"/>
+
+  <!-- Top of shield (lighter, 3D top face) -->
+  <path d="M18,28 L78,28 Q90,40 90,56 L90,40 Q90,22 72,14 L38,14 Z"
+        fill="url(#a)"/>
+
+  <!-- Upward arrow/chevron (the "1" mark) — sits proud of shield top -->
+  <path d="M18,38 L38,14 L58,38 Z"
+        fill="url(#c)"/>
+
+  <!-- Inner fold shadow on arrow -->
+  <path d="M38,14 L48,38 L58,38 L38,14 Z"
+        fill="#6a9c00" opacity="0.45"/>
+
+  <!-- Right-side depth face -->
+  <path d="M78,28 Q90,40 90,56 Q90,74 78,88 Q86,72 86,54 Q86,36 78,28 Z"
+        fill="#4a7200" opacity="0.55"/>
+</svg>

@@ -19,6 +19,14 @@ import { SigningService } from './signing.service';
 export class TasksController {
   private readonly logger = new Logger(TasksController.name);
 
+  /**
+   * Creates a TasksController instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param nodes nodes supplied to the function.
+   * @param signing signing supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
@@ -26,6 +34,10 @@ export class TasksController {
     private readonly signing: SigningService,
   ) {}
 
+  /**
+   * Lists list records for the caller.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get()
@@ -34,13 +46,20 @@ export class TasksController {
     return this.store.tasks;
   }
 
+  /**
+   * Handles the refresh inventory operation for TasksController.
+   *
+   * @param deviceId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('deployments:write')
   @Post('/refresh-inventory/:deviceId')
   refreshInventory(@Param('deviceId') deviceId: string, @CurrentUser() user: User) {
     const device = this.store.devices.find((d) => d.id === deviceId);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = this.nodes.availableNode(device.preferredNodeId);
+    const node = this.nodes.availableNode(device.preferredNodeId, device.tenantId, device);
     if (!node) throw new BadRequestException('No backend node is available for this device');
     const task: UpdateTask = {
       id: uuid(), nodeId: node.id, deviceId,
@@ -54,6 +73,13 @@ export class TasksController {
     return task;
   }
 
+  /**
+   * Handles the cancel operation for TasksController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Delete('/:id')
@@ -131,6 +157,13 @@ export class TasksController {
   }
 }
 
+/**
+ * Handles the tenant id for tasks operation.
+ *
+ * @param tasks tasks supplied to the function.
+ * @param devices devices supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function tenantIdForTasks(tasks: UpdateTask[], devices: Device[]) {
   for (const task of tasks) {
     const tenantId = devices.find((device) => device.id === task.deviceId)?.tenantId;

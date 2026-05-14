@@ -31,11 +31,23 @@ export class MfaChallengeService {
   private readonly logger = new Logger(MfaChallengeService.name);
   private readonly prefix = '1patch:mfa-challenge';
 
+  /**
+   * Creates a MfaChallengeService instance with its required collaborators.
+   *
+   * @param dragonfly dragonfly supplied to the function.
+   * @param store store supplied to the function.
+   */
   constructor(
     private readonly dragonfly: DragonflyService,
     private readonly store: MemoryStore,
   ) {}
 
+  /**
+   * Handles the issue challenge operation for MfaChallengeService.
+   *
+   * @param userId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   async issueChallenge(userId: string): Promise<string> {
     const challengeId = randomUUID();
     const record: ChallengeRecord = { userId, verified: false, issuedAt: new Date().toISOString() };
@@ -44,6 +56,13 @@ export class MfaChallengeService {
     return challengeId;
   }
 
+  /**
+   * Validates challenge rules.
+   *
+   * @param userId Identifier used to locate the target record.
+   * @param challengeId Identifier used to locate the target record.
+   * @param totpCode totp code supplied to the function.
+   */
   async verifyChallenge(userId: string, challengeId: string, totpCode: string): Promise<void> {
     const record = await this.dragonfly.getJson<ChallengeRecord>(this.challengeKey(challengeId));
 
@@ -79,6 +98,12 @@ export class MfaChallengeService {
     this.logger.debug(`MFA task challenge consumed: userId=${userId} challengeId=${challengeId}`);
   }
 
+  /**
+   * Handles the challenge key operation for MfaChallengeService.
+   *
+   * @param challengeId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   private challengeKey(challengeId: string): string {
     // Hash the challengeId so the raw UUID is never stored as a key
     return `${this.prefix}:${createHash('sha256').update(challengeId).digest('hex')}`;

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { SiemConfigService } from '../siem/siem-config.service';
 import { SigningService } from '../signing.service';
+import { SIGNING_SCOPES } from '../signing.service';
 import { MemoryStore } from '../storage/memory.store';
 import { TenantPolicyService } from '../tasks/tenant-policy.service';
 import { AuditEvent, BackendNode, TenantPolicy, UpdateTask, User } from '../types';
@@ -51,6 +52,15 @@ export type SecurityPostureCheckContext = {
 
 @Injectable()
 export class SecurityPostureService {
+  /**
+   * Creates a SecurityPostureService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param policies policies supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param siemConfigs siem configs supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly policies: TenantPolicyService,
@@ -59,6 +69,12 @@ export class SecurityPostureService {
     private readonly siemConfigs: SiemConfigService,
   ) {}
 
+  /**
+   * Handles the generate operation for SecurityPostureService.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   async generate(tenantId = 'default'): Promise<SecurityPostureReport> {
     const policy = this.policies.get(tenantId);
     const siemConfig = await this.siemConfigs.get(tenantId).catch(() => undefined);
@@ -86,6 +102,13 @@ export class SecurityPostureService {
     return buildReport(tenantId, policy.securityMode, findings);
   }
 
+  /**
+   * Handles the apply safe fixes operation for SecurityPostureService.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param requestedActions requested actions supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async applySafeFixes(
     tenantId = 'default',
     requestedActions?: SecurityPostureFixAction[],
@@ -115,6 +138,13 @@ export class SecurityPostureService {
     return { tenantId, applied, skipped, report: await this.generate(tenantId) };
   }
 
+  /**
+   * Handles the apply fix operation for SecurityPostureService.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param action action supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private applyFix(tenantId: string, action: SecurityPostureFixAction): string {
     if (action === 'enable_delayed_execution' || action === 'enforce_minimum_delay') {
       this.policies.set(tenantId, { minimumExecutionDelaySeconds: MINIMUM_ENTERPRISE_DELAY_SECONDS });
@@ -138,6 +168,15 @@ export class SecurityPostureService {
   }
 }
 
+/**
+ * Builds the report payload.
+ *
+ * @param tenantId Identifier used to locate the target record.
+ * @param mode mode supplied to the function.
+ * @param findings findings supplied to the function.
+ * @param generatedAt generated at supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function buildReport(
   tenantId: string,
   mode: TenantPolicy['securityMode'],
@@ -161,6 +200,12 @@ export function buildReport(
   };
 }
 
+/**
+ * Handles the check task execution security operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkTaskExecutionSecurity(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
   const accepted = ctx.tasks.filter((task) => ['scheduled', 'executable', 'pending', 'dispatched', 'completed'].includes(task.status));
@@ -183,28 +228,62 @@ export function checkTaskExecutionSecurity(ctx: SecurityPostureCheckContext): Se
   return findings;
 }
 
+/**
+ * Handles the check signing and keys operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @param signing signing supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkSigningAndKeys(ctx: SecurityPostureCheckContext, signing: SigningService): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
-  const activeKeyId = safe(() => signing.getActiveKeyId());
-  const activeMeta = activeKeyId ? safe(() => signing.getKeyMetadata(activeKeyId)) : undefined;
-  if (process.env.NODE_ENV === 'production' && (process.env.MANAGEMENT_SIGNING_IS_DEV === 'true' || activeMeta?.isDev)) {
+  const activeKeyIdsByScope = (safe(() => signing.getActiveKeyIdsByScope()) ?? {}) as Partial<Record<(typeof SIGNING_SCOPES)[number], string>>;
+  const allMetadata = safe(() => signing.getAllKeyMetadata()) ?? [];
+  const activeMetadata = Object.values(activeKeyIdsByScope)
+    .map((keyId) => allMetadata.find((meta) => meta.keyId === keyId))
+    .filter(Boolean);
+
+  if (process.env.NODE_ENV === 'production' && (process.env.MANAGEMENT_SIGNING_IS_DEV === 'true' || activeMetadata.some((meta) => meta?.isDev))) {
     findings.push(finding('signing.dev_signer_production', 'critical', 'signing_keys', 'Development signer is used in production', 'The active management signing key is marked as a development key.', 'Production clients may reject the key, and attackers can target weaker development key handling.', 'Rotate to a production signing key and set MANAGEMENT_SIGNING_IS_DEV=false.'));
   }
-  if (process.env.MANAGEMENT_SIGNING_PRIVATE_KEY) {
+  if (process.env.MANAGEMENT_SIGNING_PRIVATE_KEY || process.env.MANAGEMENT_SIGNING_PRIVATE_KEYS_JSON) {
     findings.push(finding('signing.key_in_env', 'high', 'signing_keys', 'Signing key is stored in environment configuration', 'The private signing key is loaded directly from an environment variable.', 'Environment files are easier to copy, leak, or include in backups than an external KMS or secret manager.', 'Move signing operations to Vault, HSM, KMS, or another external key provider.'));
   }
-  if (trustedKeyCount() <= 1) {
+  if (trustedKeyCount(allMetadata) <= SIGNING_SCOPES.length) {
     findings.push(finding('signing.no_rotation', 'high', 'signing_keys', 'No key rotation path is configured', 'Only one trusted management signing key is configured.', 'Emergency rotation may break clients or force unsafe manual trust changes.', 'Publish at least one next trusted public key before rotating the active signer.'));
   }
-  if (hasExpiredTrustedKey()) {
+  if (hasExpiredTrustedKey(allMetadata)) {
     findings.push(finding('signing.expired_key_trusted', 'critical', 'signing_keys', 'Expired signing keys are still trusted', 'At least one trusted signing key appears to be past its trust deadline.', 'Old keys can validate malicious or stale payloads after they should have been removed.', 'Remove expired trusted keys and audit signatures created by those keys.'));
   }
-  if (activeMeta?.scope === '*' || !activeMeta?.scope) {
-    findings.push(finding('signing.no_scope_limited_signing', 'medium', 'signing_keys', 'Signing is not scope-limited', 'The active signing key can sign every payload scope.', 'A single key compromise could affect tasks, ledgers, bootstrap manifests, and kill-switch payloads.', 'Use separate keys for task bundles, task ledger entries, kill-switch state, and bootstrap manifests.'));
+  if (allMetadata.some((meta) => meta.scope === '*')) {
+    findings.push(finding('signing.wildcard_key_trusted', 'critical', 'signing_keys', 'Wildcard signing key is trusted', 'At least one management signing key is scoped to every payload class.', 'A single key compromise could sign tasks, ledgers, manifests, and kill-switch payloads.', 'Remove wildcard signing metadata and configure one active key per signing scope.'));
+  }
+  const missingScopes = SIGNING_SCOPES.filter((scope) => !activeKeyIdsByScope[scope]);
+  if (missingScopes.length > 0) {
+    findings.push(finding('signing.missing_scoped_keys', 'high', 'signing_keys', 'A required signing scope has no active key', `Missing active keys for: ${missingScopes.join(', ')}.`, 'Payloads for missing scopes cannot be signed or may fall back to unsafe compatibility behavior.', 'Configure MANAGEMENT_SIGNING_ACTIVE_KEYS_JSON with one active key for every signing scope.'));
+  }
+  const activeKeyIds = Object.values(activeKeyIdsByScope).filter(Boolean);
+  if (new Set(activeKeyIds).size !== activeKeyIds.length) {
+    findings.push(finding('signing.shared_key_across_scopes', 'high', 'signing_keys', 'A signing key is shared across scopes', 'The same active key ID is assigned to more than one signing scope.', 'Compromise of one scoped key can affect multiple payload classes.', 'Generate distinct keypairs and key IDs for every signing scope.'));
+  }
+  const activePublicKeys = activeMetadata
+    .map((meta) => meta?.publicKeyPem?.replace(/\s+/g, ''))
+    .filter(Boolean);
+  if (new Set(activePublicKeys).size !== activePublicKeys.length) {
+    findings.push(finding('signing.shared_key_material_across_scopes', 'high', 'signing_keys', 'Signing key material is shared across scopes', 'Two or more active scoped signing keys use the same public key material.', 'Compromise of one private key can affect multiple payload classes even when key IDs differ.', 'Generate separate keypairs for every signing scope.'));
+  }
+  if (activeMetadata.some((meta) => !meta?.scope || meta.scope === '*') || missingScopes.length > 0) {
+    findings.push(finding('signing.missing_scope_isolation', 'high', 'signing_keys', 'Signing scope isolation is incomplete', 'Active signing key metadata is missing or not scoped to exactly one payload class.', 'A verifier may accept signatures for the wrong payload class.', 'Use strict scoped key metadata and rotate any wildcard or shared active keys.'));
   }
   return findings;
 }
 
+/**
+ * Handles the check backend nodes operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkBackendNodes(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const now = Date.now();
   const findings: SecurityPostureFinding[] = [];
@@ -220,6 +299,12 @@ export function checkBackendNodes(ctx: SecurityPostureCheckContext): SecurityPos
   return findings;
 }
 
+/**
+ * Handles the check admin auth operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkAdminAuth(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const admins = ctx.users.filter((user) => user.roles.some((role) => role === 'owner' || role === 'admin'));
   const findings: SecurityPostureFinding[] = [];
@@ -236,6 +321,13 @@ export function checkAdminAuth(ctx: SecurityPostureCheckContext): SecurityPostur
   return findings;
 }
 
+/**
+ * Handles the check audit integrity operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @param audit audit supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkAuditIntegrity(ctx: SecurityPostureCheckContext, audit: AuditService): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
   const verified = audit.verifyChain();
@@ -253,6 +345,12 @@ export function checkAuditIntegrity(ctx: SecurityPostureCheckContext, audit: Aud
   return findings;
 }
 
+/**
+ * Handles the check siem observability operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkSiemObservability(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
   if (!ctx.siemConfigured) {
@@ -271,6 +369,12 @@ export function checkSiemObservability(ctx: SecurityPostureCheckContext): Securi
   return findings;
 }
 
+/**
+ * Handles the check policies operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkPolicies(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
   if (ctx.policy.maintenanceWindows.length === 0) {
@@ -285,9 +389,15 @@ export function checkPolicies(ctx: SecurityPostureCheckContext): SecurityPosture
   return findings;
 }
 
+/**
+ * Handles the check kill switch operation.
+ *
+ * @param ctx ctx supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function checkKillSwitch(ctx: SecurityPostureCheckContext): SecurityPostureFinding[] {
   const findings: SecurityPostureFinding[] = [];
-  const activeKeyPresent = Boolean(process.env.MANAGEMENT_SIGNING_ACTIVE_KEY_ID);
+  const activeKeyPresent = Boolean(process.env.MANAGEMENT_SIGNING_ACTIVE_KEYS_JSON || process.env.MANAGEMENT_SIGNING_ACTIVE_KEY_ID);
   if (!activeKeyPresent) {
     findings.push(finding('kill_switch.unavailable', 'critical', 'kill_switch', 'Kill switch signing is unavailable', 'No active management signing key is configured for kill-switch payloads.', 'Clients may not be able to trust emergency stop-state updates.', 'Restore management signing configuration and verify the kill-switch endpoint.'));
   }
@@ -301,6 +411,12 @@ export function checkKillSwitch(ctx: SecurityPostureCheckContext): SecurityPostu
   return findings;
 }
 
+/**
+ * Builds the category breakdown payload.
+ *
+ * @param findings findings supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function buildCategoryBreakdown(findings: SecurityPostureFinding[]): SecurityPostureCategoryBreakdown[] {
   return CATEGORIES.map((category) => {
     const categoryFindings = findings.filter((finding) => finding.category === category);
@@ -320,6 +436,20 @@ function buildCategoryBreakdown(findings: SecurityPostureFinding[]): SecurityPos
   });
 }
 
+/**
+ * Handles the finding operation.
+ *
+ * @param id Identifier used to locate the target record.
+ * @param severity severity supplied to the function.
+ * @param category category supplied to the function.
+ * @param title title supplied to the function.
+ * @param description description supplied to the function.
+ * @param riskExplanation risk explanation supplied to the function.
+ * @param fixSuggestion fix suggestion supplied to the function.
+ * @param autoFixAvailable auto fix available supplied to the function.
+ * @param fixAction fix action supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function finding(
   id: string,
   severity: SecurityPostureSeverity,
@@ -334,18 +464,39 @@ function finding(
   return { id, severity, category, title, description, riskExplanation, fixSuggestion, autoFixAvailable, fixAction };
 }
 
-function trustedKeyCount(): number {
+/**
+ * Handles the trusted key count operation.
+ *
+ * @param metadata metadata supplied to the function.
+ * @returns The result produced by the operation.
+ */
+function trustedKeyCount(metadata: Array<{ status?: string }>): number {
+  if (metadata.length > 0) {
+    return metadata.filter((meta) => meta.status !== 'revoked').length;
+  }
   try {
-    const parsed = JSON.parse(process.env.MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON ?? '{}');
+    const parsed = JSON.parse(process.env.MANAGEMENT_SIGNING_KEY_METADATA_JSON ?? process.env.MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON ?? '{}');
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.keys(parsed).length : 0;
   } catch {
     return 0;
   }
 }
 
-function hasExpiredTrustedKey(): boolean {
+/**
+ * Handles the has expired trusted key operation.
+ *
+ * @param metadata metadata supplied to the function.
+ * @returns The result produced by the operation.
+ */
+function hasExpiredTrustedKey(metadata: Array<{ status?: string; retirementDeadline?: string; expiresAt?: string }>): boolean {
+  if (metadata.length > 0) {
+    return metadata.some((meta) => {
+      const deadline = meta.expiresAt ?? meta.retirementDeadline;
+      return meta.status !== 'revoked' && Boolean(deadline && Date.parse(deadline) <= Date.now());
+    });
+  }
   try {
-    const parsed = JSON.parse(process.env.MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON ?? '{}') as Record<string, unknown>;
+    const parsed = JSON.parse(process.env.MANAGEMENT_SIGNING_KEY_METADATA_JSON ?? process.env.MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON ?? '{}') as Record<string, unknown>;
     return Object.values(parsed).some((value) => {
       if (!value || typeof value !== 'object') return false;
       const deadline = (value as { expiresAt?: string; retirementDeadline?: string }).expiresAt ?? (value as { retirementDeadline?: string }).retirementDeadline;
@@ -356,17 +507,35 @@ function hasExpiredTrustedKey(): boolean {
   }
 }
 
+/**
+ * Handles the has siem exporter operation.
+ *
+ * @param config Configuration object used by the operation.
+ * @returns The result produced by the operation.
+ */
 function hasSiemExporter(config: unknown): boolean {
   if (!config || typeof config !== 'object') return false;
   const c = config as { webhook?: { url?: string }; syslog?: { host?: string }; sentinel?: { workspaceId?: string } };
   return Boolean(c.webhook?.url || c.syslog?.host || c.sentinel?.workspaceId);
 }
 
+/**
+ * Handles the has notification target operation.
+ *
+ * @param policy policy supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function hasNotificationTarget(policy: TenantPolicy): boolean {
   const config = policy.notificationConfig;
   return Boolean(config?.emailAddresses?.length || config?.slackWebhookUrl || config?.teamsWebhookUrl || config?.genericWebhookUrl);
 }
 
+/**
+ * Handles the safe operation.
+ *
+ * @param fn fn supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function safe<T>(fn: () => T): T | undefined {
   try {
     return fn();

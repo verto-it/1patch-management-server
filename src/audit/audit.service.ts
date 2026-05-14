@@ -7,8 +7,23 @@ import { computeEventHash } from './audit.hash';
 export class AuditService {
   private readonly logger = new Logger(AuditService.name);
 
+  /**
+   * Creates a AuditService instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   */
   constructor(private readonly store: MemoryStore) {}
 
+  /**
+   * Handles the record operation for AuditService.
+   *
+   * @param actor actor supplied to the function.
+   * @param action action supplied to the function.
+   * @param target target supplied to the function.
+   * @param metadata metadata supplied to the function.
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   record(
     actor: string,
     action: string,
@@ -19,6 +34,10 @@ export class AuditService {
     return this.store.createAudit({ actor, action, target, metadata, tenantId });
   }
 
+  /**
+   * Lists list records for the caller.
+   * @returns The result produced by the operation.
+   */
   list() {
     return this.store.auditEvents;
   }

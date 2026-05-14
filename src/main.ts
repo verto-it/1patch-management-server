@@ -6,7 +6,46 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
+/**
+ * Handles the print banner operation.
+ *
+ * @param subtitle subtitle supplied to the function.
+ */
+function printBanner(subtitle: string) {
+  const g = '\x1b[38;2;164;220;0m';   // lime green
+  const d = '\x1b[38;2;90;130;0m';    // dark green
+  const b = '\x1b[1m';
+  const r = '\x1b[0m';
+  const baseIndent = '  ';
+  const rows = [
+    [g, '   _ ',  ' ____       _       _     '],
+    [g, '  / |',  '|  _ \\ __ _| |_ ___| |__  '],
+    [g, '  | |',  '| |_) / _` | __/ __| \'_ \\ '],
+    [d, '  | |',  '|  __/ (_| | || (__| | | |'],
+    [d, '  |_|',  '|_|   \\__,_|\\__\\___|_| |_|'],
+  ];
+  const width = Math.max(subtitle.length, ...rows.map(([, one, patch]) => one.length + patch.length));
+  /**
+   * Handles the center operation.
+   *
+   * @param value Value to read, render, or store.
+   */
+  const center = (value: string) => ' '.repeat(Math.max(0, Math.floor((width - value.length) / 2)));
+
+  console.log('');
+  for (const [oneColor, one, patch] of rows) {
+    console.log(`${baseIndent}${center(one + patch)}${oneColor}${b}${one}${r}${b}${patch}${r}`);
+  }
+  console.log('');
+  console.log(`${baseIndent}${center(subtitle)}${g}${subtitle}${r}`);
+  console.log('');
+}
+
+/**
+ * Handles the bootstrap operation.
+ */
 async function bootstrap() {
+  printBanner('Management Server  ·  v0.9  ·  AGPL-3.0');
   // ── TLS ─────────────────────────────────────────────────────────────────
   // Paths are written by vault/init-pki.ps1 and set in .env.
   // When TLS_CERT_PATH / TLS_KEY_PATH are present we boot HTTPS and require

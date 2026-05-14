@@ -11,12 +11,22 @@ export class WebhookExporter implements EventExporter {
   readonly name = 'webhook';
   private readonly logger = new Logger(WebhookExporter.name);
 
+  /**
+   * Creates a WebhookExporter instance with its required collaborators.
+   *
+   * @param config Configuration object used by the operation.
+   */
   constructor(private readonly config: SiemWebhookConfig) {
     if (!config.url.startsWith('https://')) {
       throw new Error(`Webhook URL must use HTTPS. Got: ${config.url}`);
     }
   }
 
+  /**
+   * Sends send data to its destination.
+   *
+   * @param events events supplied to the function.
+   */
   async send(events: SiemEvent[]): Promise<void> {
     if (events.length === 0) return;
     const body = JSON.stringify(events);
@@ -32,6 +42,10 @@ export class WebhookExporter implements EventExporter {
     await this.sendWithRetry(body, headers);
   }
 
+  /**
+   * Validates verify rules.
+   * @returns The result produced by the operation.
+   */
   async verify(): Promise<{ ok: boolean; message: string }> {
     try {
       const testPayload = JSON.stringify([{ ping: true, source: '1patch-siem' }]);
@@ -51,6 +65,12 @@ export class WebhookExporter implements EventExporter {
     }
   }
 
+  /**
+   * Sends with retry data to its destination.
+   *
+   * @param body Request payload or data transfer object.
+   * @param headers headers supplied to the function.
+   */
   private async sendWithRetry(body: string, headers: Record<string, string>): Promise<void> {
     let attempt = 0;
     while (attempt <= MAX_RETRIES) {
@@ -75,11 +95,24 @@ export class WebhookExporter implements EventExporter {
     }
   }
 
+  /**
+   * Builds the signature payload.
+   *
+   * @param body Request payload or data transfer object.
+   * @param secret secret supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private buildSignature(body: string, secret: string): string {
     return 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
   }
 }
 
+/**
+ * Handles the sleep operation.
+ *
+ * @param ms ms supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

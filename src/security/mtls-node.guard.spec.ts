@@ -3,6 +3,12 @@ import { MtlsNodeGuard, extractNodeId, NODE_ID_KEY } from './mtls-node.guard';
 
 // ── Helper builders ──────────────────────────────────────────────────────────
 
+/**
+ * Handles the make tls socket operation.
+ *
+ * @param opts Optional settings that tune the operation.
+ * @returns The result produced by the operation.
+ */
 function makeTlsSocket(opts: {
   hasPeerCert: boolean;
   authorized: boolean;
@@ -20,10 +26,24 @@ function makeTlsSocket(opts: {
   };
 }
 
+/**
+ * Handles the make context operation.
+ *
+ * @param socket socket supplied to the function.
+ * @param body Request payload or data transfer object.
+ * @param path Filesystem or URL path used by the operation.
+ * @returns The result produced by the operation.
+ */
 function makeContext(socket: unknown, body: unknown = {}, path = '/nodes/heartbeat'): ExecutionContext {
   const request: Record<string, unknown> = { socket, body, path };
   return {
+    /**
+     * Handles the switch to http operation.
+     */
     switchToHttp: () => ({
+      /**
+       * Gets the request value.
+       */
       getRequest: () => request,
     }),
   } as unknown as ExecutionContext;
@@ -89,6 +109,9 @@ describe('MtlsNodeGuard', () => {
 
   it('rejects when no client certificate is presented (empty subject)', () => {
     const socket = {
+      /**
+       * Gets the peer certificate value.
+       */
       getPeerCertificate: () => ({ subject: {} }),
       authorized: false,
     };
@@ -99,6 +122,9 @@ describe('MtlsNodeGuard', () => {
 
   it('rejects when getPeerCertificate returns no subject', () => {
     const socket = {
+      /**
+       * Gets the peer certificate value.
+       */
       getPeerCertificate: () => ({ subject: undefined }),
       authorized: false,
     };
@@ -154,6 +180,9 @@ describe('MtlsNodeGuard', () => {
     });
     const reqContainer: Record<string, unknown> = { socket, body: {}, path: '/nodes/heartbeat' };
     const ctx = {
+      /**
+       * Handles the switch to http operation.
+       */
       switchToHttp: () => ({ getRequest: () => reqContainer }),
     } as unknown as ExecutionContext;
 
@@ -174,6 +203,9 @@ describe('MtlsNodeGuard', () => {
     });
     const reqContainer: Record<string, unknown> = { socket, body: {}, path: '/nodes/heartbeat' };
     const ctx = {
+      /**
+       * Handles the switch to http operation.
+       */
       switchToHttp: () => ({ getRequest: () => reqContainer }),
     } as unknown as ExecutionContext;
 
@@ -189,6 +221,9 @@ describe('MtlsNodeGuard', () => {
 
     // Simulate a socket with no cert (what an old node would send — just the header)
     const socket = {
+      /**
+       * Gets the peer certificate value.
+       */
       getPeerCertificate: () => ({ subject: {} }),
       authorized: false,
     };
@@ -197,9 +232,17 @@ describe('MtlsNodeGuard', () => {
       body: {},
       path: '/nodes/heartbeat',
       headers: { 'x-node-api-secret': 'a'.repeat(64) },
+      /**
+       * Handles the header operation.
+       *
+       * @param name name supplied to the function.
+       */
       header: (name: string) => (name === 'x-node-api-secret' ? 'a'.repeat(64) : undefined),
     };
     const ctx = {
+      /**
+       * Handles the switch to http operation.
+       */
       switchToHttp: () => ({ getRequest: () => reqContainer }),
     } as unknown as ExecutionContext;
 
@@ -220,9 +263,15 @@ describe('MtlsNodeGuard', () => {
       socket,
       body: { nodeId },
       path: '/nodes/heartbeat',
+      /**
+       * Handles the header operation.
+       */
       header: () => undefined,
     };
     const ctx = {
+      /**
+       * Handles the switch to http operation.
+       */
       switchToHttp: () => ({ getRequest: () => reqContainer }),
     } as unknown as ExecutionContext;
 
@@ -241,9 +290,17 @@ describe('MtlsNodeGuard', () => {
       socket,
       body: {},
       path: '/tasks/node/dev-node-from-header/pending',
+      /**
+       * Handles the header operation.
+       *
+       * @param name name supplied to the function.
+       */
       header: (name: string) => (name === 'x-node-id' ? nodeId : undefined),
     };
     const ctx = {
+      /**
+       * Handles the switch to http operation.
+       */
       switchToHttp: () => ({ getRequest: () => reqContainer }),
     } as unknown as ExecutionContext;
 
@@ -263,6 +320,12 @@ describe('MtlsNodeGuard', () => {
   });
 });
 
+/**
+ * Handles the restore env operation.
+ *
+ * @param key key supplied to the function.
+ * @param value Value to read, render, or store.
+ */
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;

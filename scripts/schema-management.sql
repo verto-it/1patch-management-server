@@ -46,6 +46,8 @@ create table if not exists installed_apps (
   publisher text not null,
   version text not null,
   package_id text,
+  package_manager text,
+  package_scope text,
   product_code text
 );
 
@@ -61,10 +63,12 @@ create table if not exists package_artifacts (
   platform text not null,
   type text not null,
   package_id text,
+  package_manager text,
+  package_scope text,
   file_name text,
   storage_path text,
   source_url text,
-  sha256 text not null,
+  sha256 text,
   signature_status text not null,
   install_args text not null,
   uninstall_args text,
@@ -93,6 +97,8 @@ create table if not exists update_tasks (
   app_name text,
   package_artifact_id text,
   package_id text,
+  package_manager text,
+  package_scope text,
   product_code text,
   source_url text,
   sha256 text,

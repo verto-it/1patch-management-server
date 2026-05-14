@@ -27,12 +27,31 @@ if ([string]::IsNullOrWhiteSpace($OwnerPassword)) {
 
 # Generate secrets up-front so they can be printed together at the end
 $jwtSecret      = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$signingKeyId   = "main-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$ecdsa          = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256)
-$privatePem     = $ecdsa.ExportPkcs8PrivateKeyPem()
-$publicPem      = $ecdsa.ExportSubjectPublicKeyInfoPem()
-$privateB64     = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($privatePem))
-$publicKeysJson = @{ $signingKeyId = $publicPem } | ConvertTo-Json -Compress
+$scopeNames     = @("bootstrap_manifest", "rule_bundle", "task_bundle", "task_ledger", "kill_switch", "recovery_task")
+$activeKeys     = @{}
+$privateKeys    = @{}
+$keyMetadata    = @{}
+$issuedAt       = [DateTimeOffset]::UtcNow.ToString("o")
+foreach ($scope in $scopeNames) {
+  $signingKeyId = "key_$($scope)_v1"
+  $ecdsa        = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+  $privatePem   = $ecdsa.ExportPkcs8PrivateKeyPem()
+  $publicPem    = $ecdsa.ExportSubjectPublicKeyInfoPem()
+  $activeKeys[$scope] = $signingKeyId
+  $privateKeys[$signingKeyId] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($privatePem))
+  $keyMetadata[$signingKeyId] = @{
+    keyId = $signingKeyId
+    scope = $scope
+    status = "active"
+    issuedAt = $issuedAt
+    isDev = $false
+    algorithm = "ES256"
+    publicKeyPem = $publicPem
+  }
+}
+$activeKeysJson  = $activeKeys  | ConvertTo-Json -Compress
+$privateKeysJson = $privateKeys | ConvertTo-Json -Compress
+$metadataJson    = $keyMetadata | ConvertTo-Json -Depth 4 -Compress
 
 $databaseUrl = "$($PostgresServerUrl.TrimEnd('/'))/$DatabaseName"
 
@@ -44,9 +63,9 @@ DATABASE_URL=$databaseUrl
 DRAGONFLY_URL=$DragonflyUrl
 PACKAGE_STORAGE_PATH=./packages
 JWT_SECRET=$jwtSecret
-MANAGEMENT_SIGNING_ACTIVE_KEY_ID=$signingKeyId
-MANAGEMENT_SIGNING_PRIVATE_KEY=$privateB64
-MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON=$publicKeysJson
+MANAGEMENT_SIGNING_ACTIVE_KEYS_JSON=$activeKeysJson
+MANAGEMENT_SIGNING_PRIVATE_KEYS_JSON=$privateKeysJson
+MANAGEMENT_SIGNING_KEY_METADATA_JSON=$metadataJson
 CORS_ALLOWED_ORIGINS=$CorsAllowedOrigins
 FIRST_OWNER_EMAIL=$OwnerEmail
 FIRST_OWNER_PASSWORD=$OwnerPassword

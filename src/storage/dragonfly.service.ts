@@ -7,6 +7,9 @@ export class DragonflyService implements OnModuleDestroy {
   private readonly client?: Redis;
   private lastError?: string;
 
+  /**
+   * Creates a DragonflyService instance with its required collaborators.
+   */
   constructor() {
     const url = process.env.DRAGONFLY_URL;
     if (!url) {
@@ -17,6 +20,9 @@ export class DragonflyService implements OnModuleDestroy {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 2,
       lazyConnect: true,
+      /**
+       * Handles the retry strategy operation for DragonflyService.
+       */
       retryStrategy: () => null,
     });
     this.client.on('error', (error) => {
@@ -24,6 +30,12 @@ export class DragonflyService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Gets the json value.
+   *
+   * @param key key supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async getJson<T>(key: string): Promise<T | undefined> {
     if (!this.client) return undefined;
     if (!(await this.ensureConnected())) return undefined;
@@ -38,6 +50,12 @@ export class DragonflyService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Sets the json value.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to read, render, or store.
+   */
   async setJson(key: string, value: unknown) {
     if (!this.client) return;
     if (!(await this.ensureConnected())) return;
@@ -50,6 +68,13 @@ export class DragonflyService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Sets the json ex value.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to read, render, or store.
+   * @param ttlSeconds ttl seconds supplied to the function.
+   */
   async setJsonEx(key: string, value: unknown, ttlSeconds: number) {
     if (!this.client) return;
     if (!(await this.ensureConnected())) return;
@@ -62,6 +87,11 @@ export class DragonflyService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Handles the del operation for DragonflyService.
+   *
+   * @param key key supplied to the function.
+   */
   async del(key: string) {
     if (!this.client) return;
     if (!(await this.ensureConnected())) return;
@@ -74,14 +104,25 @@ export class DragonflyService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Handles the on module destroy operation for DragonflyService.
+   */
   async onModuleDestroy() {
     if (this.client?.status === 'ready') await this.client.quit();
   }
 
+  /**
+   * Handles the is configured operation for DragonflyService.
+   * @returns The result produced by the operation.
+   */
   isConfigured() {
     return Boolean(this.client);
   }
 
+  /**
+   * Gets the status value.
+   * @returns The result produced by the operation.
+   */
   getStatus() {
     return {
       configured: this.isConfigured(),
@@ -90,6 +131,10 @@ export class DragonflyService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * Resolves connected configuration.
+   * @returns The result produced by the operation.
+   */
   private async ensureConnected() {
     if (!this.client) return false;
     if (this.client.status === 'ready') return true;

@@ -10,8 +10,19 @@ import { RequirePermission } from '../security/require-permission.decorator';
 @RequirePermission('audit:read')
 @Controller('/audit')
 export class AuditController {
+  /**
+   * Creates a AuditController instance with its required collaborators.
+   *
+   * @param audit audit supplied to the function.
+   */
   constructor(private readonly audit: AuditService) {}
 
+  /**
+   * Lists list records for the caller.
+   *
+   * @param limit Maximum number of records to return.
+   * @returns The result produced by the operation.
+   */
   @Get()
   list(@Query('limit') limit?: string) {
     const n = parseInt(limit ?? '50', 10);

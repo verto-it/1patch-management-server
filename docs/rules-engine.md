@@ -56,7 +56,7 @@ Supported operators are `eq`, `neq`, `contains`, `matches`, `lt`, `lte`, `gt`, `
 
 Allowed actions are intentionally narrow:
 
-- `create_patch_task`: `specific_package` or `all_outdated`
+- `create_patch_task`: `specific_package` or `all_outdated`; `specific_package` requires `packageName`, `packageNames`, or `packageId`
 - `create_security_task`: `refresh_inventory`
 - `notify`: SIEM only in this release
 - `mark_device`: add a safe metadata tag
@@ -90,12 +90,26 @@ Default templates:
 
 - Weekly Browser Updates
 - Critical Patch Fast Track
-- Retry Failed Updates
-- Refresh Inventory Daily
 - Patch Test Group First
+- Chrome Zero-Day Response
+- Microsoft Edge Stable Ring
+- Firefox Maintenance Ring
+- Developer Tooling Weekly
+- Collaboration Apps Weekly
+- VPN Client Maintenance
+- Refresh Inventory Daily
+- Inventory Before Maintenance
+- Low-Trust Inventory Refresh
+- Retry Failed Package Update
+- Repeated Failure Inventory Reset
+- Failed Task SIEM Escalation
 - Notify on High-Risk Task
-- Production Maintenance Window Only
+- Stale Inventory Notification
+- Production Package Window
+- Production Hotfix Window
+- Block Production Outside Window
 - Block Unsafe Automation
+- Low-Trust Automation Block
 
 Template audit and SIEM events:
 

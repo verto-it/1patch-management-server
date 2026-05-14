@@ -1,3 +1,22 @@
+export type SsoProviderType = 'microsoft' | 'google' | 'github' | 'okta' | 'oidc';
+
+export interface SsoProvider {
+  id: string;
+  type: SsoProviderType;
+  name: string;
+  clientId: string;
+  clientSecretEnc: string;      // AES-256-GCM: hex(iv):hex(authTag):hex(ciphertext)
+  enabled: boolean;
+  tenantId?: string;            // Microsoft: tenant ID, 'common', 'organizations'
+  domain?: string;              // Okta: e.g., 'dev-12345.okta.com'
+  discoveryUrl?: string;        // Generic OIDC: e.g., 'https://idp.example.com'
+  allowedDomains?: string[];    // Restrict login to these email domains
+  defaultRole?: Role;           // Role for auto-provisioned users (default: 'viewer')
+  autoProvision: boolean;       // Create user account if none exists
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type Role =
   | 'owner'
   | 'admin'
@@ -34,7 +53,8 @@ export type SigningScope =
   | 'task_bundle'
   | 'task_ledger'
   | 'kill_switch'
-  | 'recovery_task';
+  | 'recovery_task'
+  | 'node_update';
 
 /** Full task lifecycle */
 export type TaskStatus =
@@ -57,6 +77,7 @@ export interface User {
   email: string;
   passwordHash: string;
   roles: Role[];
+  disabled?: boolean;
   mfaEnabled: boolean;
   mfaSecret?: string;
   recoveryCodeHashes: string[];
@@ -74,6 +95,17 @@ export interface BackendNode {
   region?: string;
   site?: string;
   status: 'pending' | 'online' | 'offline';
+  healthState?: NodeHealthState;
+  maintenanceState?: NodeMaintenanceState;
+  quarantineState?: NodeQuarantineStateValue;
+  trustScore?: number;
+  capabilities?: NodeCapability[];
+  signingPublicKeyPem?: string;
+  updateChannel?: string;
+  minimumAcceptedVersion?: string;
+  drainingSince?: string;
+  maintenanceReason?: string;
+  quarantineReason?: string;
   enrollmentTokenHash: string;
   enrollmentTokenCreatedAt: string;
   enrollmentTokenUsedAt?: string;
@@ -84,6 +116,281 @@ export interface BackendNode {
   tlsCertSerial?: string;
   tlsCertExpiresAt?: string;
   decommissionToken?: string;
+}
+
+export type NodeCapability =
+  | 'windows-patching'
+  | 'linux-patching'
+  | 'winget-cache'
+  | 'chocolatey-cache'
+  | 'yara-scan'
+  | 'malware-scan'
+  | 'file-reputation'
+  | 'offline-cache'
+  | 'regional-cache'
+  | 'bandwidth-optimized';
+
+export type NodeHealthState = 'healthy' | 'degraded' | 'unhealthy' | 'stale' | 'quarantined';
+export type NodeMaintenanceState = 'active' | 'draining' | 'maintenance';
+export type NodeQuarantineStateValue = 'none' | 'quarantined' | 'pending_reapproval';
+export type NodeQueueLag = 'low' | 'medium' | 'high';
+
+export interface NodeProfile {
+  nodeId: string;
+  region?: string;
+  site?: string;
+  publicUrl: string;
+  capabilities: NodeCapability[];
+  signingPublicKeyPem?: string;
+  updateChannel?: string;
+  maintenanceState: NodeMaintenanceState;
+  quarantineState: NodeQuarantineStateValue;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NodeSignedEnvelope<T = unknown> {
+  algorithm: 'ES256';
+  nodeId: string;
+  payloadType:
+    | 'node_health_report'
+    | 'node_reachability_probe'
+    | 'cross_node_probe_report'
+    | 'cache_artifact_attestation'
+    | 'node_version_attestation';
+  issuedAt: string;
+  expiresAt: string;
+  nonce: string;
+  payloadHash: string;
+  payload: T;
+  signature: string;
+}
+
+export interface NodeChallengeNonce {
+  id: string;
+  nodeId: string;
+  purpose: NodeSignedEnvelope['payloadType'];
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+}
+
+export interface NodeHealthComponent {
+  name:
+    | 'reachability'
+    | 'event_queue'
+    | 'database'
+    | 'certificate'
+    | 'scanner'
+    | 'disk'
+    | 'memory'
+    | 'clock'
+    | 'update_source'
+    | 'cache'
+    | 'package_verifier';
+  status: 'ok' | 'degraded' | 'unhealthy';
+  observedAt: string;
+  message?: string;
+  value?: number | string | boolean;
+}
+
+
+/** Structured security posture finding for a backend node */
+export interface NodeSecurityFinding {
+  /** Machine-readable code e.g. SSH_ROOT_LOGIN_PERMITTED, NO_FIREWALL, NODE_AGE_NEW */
+  code: string;
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  category: "os_security" | "ip_reputation" | "node_age" | "configuration" | "health";
+  message: string;
+  remediationHint?: string;
+}
+
+export interface NodeHealthReport {
+  nodeId: string;
+  reportedAt: string;
+  managementUrl?: string;
+  publicUrl?: string;
+  version?: string;
+  region?: string;
+  site?: string;
+  latencyMs?: number;
+  queueSize: number;
+  queueLag: NodeQueueLag;
+  diskFreeBytes?: number;
+  memoryPressurePercent?: number;
+  clockSkewMs?: number;
+  certExpiresAt?: string;
+  scannerHealthy: boolean;
+  cacheHealthy: boolean;
+  packageVerifierHealthy: boolean;
+  updateSourceReachable: boolean;
+  components: NodeHealthComponent[];
+  capabilities: NodeCapability[];
+  /** Platform-specific OS security posture findings self-reported by the node */
+  securityFindings?: NodeSecurityFinding[];
+  /** Basic OS metadata for server-side context */
+  osInfo?: { platform: string; release?: string };
+}
+
+export interface NodeTrustSnapshot {
+  id: string;
+  nodeId: string;
+  healthy: boolean;
+  healthState: NodeHealthState;
+  latencyMs?: number;
+  lastSeenSeconds?: number;
+  certValid: boolean;
+  scannerHealthy: boolean;
+  suspiciousEvents: number;
+  queueLag: NodeQueueLag;
+  previousTrustScore?: number;
+  trustScore: number;
+  scoreDelta?: number;
+  maxTrustScore?: number;
+  reasons: string[];
+  /** Structured findings driving the trust score, grouped by category for the UI */
+  securityFindings?: NodeSecurityFinding[];
+  createdAt: string;
+}
+
+export interface NodeRoutingPolicy {
+  id: string;
+  tenantId: string;
+  mode: 'standard' | 'eu_only' | 'region_pinned' | 'high_security' | 'offline_local_only';
+  pinnedRegion?: string;
+  preferredNodeIds: string[];
+  excludedNodeIds: string[];
+  trustedOnly: boolean;
+  requiredCapabilities: NodeCapability[];
+  localSite?: string;
+  updatedAt: string;
+}
+
+export interface RouteCandidate {
+  nodeId: string;
+  publicUrl: string;
+  region?: string;
+  site?: string;
+  capabilities: NodeCapability[];
+  healthy: boolean;
+  healthState: NodeHealthState;
+  latencyMs?: number;
+  trustScore: number;
+  maintenanceState: NodeMaintenanceState;
+  quarantineState: NodeQuarantineStateValue;
+  priority: number;
+  weight: number;
+  reasons: string[];
+}
+
+export interface RouteDecision {
+  id: string;
+  tenantId: string;
+  deviceId?: string;
+  selectedNodeId?: string;
+  candidates: RouteCandidate[];
+  policyId?: string;
+  requiredCapabilities: NodeCapability[];
+  reason: string;
+  correlationId?: string;
+  createdAt: string;
+}
+
+export interface CrossNodeProbeReport {
+  id: string;
+  reporterNodeId: string;
+  targetNodeId: string;
+  region?: string;
+  reachable: boolean;
+  latencyMs?: number;
+  trustValid: boolean;
+  reportedAt: string;
+  details?: Record<string, unknown>;
+}
+
+export interface CacheArtifactAttestation {
+  id: string;
+  nodeId: string;
+  packageArtifactId: string;
+  sha256: string;
+  verified: boolean;
+  signatureValid?: boolean;
+  sizeBytes?: number;
+  expiresAt?: string;
+  observedAt: string;
+  reason?: string;
+}
+
+export interface FileReputationReport {
+  id: string;
+  packageArtifactId?: string;
+  sha256: string;
+  scannedAt: string;
+  source: 'management' | 'backend-node';
+  nodeId?: string;
+  authenticodeStatus?: 'valid' | 'invalid' | 'unsigned' | 'unknown';
+  vendorVerified?: boolean;
+  allowlisted: boolean;
+  denylisted: boolean;
+  suspiciousFilename: boolean;
+  suspiciousPath: boolean;
+  entropyScore?: number;
+  packedBinarySuspected?: boolean;
+  yaraMatches: string[];
+  virusTotal?: {
+    available: boolean;
+    positives?: number;
+    total?: number;
+    permalink?: string;
+    checkedAt: string;
+  };
+  riskScore: number;
+  verdict: 'trusted' | 'unknown' | 'suspicious' | 'malicious';
+  reasons: string[];
+}
+
+export interface NodeQuarantineEvent {
+  id: string;
+  nodeId: string;
+  trigger:
+    | 'invalid_signature'
+    | 'replay_attempt'
+    | 'trust_score_low'
+    | 'repeated_failures'
+    | 'integrity_mismatch'
+    | 'certificate_issue'
+    | 'manual';
+  reason: string;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+}
+
+export interface NodeUpdateCampaign {
+  id: string;
+  version: string;
+  minVersion?: string;
+  channel: string;
+  artifactUrl: string;
+  sha256: string;
+  signature: string;
+  stagedPercent: number;
+  rollbackVersion?: string;
+  status: 'draft' | 'active' | 'paused' | 'completed' | 'rolled_back';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NodeVersionAttestation {
+  id: string;
+  nodeId: string;
+  version: string;
+  channel?: string;
+  updateCampaignId?: string;
+  artifactSha256?: string;
+  signatureValid: boolean;
+  rollbackAvailable: boolean;
+  attestedAt: string;
 }
 
 export interface ClientEnrollment {
@@ -118,8 +425,13 @@ export interface InstalledApp {
   publisher: string;
   version: string;
   packageId?: string;
+  packageManager?: PackageManager;
+  packageScope?: PackageScope;
   productCode?: string;
 }
+
+export type PackageManager = 'winget' | 'chocolatey' | 'scoop' | 'apt' | 'msi';
+export type PackageScope = 'system' | 'global' | 'user';
 
 export interface PatchRule {
   id: string;
@@ -213,7 +525,10 @@ export type RuleAction =
       type: 'create_patch_task';
       mode: 'specific_package' | 'all_outdated';
       packageName?: string;
+      packageNames?: string[];
       packageId?: string;
+      packageManager?: PackageManager;
+      packageScope?: PackageScope;
       packageArtifactId?: string;
       targetVersion?: 'latest' | string;
       maxDevices?: number;
@@ -303,13 +618,17 @@ export interface PackageArtifact {
   version: string;
   architecture: 'x64' | 'x86' | 'arm64' | 'any';
   platform: 'windows' | 'linux';
-  type: 'msi' | 'winget' | 'apt';
+  type: PackageManager;
   packageId?: string;
+  packageManager?: PackageManager;
+  packageScope?: PackageScope;
   fileName?: string;
   storagePath?: string;
   sourceUrl?: string;
   sha256?: string;
   signatureStatus: 'unknown' | 'valid' | 'invalid' | 'unsigned';
+  fileReputation?: FileReputationReport;
+  cacheAttestations?: CacheArtifactAttestation[];
   installArgs: string;
   uninstallArgs?: string;
   applicability: {
@@ -355,6 +674,7 @@ export interface SecurityScanResult {
     permalink?: string;
     available: boolean;
   };
+  fileReputation?: FileReputationReport;
 }
 
 export interface UpdateTask {
@@ -366,9 +686,13 @@ export interface UpdateTask {
   appName?: string;
   packageArtifactId?: string;
   packageId?: string;
+  packageManager?: PackageManager;
+  packageScope?: PackageScope;
   productCode?: string;
   sourceUrl?: string;
   sha256?: string;
+  requiredCapabilities?: NodeCapability[];
+  routingPolicyId?: string;
   installArgs?: string;
   targetVersion: 'latest' | string;
   type: 'update_package' | 'refresh_inventory';
@@ -399,6 +723,11 @@ export interface TaskLedgerEntry {
   approvals: TaskApproval[];
   notBefore: string;
   expiresAt: string;
+  algorithm: 'ES256';
+  scope: 'task_ledger';
+  issuedAt: string;
+  nonce: string;
+  payloadHash: string;
   keyId: string;
   signature: string;
   state: 'active' | 'revoked' | 'superseded';
@@ -410,13 +739,14 @@ export interface TaskLedgerEntry {
 export interface SignedEnvelope<T = unknown> {
   algorithm: 'ES256';
   keyId: string;
+  scope: SigningScope;
   payloadType: SigningScope;
   tenantId: string;
   issuedAt: string;
   expiresAt: string;
   nonce: string;
-  /** SHA-256 hex of canonical payload — verified by client in strict/tinfoil mode */
-  payloadHash?: string;
+  /** SHA-256 hex of canonical payload. Required for all new signatures. */
+  payloadHash: string;
   payload: T;
   signature: string;
 }
@@ -506,7 +836,7 @@ export interface TenantPolicy {
 
 export interface SigningKeyMetadata {
   keyId: string;
-  scope: SigningScope | '*';
+  scope: SigningScope;
   status: 'active' | 'trusted' | 'retired' | 'revoked';
   publicKeyPem: string;
   issuedAt: string;
@@ -516,6 +846,8 @@ export interface SigningKeyMetadata {
   revokedAt?: string;
   /** Dev-only keys are rejected by clients in production mode */
   isDev: boolean;
+  algorithm: 'ES256';
+  allowedTenants?: string[];
 }
 
 // ── SIEM ──────────────────────────────────────────────────────────────────────
@@ -525,6 +857,9 @@ export type SiemEventType =
   | 'auth.login.failed'
   | 'auth.mfa.success'
   | 'auth.mfa.failed'
+  | 'auth.logout'
+  | 'auth.sso.login.success'
+  | 'auth.sso.login.failed'
   | 'task.created'
   | 'task.security_scan.completed'
   | 'task.approved'
@@ -547,6 +882,13 @@ export type SiemEventType =
   | 'replay_attack_blocked'
   | 'node.registered'
   | 'node.unhealthy'
+  | 'node.health.accepted'
+  | 'node.routing.decision'
+  | 'node.quarantined'
+  | 'node.quarantine.cleared'
+  | 'node.trust.changed'
+  | 'node.update.attested'
+  | 'node.cache.attested'
   | 'node.certificate.issued'
   | 'node.certificate.revoked'
   | 'kill_switch.activated'

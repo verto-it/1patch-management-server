@@ -40,6 +40,14 @@ const STANDARD_EVENTS = new Set<SiemEventType>([
   'node.certificate.revoked',
 ]);
 
+/**
+ * Handles the filter events operation.
+ *
+ * @param events events supplied to the function.
+ * @param mode mode supplied to the function.
+ * @param overrides overrides supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function filterEvents(
   events: SiemEvent[],
   mode: SiemMode,

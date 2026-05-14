@@ -16,15 +16,34 @@ export class SecurityGateService {
   private aiProvider?: AiAdvisoryProvider;
   private readonly knownSources = new Set<string>(); // populated from package artifacts
 
+  /**
+   * Sets the ai provider value.
+   *
+   * @param provider provider supplied to the function.
+   */
   setAiProvider(provider: AiAdvisoryProvider) {
     this.aiProvider = provider;
     this.logger.log('AI advisory provider registered (advisory only — cannot approve or sign tasks)');
   }
 
+  /**
+   * Handles the register known source operation for SecurityGateService.
+   *
+   * @param host host supplied to the function.
+   */
   registerKnownSource(host: string) {
     this.knownSources.add(host.toLowerCase());
   }
 
+  /**
+   * Handles the scan operation for SecurityGateService.
+   *
+   * @param task task supplied to the function.
+   * @param policy policy supplied to the function.
+   * @param artifact artifact supplied to the function.
+   * @param options Optional settings that tune the operation.
+   * @returns The result produced by the operation.
+   */
   async scan(
     task: UpdateTask,
     policy: TenantPolicy,
@@ -40,33 +59,42 @@ export class SecurityGateService {
 
     
     if (task.type === 'update_package') {
-      // 1. Source URL must be HTTPS
-      if (!task.sourceUrl?.startsWith('https://')) {
+      const isRepoPackageTask = !task.sourceUrl && safeRepoPackageId(task.packageId);
+      if (!task.sourceUrl && !isRepoPackageTask) {
         hardBlock = true;
-        hardBlockReason = 'Package source URL is not HTTPS';
-        findings.push({ code: 'NON_HTTPS_SOURCE', severity: 'critical', message: hardBlockReason, field: 'sourceUrl' });
+        hardBlockReason = 'Repo package task is missing a safe packageId';
+        findings.push({ code: 'MISSING_PACKAGE_ID', severity: 'critical', message: hardBlockReason, field: 'packageId' });
       }
 
-      // 2. Trusted source host
-      const sourceHost = safeHost(task.sourceUrl);
-      if (task.sourceUrl && sourceHost && policy.trustedSourceHosts.length > 0 && !policy.trustedSourceHosts.includes(sourceHost)) {
-        hardBlock = true;
-        hardBlockReason = hardBlockReason ?? `Source host '${sourceHost}' is not on the trusted list`;
-        findings.push({ code: 'UNTRUSTED_SOURCE_HOST', severity: 'critical', message: `Source host '${sourceHost}' is not trusted`, field: 'sourceUrl' });
-      }
+      if (task.sourceUrl) {
+        // 1. Downloaded package source URL must be HTTPS
+        if (!task.sourceUrl.startsWith('https://')) {
+          hardBlock = true;
+          hardBlockReason = 'Package source URL is not HTTPS';
+          findings.push({ code: 'NON_HTTPS_SOURCE', severity: 'critical', message: hardBlockReason, field: 'sourceUrl' });
+        }
 
-      // 3. SHA-256 must be present
-      if (!task.sha256) {
-        hardBlock = true;
-        hardBlockReason = hardBlockReason ?? 'SHA-256 hash is missing';
-        findings.push({ code: 'MISSING_SHA256', severity: 'critical', message: 'SHA-256 hash is required', field: 'sha256' });
-      }
+        // 2. Trusted source host
+        const sourceHost = safeHost(task.sourceUrl);
+        if (sourceHost && policy.trustedSourceHosts.length > 0 && !policy.trustedSourceHosts.includes(sourceHost)) {
+          hardBlock = true;
+          hardBlockReason = hardBlockReason ?? `Source host '${sourceHost}' is not on the trusted list`;
+          findings.push({ code: 'UNTRUSTED_SOURCE_HOST', severity: 'critical', message: `Source host '${sourceHost}' is not trusted`, field: 'sourceUrl' });
+        }
 
-      // 4. Package hash must match artifact metadata
-      if (artifact?.sha256 && task.sha256 && artifact.sha256 !== task.sha256) {
-        hardBlock = true;
-        hardBlockReason = hardBlockReason ?? 'Package SHA-256 does not match stored artifact';
-        findings.push({ code: 'HASH_MISMATCH', severity: 'critical', message: 'Package hash does not match stored artifact metadata', field: 'sha256' });
+        // 3. SHA-256 must be present for downloaded artifacts
+        if (!task.sha256) {
+          hardBlock = true;
+          hardBlockReason = hardBlockReason ?? 'SHA-256 hash is missing';
+          findings.push({ code: 'MISSING_SHA256', severity: 'critical', message: 'SHA-256 hash is required', field: 'sha256' });
+        }
+
+        // 4. Package hash must match artifact metadata
+        if (artifact?.sha256 && task.sha256 && artifact.sha256 !== task.sha256) {
+          hardBlock = true;
+          hardBlockReason = hardBlockReason ?? 'Package SHA-256 does not match stored artifact';
+          findings.push({ code: 'HASH_MISMATCH', severity: 'critical', message: 'Package hash does not match stored artifact metadata', field: 'sha256' });
+        }
       }
     }
 
@@ -171,13 +199,35 @@ export class SecurityGateService {
   }
 }
 
+/**
+ * Handles the safe host operation.
+ *
+ * @param url URL used by the operation.
+ * @returns The result produced by the operation.
+ */
 function safeHost(url?: string): string | undefined {
   if (!url) return undefined;
   try { return new URL(url).hostname.toLowerCase(); } catch { return undefined; }
 }
 
+/**
+ * Handles the source host operation.
+ *
+ * @param url URL used by the operation.
+ * @returns The result produced by the operation.
+ */
 function sourceHost(url: string): string | undefined { return safeHost(url); }
 
+function safeRepoPackageId(value?: string): boolean {
+  return /^[A-Za-z0-9._+-]+$/.test((value ?? '').trim());
+}
+
+/**
+ * Handles the is in maintenance window operation.
+ *
+ * @param policy policy supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function isInMaintenanceWindow(policy: TenantPolicy): boolean {
   const now = new Date();
   const hour = now.getUTCHours();
@@ -189,6 +239,15 @@ function isInMaintenanceWindow(policy: TenantPolicy): boolean {
   });
 }
 
+/**
+ * Builds the summary payload.
+ *
+ * @param score score supplied to the function.
+ * @param severity severity supplied to the function.
+ * @param findings findings supplied to the function.
+ * @param hardBlock hard block supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function buildSummary(score: number, severity: string, findings: SecurityFinding[], hardBlock: boolean): string {
   const lines = [`Risk score: ${score}/100 (${severity})`];
   if (hardBlock) lines.push('⛔ HARD BLOCK — task cannot proceed to signing');

@@ -8,6 +8,11 @@ import {
   checkTaskExecutionSecurity,
 } from './security-posture.service';
 
+/**
+ * Handles the policy operation.
+ *
+ * @param patch patch supplied to the function.
+ */
 const policy = (patch: Partial<TenantPolicy> = {}): TenantPolicy => ({
   tenantId: 'default',
   minimumExecutionDelaySeconds: 300,
@@ -96,6 +101,13 @@ describe('security posture checks', () => {
   });
 });
 
+/**
+ * Handles the finding operation.
+ *
+ * @param id Identifier used to locate the target record.
+ * @param severity severity supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function finding(id: string, severity: 'critical' | 'high' | 'medium' | 'info') {
   return {
     id,

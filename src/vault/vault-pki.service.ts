@@ -32,6 +32,9 @@ export class VaultPkiService implements OnModuleInit {
   private clientToken: string | null = null;
   private tokenExpiresAt = 0;
 
+  /**
+   * Handles the on module init operation for VaultPkiService.
+   */
   onModuleInit() {
     this.vaultAddr = process.env.VAULT_ADDR ?? '';
     this.roleId    = process.env.VAULT_APPROLE_ROLE_ID ?? '';

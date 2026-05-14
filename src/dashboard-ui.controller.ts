@@ -7,6 +7,8 @@ import { join } from 'path';
 const ASSETS: Record<string, { type: string }> = {
   'styles.css':     { type: 'text/css; charset=utf-8' },
   'app.bundle.js':  { type: 'text/javascript; charset=utf-8' },
+  'logo.svg':       { type: 'image/svg+xml; charset=utf-8' },
+  'logo.png':       { type: 'image/png' },
 };
 
 const CATEGORIES = new Set([
@@ -21,6 +23,7 @@ const CATEGORIES = new Set([
   'audit',
   'siem',
   'security-posture',
+  'settings',
 ]);
 
 
@@ -28,6 +31,10 @@ const CATEGORIES = new Set([
 export class DashboardUiController {
   private readonly assetRoot = join(__dirname, 'dashboard-ui');
 
+  /**
+   * Handles the index operation for DashboardUiController.
+   * @returns The result produced by the operation.
+   */
   @Get('/ui')
   @Header('content-type', 'text/html; charset=utf-8')
   @Header('cache-control', 'no-store')
@@ -35,6 +42,12 @@ export class DashboardUiController {
     return readFileSync(join(this.assetRoot, 'shell.html'), 'utf8');
   }
 
+  /**
+   * Handles the asset operation for DashboardUiController.
+   *
+   * @param asset asset supplied to the function.
+   * @param res HTTP response object used by the handler.
+   */
   @Get('/ui/:asset')
   asset(@Param('asset') asset: string, @Res() res: Response) {
     const meta = ASSETS[asset];
@@ -47,7 +60,7 @@ export class DashboardUiController {
       }
       throw new NotFoundException();
     }
-    const content = readFileSync(join(this.assetRoot, asset), 'utf8');
+    const content = readFileSync(join(this.assetRoot, asset));
     res.setHeader('content-type', meta.type);
     res.setHeader('cache-control', 'no-cache');
     res.send(content);

@@ -16,14 +16,27 @@ const Icon = {
   refresh:  (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 8a5 5 0 0 1 8.5-3.5L13 6M13 8a5 5 0 0 1-8.5 3.5L3 10"/><path d="M13 3v3h-3M3 13v-3h3"/></svg>),
   plus:     (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 3v10M3 8h10"/></svg>),
   arrowR:   (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 4l4 4-4 4"/></svg>),
+  arrowL:   (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M10 4l-4 4 4 4"/></svg>),
+  copy:     (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="5" y="5" width="8" height="9" rx="1"/><path d="M3 11V3h8"/></svg>),
+  check:    (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 8l3.5 3.5L13 5"/></svg>),
+  externalLink: (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M7 3H3v10h10V9M13 3H9m4 0v4"/></svg>),
+  lightbulb:    (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2a4 4 0 0 1 2.1 7.4L10 11H6l-.1-1.6A4 4 0 0 1 8 2z"/><path d="M6.5 11h3v1.5h-3zM7.2 13.5h1.6"/></svg>),
   windows:  (<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.2 7.3 2.5v5H2zM7.9 2.4 14 1.5v6H7.9zM2 8.5h5.3v5L2 12.8zM7.9 8.5H14v6l-6.1-.9z"/></svg>),
   linux:    (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><ellipse cx="8" cy="10" rx="4.5" ry="4"/><circle cx="6.5" cy="6.5" r=".7" fill="currentColor"/><circle cx="9.5" cy="6.5" r=".7" fill="currentColor"/><path d="M7 8.5l1 .8 1-.8"/></svg>),
   close:    (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 4 8 8M12 4l-8 8"/></svg>),
   filter:   (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12l-4.5 5v4l-3 1V9z"/></svg>),
   download: (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 3v8m0 0L5 8m3 3 3-3M3 13h10"/></svg>),
   play:     (<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l8-4.5z"/></svg>),
+  logout:   (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 3H3v10h3M10.5 5.5 13 8l-2.5 2.5M13 8H6"/></svg>),
+  settings: (<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="2"/><path d="M8 2v1M8 13v1M2 8h1M13 8h1M3.5 3.5l.7.7M11.8 11.8l.7.7M3.5 12.5l.7-.7M11.8 4.2l.7-.7"/></svg>),
 };
 
+/**
+ * Renders the sparkline UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function Sparkline({ data, color = "var(--accent)", height = 56, width = 240 }) {
   const max = Math.max(...data), min = Math.min(...data);
   const range = max - min || 1;
@@ -46,6 +59,12 @@ function Sparkline({ data, color = "var(--accent)", height = 56, width = 240 }) 
   );
 }
 
+/**
+ * Renders the donut UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function Donut({ value, size = 140, stroke = 14 }) {
   // value 0..100
   const r = (size - stroke) / 2;
@@ -71,28 +90,58 @@ function Donut({ value, size = 140, stroke = 14 }) {
   );
 }
 
+/**
+ * Renders the status pill UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function StatusPill({ status }) {
   const map = {
-    online:    { cls: "ok",     label: "Online" },
-    offline:   { cls: "",       label: "Offline" },
-    pending:   { cls: "",       label: "Pending" },
-    dispatched:{ cls: "accent", label: "Dispatched" },
-    completed: { cls: "ok",     label: "Completed" },
-    failed:    { cls: "crit",   label: "Failed" },
-    rejected:  { cls: "warn",   label: "Rejected" },
-    cancelled: { cls: "",       label: "Cancelled" },
-    valid:     { cls: "ok",     label: "Signed" },
-    unsigned:  { cls: "warn",   label: "Unsigned" },
-    unknown:   { cls: "",       label: "Unknown" },
+    online:      { cls: "ok",     label: "Online" },
+    offline:     { cls: "",       label: "Offline" },
+    pending:     { cls: "",       label: "Pending" },
+    dispatched:  { cls: "accent", label: "Dispatched" },
+    completed:   { cls: "ok",     label: "Completed" },
+    failed:      { cls: "crit",   label: "Failed" },
+    rejected:    { cls: "warn",   label: "Rejected" },
+    cancelled:   { cls: "",       label: "Cancelled" },
+    valid:       { cls: "ok",     label: "Signed" },
+    unsigned:    { cls: "warn",   label: "Unsigned" },
+    unknown:     { cls: "",       label: "Unknown" },
+    healthy:     { cls: "ok",     label: "Healthy" },
+    degraded:    { cls: "warn",   label: "Degraded" },
+    unhealthy:   { cls: "crit",   label: "Unhealthy" },
+    quarantined: { cls: "crit",   label: "Quarantined" },
+    stale:       { cls: "",       label: "Stale" },
   };
   const it = map[status] || { cls: "", label: status };
   return <span className={"pill " + it.cls}><span className="dot"/>{it.label}</span>;
 }
 
+function fmtBytes(bytes) {
+  if (bytes == null || !Number.isFinite(bytes)) return "—";
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + " GB";
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+  return (bytes / 1e3).toFixed(0) + " KB";
+}
+
+/**
+ * Renders the os icon UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function OsIcon({ platform }) {
   return <span style={{ display:"inline-flex", width:14, height:14, color:"var(--text-3)" }}>{platform === "linux" ? Icon.linux : Icon.windows}</span>;
 }
 
+/**
+ * Formats the os value.
+ *
+ * @param os os supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function formatOs(os) {
   const raw = String(os || "").trim();
   if (!raw) return "—";
@@ -112,18 +161,36 @@ function formatOs(os) {
   return `${name}${release ? ` ${release}` : ""} (${win[1]}.${win[2]}.${win[3]})`;
 }
 
+/**
+ * Handles the task label operation.
+ *
+ * @param task task supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function taskLabel(task) {
   if (!task) return "Task";
   if (task.type === "refresh_inventory") return "Refresh inventory";
   return task.appName || task.packageId || task.packageArtifactId || task.type || task.id;
 }
 
+/**
+ * Handles the task version label operation.
+ *
+ * @param task task supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function taskVersionLabel(task) {
   if (!task) return "—";
   if (task.type === "refresh_inventory") return "Inventory scan";
   return (task.fromVersion || "—") + " → " + (task.targetVersion ?? task.toVersion ?? "latest");
 }
 
+/**
+ * Handles the sort tasks newest first operation.
+ *
+ * @param tasks tasks supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function sortTasksNewestFirst(tasks) {
   return (tasks || []).slice().sort((a, b) => {
     const aTime = a.createdAt || a.dispatchedAt || a.completedAt || "";
@@ -132,4 +199,4 @@ function sortTasksNewestFirst(tasks) {
   });
 }
 
-Object.assign(window, { Icon, Sparkline, Donut, StatusPill, OsIcon, formatOs, taskLabel, taskVersionLabel, sortTasksNewestFirst });
+Object.assign(window, { Icon, Sparkline, Donut, StatusPill, OsIcon, formatOs, taskLabel, taskVersionLabel, sortTasksNewestFirst, fmtBytes });

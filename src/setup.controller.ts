@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Post, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Body, Controller, Get, Header, Post, Req, UnauthorizedException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
 import { JwtService } from '@nestjs/jwt';
@@ -8,7 +8,7 @@ import { Pool } from 'pg';
 import { NodesService } from './nodes/nodes.service';
 import { MemoryStore } from './storage/memory.store';
 import { DragonflyService } from './storage/dragonfly.service';
-import { PostgresService } from './storage/postgres.service';
+import { phase3SchemaSql, PostgresService } from './storage/postgres.service';
 import { RbacService } from './rbac/rbac.service';
 import { Permission } from './types';
 
@@ -54,6 +54,16 @@ class SetupEnrollmentDto {
 @ApiTags('setup')
 @Controller('/setup')
 export class SetupController {
+  /**
+   * Creates a SetupController instance with its required collaborators.
+   *
+   * @param postgres postgres supplied to the function.
+   * @param dragonfly dragonfly supplied to the function.
+   * @param nodes nodes supplied to the function.
+   * @param store store supplied to the function.
+   * @param jwt jwt supplied to the function.
+   * @param rbac rbac supplied to the function.
+   */
   constructor(
     private readonly postgres: PostgresService,
     private readonly dragonfly: DragonflyService,
@@ -63,15 +73,29 @@ export class SetupController {
     private readonly rbac: RbacService,
   ) {}
 
+  /**
+   * Handles the page operation for SetupController.
+   * @returns The result produced by the operation.
+   */
   @Get()
   @Header('content-type', 'text/html')
   @Header('content-security-policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'")
   page() {
+    if (this.isSetupComplete()) {
+      throw new NotFoundException('Setup is not available after initial configuration');
+    }
     return managementSetupHtml;
   }
 
+  /**
+   * Handles the status operation for SetupController.
+   *
+   * @param request Incoming HTTP request context.
+   * @returns The result produced by the operation.
+   */
   @Get('/status')
-  status() {
+  status(@Req() request: Request) {
+    this.assertSetupAccess(request, 'setup:manage');
     const database = this.postgres.getStatus();
     const dragonfly = this.dragonfly.getStatus();
     return {
@@ -89,8 +113,16 @@ export class SetupController {
     };
   }
 
+  /**
+   * Handles the configuration operation for SetupController.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param request Incoming HTTP request context.
+   * @returns The result produced by the operation.
+   */
   @Post('/configuration')
-  configuration(@Body() dto: SetupConfigDto) {
+  configuration(@Body() dto: SetupConfigDto, @Req() request: Request) {
+    this.assertSetupAccess(request, 'setup:manage');
     const databaseUrl = buildDatabaseUrl(dto.postgresServerUrl, dto.databaseName);
     return {
       env: {
@@ -99,17 +131,24 @@ export class SetupController {
         FIRST_OWNER_EMAIL: dto.ownerEmail,
         FIRST_OWNER_PASSWORD: dto.ownerPassword,
       },
-      powershell: `./scripts/setup-management.ps1 -PostgresServerUrl '${dto.postgresServerUrl}' -DatabaseName '${dto.databaseName}' -DragonflyUrl '${dto.dragonflyUrl}' -OwnerEmail '${dto.ownerEmail}'`,
       nextSteps: [
-        'Run the generated setup script on the management server host.',
-        'The script writes .env, creates the database when psql is available, applies schema, and tries to create the first owner if the server is running.',
-        'Start or restart the management server.',
+        'Apply these environment values to the management server runtime.',
+        'Schema is prepared automatically when the database connection is tested or when the server starts.',
+        'Create the owner account from the Owner step.',
       ],
     };
   }
 
+  /**
+   * Handles the test configuration operation for SetupController.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param request Incoming HTTP request context.
+   * @returns The result produced by the operation.
+   */
   @Post('/test-configuration')
-  async testConfiguration(@Body() dto: StorageConfigDto) {
+  async testConfiguration(@Body() dto: StorageConfigDto, @Req() request: Request) {
+    this.assertSetupAccess(request, 'setup:manage');
     const databaseUrl = buildDatabaseUrl(dto.postgresServerUrl, dto.databaseName);
     const [database, dragonfly] = await Promise.all([testPostgres(databaseUrl), testDragonfly(dto.dragonflyUrl)]);
     return {
@@ -119,21 +158,28 @@ export class SetupController {
     };
   }
 
-  @Post('/migrate')
-  async migrate(@Req() request: Request) {
-    this.assertSetupAccess(request, 'setup:manage');
-    await this.postgres.ensureSchema({ throwOnError: true });
-    return { migrated: true };
-  }
-
+  /**
+   * Creates a node enrollment record.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param request Incoming HTTP request context.
+   * @returns The result produced by the operation.
+   */
   @Post('/node-enrollment')
   async createNodeEnrollment(@Body() dto: SetupEnrollmentDto, @Req() request: Request) {
     const actor = this.assertSetupAccess(request, 'nodes:enroll');
     return this.nodes.createEnrollment(dto.name, dto.publicUrl, dto.region, dto.site, actor);
   }
 
+  /**
+   * Validates setup access rules.
+   *
+   * @param request Incoming HTTP request context.
+   * @param permission permission supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private assertSetupAccess(request: Request, permission: Permission) {
-    if (this.store.users.length === 0) return 'setup';
+    if (!this.isSetupComplete()) return 'setup';
     const token = request.header('authorization')?.replace(/^Bearer\s+/i, '');
     if (!token) throw new UnauthorizedException('Owner authentication required');
     let payload: { sub?: string };
@@ -147,30 +193,61 @@ export class SetupController {
     if (!this.rbac.can(user, permission)) throw new ForbiddenException('Insufficient permission');
     return user.id;
   }
+
+  /**
+   * Handles the is setup complete operation for SetupController.
+   * @returns The result produced by the operation.
+   */
+  private isSetupComplete() {
+    return this.store.users.length > 0;
+  }
 }
 
+/**
+ * Builds the database url payload.
+ *
+ * @param postgresServerUrl URL used by the operation.
+ * @param databaseName database name supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function buildDatabaseUrl(postgresServerUrl: string, databaseName: string) {
   return `${postgresServerUrl.replace(/\/$/, '')}/${databaseName}`;
 }
 
+/**
+ * Handles the test postgres operation.
+ *
+ * @param connectionString connection string supplied to the function.
+ * @returns The result produced by the operation.
+ */
 async function testPostgres(connectionString: string) {
   const pool = new Pool({ connectionString, connectionTimeoutMillis: 2000, max: 1 });
   try {
     await pool.query('select 1');
-    return { ok: true, url: connectionString };
+    await pool.query(phase3SchemaSql);
+    return { ok: true, url: connectionString, schemaReady: true };
   } catch (error) {
-    return { ok: false, url: connectionString, error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, url: connectionString, schemaReady: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
     await pool.end().catch(() => undefined);
   }
 }
 
+/**
+ * Handles the test dragonfly operation.
+ *
+ * @param url URL used by the operation.
+ * @returns The result produced by the operation.
+ */
 async function testDragonfly(url: string) {
   const client = new Redis(url, {
     connectTimeout: 2000,
     enableOfflineQueue: false,
     lazyConnect: true,
     maxRetriesPerRequest: 1,
+    /**
+     * Handles the retry strategy operation.
+     */
     retryStrategy: () => null,
   });
   client.on('error', () => undefined);
@@ -230,7 +307,7 @@ const managementSetupHtml = `<!doctype html>
       <div>
         <section id="storage" class="active">
           <h2>Storage</h2>
-          <p class="muted">Generate the production environment and run migrations after PostgreSQL and DragonflyDB are reachable.</p>
+          <p class="muted">Enter storage connection values. Testing PostgreSQL also prepares the database schema automatically.</p>
           <div class="grid">
             <div><label>PostgreSQL server URL</label><input id="postgresServerUrl" value="postgres://1patch:1patch@localhost:5432"></div>
             <div><label>Database name</label><input id="databaseName" value="1patch_management"></div>
@@ -238,7 +315,7 @@ const managementSetupHtml = `<!doctype html>
             <div><label>Owner email for generated .env</label><input id="configOwnerEmail" type="email" placeholder="owner@example.com"></div>
             <div><label>Owner password for generated .env</label><input id="configOwnerPassword" type="password" minlength="12"></div>
           </div>
-          <div class="actions"><button onclick="testConfig()">Test Config</button><button class="secondary" onclick="generateConfig()">Generate Config</button><button class="secondary" onclick="migrate()">Run Migration</button><button class="ghost" onclick="go('owner')">Next</button></div>
+          <div class="actions"><button onclick="testConfig()">Test Storage</button><button class="secondary" onclick="generateConfig()">Preview Environment</button><button class="ghost" onclick="go('owner')">Next</button></div>
           <pre id="configOut">Generated setup config will appear here.</pre>
         </section>
         <section id="owner">
@@ -330,13 +407,6 @@ const managementSetupHtml = `<!doctype html>
           dragonflyUrl: formValue('dragonflyUrl')
         })});
         renderJson('configOut', data);
-      }catch(error){ document.getElementById('configOut').textContent = String(error.message || error); }
-    }
-    async function migrate(){
-      try{
-        const data = await jsonFetch('/setup/migrate',{method:'POST'});
-        renderJson('configOut', data);
-        await refreshStatus();
       }catch(error){ document.getElementById('configOut').textContent = String(error.message || error); }
     }
     async function createOwner(){

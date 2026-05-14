@@ -9,6 +9,28 @@ NestJS control plane for 1Patch. Owns setup, authentication, RBAC, tenants, app/
 
 - Agent API: [`docs/agent-api.md`](docs/agent-api.md)
 - Rules Engine: [`docs/rules-engine.md`](docs/rules-engine.md)
+- Signing Architecture: [`docs/signing-architecture.md`](docs/signing-architecture.md)
+- Source map: [`src/README.md`](src/README.md)
+- Dashboard UI source map: [`src/dashboard-ui/README.md`](src/dashboard-ui/README.md)
+
+---
+
+## Source Map
+
+The management server is the control plane. The high-risk code paths are intentionally split by responsibility:
+
+| Path | Responsibility |
+|---|---|
+| `src/auth/` | Owner setup, login, MFA challenges, JWT issuing, password policy |
+| `src/security/` | JWT, RBAC, permission decorators, node mTLS guards, request user helpers |
+| `src/nodes/` | Node enrollments, registration, heartbeat, certificate renewal, decommission |
+| `src/tasks/` | Drafting, security scan, MFA approval, signing, ledger, kill switch, tenant policy |
+| `src/rules/` | Patch rules, templates, dry runs, rule audit and manual triggers |
+| `src/siem/` | SIEM config, event queue, exporters, dead-letter handling, pipeline worker |
+| `src/storage/` | PostgreSQL snapshots and Dragonfly runtime/cache access |
+| `src/dashboard-ui/` | Built-in browser UI served by `DashboardUiController` |
+
+See [`src/README.md`](src/README.md) before changing cross-cutting behavior.
 
 ---
 
@@ -89,9 +111,9 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DRAGONFLY_URL` | yes | Redis-compatible URL |
 | `JWT_SECRET` | yes | Min 32 chars — signs user JWTs |
-| `MANAGEMENT_SIGNING_ACTIVE_KEY_ID` | yes | Active ES256 signing key ID |
-| `MANAGEMENT_SIGNING_PRIVATE_KEY` | yes | Base64-encoded PKCS#8 P-256 private key PEM |
-| `MANAGEMENT_SIGNING_PUBLIC_KEYS_JSON` | yes | Trusted keyId-to-public-key JSON for rotation |
+| `MANAGEMENT_SIGNING_ACTIVE_KEYS_JSON` | yes | JSON map of signing scope to active key ID |
+| `MANAGEMENT_SIGNING_PRIVATE_KEYS_JSON` | yes | JSON map of key ID to base64-encoded PKCS#8 P-256 private key PEM |
+| `MANAGEMENT_SIGNING_KEY_METADATA_JSON` | yes | JSON map of key ID to scoped signing metadata and public key PEM |
 | `CORS_ALLOWED_ORIGINS` | yes | Comma-separated browser origins |
 | `VAULT_ADDR` | yes* | Vault address e.g. `http://127.0.0.1:8200` |
 | `VAULT_APPROLE_ROLE_ID` | yes* | AppRole role ID |
@@ -146,6 +168,8 @@ All variables are written to `.env` by `setup-management.ps1`. Reference:
 | `POST` | `/packages` | JWT + `packages:write` | Upload or register a package |
 | `GET`  | `/packages` | JWT + `packages:read` | List packages |
 | `POST` | `/packages/:id/deploy-all` | JWT + `deployments:write` | Deploy to all applicable devices |
+
+Package artifact platform rules are enforced at creation and deployment time. `apt` artifacts are Linux-only repo packages and must provide `packageId` without uploaded files, `sourceUrl`, `sha256`, or install arguments. `msi` and `winget` artifacts remain Windows-only. Deployments only target devices whose registered OS matches the artifact platform.
 
 ### Dashboard
 | Method | Path | Auth | Description |
@@ -225,6 +249,7 @@ Debug operations:
 ## Security Controls
 
 - JWT secret and management signing key config are enforced at startup.
+- Management signatures are scope-isolated: each payload class (`bootstrap_manifest`, `rule_bundle`, `task_bundle`, `task_ledger`, `kill_switch`, `recovery_task`) has its own active ES256 keypair. Wildcard signing keys and dev keys hard-fail in production.
 - Vault AppRole token is refreshed automatically 5 minutes before expiry.
 - Every backend node receives a Vault-issued EC P-256 mTLS certificate with a 24-hour TTL. The node renews automatically 2 hours before expiry. Certs are revoked immediately when a node is decommissioned.
 - Node authentication is **mTLS-only** — the `MtlsNodeGuard` reads the TLS peer certificate, verifies Vault CA trust via `socket.authorized`, and extracts the `nodeId` from the certificate CN (`<nodeId>.1patch.internal`). No header-based shared secrets exist.

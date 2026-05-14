@@ -136,6 +136,12 @@ const __TWEAKS_STYLE = `
 // ── useTweaks ───────────────────────────────────────────────────────────────
 // Single source of truth for tweak values. setTweak persists via the host
 // (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
+/**
+ * Manages use tweaks state for the UI.
+ *
+ * @param defaults defaults supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function useTweaks(defaults) {
   const [values, setValues] = React.useState(defaults);
   // Accepts either setTweak('key', value) or setTweak({ key: value, ... }) so a
@@ -157,6 +163,12 @@ function useTweaks(defaults) {
 // The close button posts __edit_mode_dismissed so the host's toolbar toggle
 // flips off in lockstep; the host echoes __deactivate_edit_mode back which
 // is what actually hides the panel.
+/**
+ * Renders the tweaks panel UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweaksPanel({ title = 'Tweaks', children }) {
   const [open, setOpen] = React.useState(false);
   const dragRef = React.useRef(null);
@@ -190,6 +202,11 @@ function TweaksPanel({ title = 'Tweaks', children }) {
   }, [open, clampToViewport]);
 
   React.useEffect(() => {
+    /**
+     * Handles the on msg operation.
+     *
+     * @param e Event object emitted by the runtime or UI.
+     */
     const onMsg = (e) => {
       const t = e?.data?.type;
       if (t === '__activate_edit_mode') setOpen(true);
@@ -200,11 +217,19 @@ function TweaksPanel({ title = 'Tweaks', children }) {
     return () => window.removeEventListener('message', onMsg);
   }, []);
 
+  /**
+   * Handles the dismiss operation.
+   */
   const dismiss = () => {
     setOpen(false);
     window.parent.postMessage({ type: '__edit_mode_dismissed' }, '*');
   };
 
+  /**
+   * Handles the on drag start operation.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const onDragStart = (e) => {
     const panel = dragRef.current;
     if (!panel) return;
@@ -212,6 +237,11 @@ function TweaksPanel({ title = 'Tweaks', children }) {
     const sx = e.clientX, sy = e.clientY;
     const startRight = window.innerWidth - r.right;
     const startBottom = window.innerHeight - r.bottom;
+    /**
+     * Handles the move operation.
+     *
+     * @param ev ev supplied to the function.
+     */
     const move = (ev) => {
       offsetRef.current = {
         x: startRight - (ev.clientX - sx),
@@ -219,6 +249,9 @@ function TweaksPanel({ title = 'Tweaks', children }) {
       };
       clampToViewport();
     };
+    /**
+     * Handles the up operation.
+     */
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
@@ -247,6 +280,12 @@ function TweaksPanel({ title = 'Tweaks', children }) {
 
 // ── Layout helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Renders the tweak section UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakSection({ label, children }) {
   return (
     <>
@@ -256,6 +295,12 @@ function TweakSection({ label, children }) {
   );
 }
 
+/**
+ * Renders the tweak row UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakRow({ label, value, children, inline = false }) {
   return (
     <div className={inline ? 'twk-row twk-row-h' : 'twk-row'}>
@@ -270,6 +315,12 @@ function TweakRow({ label, value, children, inline = false }) {
 
 // ── Controls ────────────────────────────────────────────────────────────────
 
+/**
+ * Renders the tweak slider UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakSlider({ label, value, min = 0, max = 100, step = 1, unit = '', onChange }) {
   return (
     <TweakRow label={label} value={`${value}${unit}`}>
@@ -279,6 +330,12 @@ function TweakSlider({ label, value, min = 0, max = 100, step = 1, unit = '', on
   );
 }
 
+/**
+ * Renders the tweak toggle UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakToggle({ label, value, onChange }) {
   return (
     <div className="twk-row twk-row-h">
@@ -290,6 +347,12 @@ function TweakToggle({ label, value, onChange }) {
   );
 }
 
+/**
+ * Renders the tweak radio UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakRadio({ label, value, options, onChange }) {
   const trackRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);
@@ -302,6 +365,12 @@ function TweakRadio({ label, value, options, onChange }) {
   const valueRef = React.useRef(value);
   valueRef.current = value;
 
+  /**
+   * Handles the seg at operation.
+   *
+   * @param clientX client x supplied to the function.
+   * @returns The result produced by the operation.
+   */
   const segAt = (clientX) => {
     const r = trackRef.current.getBoundingClientRect();
     const inner = r.width - 4;
@@ -309,15 +378,28 @@ function TweakRadio({ label, value, options, onChange }) {
     return opts[Math.max(0, Math.min(n - 1, i))].value;
   };
 
+  /**
+   * Handles the on pointer down operation.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const onPointerDown = (e) => {
     setDragging(true);
     const v0 = segAt(e.clientX);
     if (v0 !== valueRef.current) onChange(v0);
+    /**
+     * Handles the move operation.
+     *
+     * @param ev ev supplied to the function.
+     */
     const move = (ev) => {
       if (!trackRef.current) return;
       const v = segAt(ev.clientX);
       if (v !== valueRef.current) onChange(v);
     };
+    /**
+     * Handles the up operation.
+     */
     const up = () => {
       setDragging(false);
       window.removeEventListener('pointermove', move);
@@ -344,6 +426,12 @@ function TweakRadio({ label, value, options, onChange }) {
   );
 }
 
+/**
+ * Renders the tweak select UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakSelect({ label, value, options, onChange }) {
   return (
     <TweakRow label={label}>
@@ -358,6 +446,12 @@ function TweakSelect({ label, value, options, onChange }) {
   );
 }
 
+/**
+ * Renders the tweak text UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakText({ label, value, placeholder, onChange }) {
   return (
     <TweakRow label={label}>
@@ -367,23 +461,48 @@ function TweakText({ label, value, placeholder, onChange }) {
   );
 }
 
+/**
+ * Renders the tweak number UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakNumber({ label, value, min, max, step = 1, unit = '', onChange }) {
+  /**
+   * Handles the clamp operation.
+   *
+   * @param n n supplied to the function.
+   * @returns The result produced by the operation.
+   */
   const clamp = (n) => {
     if (min != null && n < min) return min;
     if (max != null && n > max) return max;
     return n;
   };
   const startRef = React.useRef({ x: 0, val: 0 });
+  /**
+   * Handles the on scrub start operation.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const onScrubStart = (e) => {
     e.preventDefault();
     startRef.current = { x: e.clientX, val: value };
     const decimals = (String(step).split('.')[1] || '').length;
+    /**
+     * Handles the move operation.
+     *
+     * @param ev ev supplied to the function.
+     */
     const move = (ev) => {
       const dx = ev.clientX - startRef.current.x;
       const raw = startRef.current.val + dx * step;
       const snapped = Math.round(raw / step) * step;
       onChange(clamp(Number(snapped.toFixed(decimals))));
     };
+    /**
+     * Handles the up operation.
+     */
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
@@ -401,6 +520,12 @@ function TweakNumber({ label, value, min, max, step = 1, unit = '', onChange }) 
   );
 }
 
+/**
+ * Renders the tweak color UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakColor({ label, value, onChange }) {
   return (
     <div className="twk-row twk-row-h">
@@ -411,6 +536,12 @@ function TweakColor({ label, value, onChange }) {
   );
 }
 
+/**
+ * Renders the tweak button UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TweakButton({ label, onClick, secondary = false }) {
   return (
     <button type="button" className={secondary ? 'twk-btn secondary' : 'twk-btn'}

@@ -11,14 +11,42 @@ const rolePermissions: Record<Role, Permission[]> = {
   node_operator: ['nodes:manage','nodes:read','nodes:enroll','audit:read'],
 };
 
+export const ALL_ROLES = Object.keys(rolePermissions) as Role[];
+export const ALL_PERMISSIONS = [...new Set(Object.values(rolePermissions).flat())].sort() as Permission[];
+
 @Injectable()
 export class RbacService {
+  /**
+   * Validates can rules.
+   *
+   * @param user user supplied to the function.
+   * @param permission permission supplied to the function.
+   * @returns The result produced by the operation.
+   */
   can(user: User | undefined, permission: Permission) {
     if (!user) return false;
-    return user.roles.some((role) => rolePermissions[role].includes(permission));
+    return user.roles.some((role) => rolePermissions[role]?.includes(permission));
   }
 
+  /**
+   * Handles the permissions for operation for RbacService.
+   *
+   * @param roles roles supplied to the function.
+   * @returns The result produced by the operation.
+   */
   permissionsFor(roles: Role[]) {
-    return [...new Set(roles.flatMap((role) => rolePermissions[role]))];
+    return [...new Set(roles.flatMap((role) => rolePermissions[role] ?? []))];
+  }
+
+  roleMatrix() {
+    return Object.fromEntries(ALL_ROLES.map((role) => [role, rolePermissions[role]])) as Record<Role, Permission[]>;
+  }
+
+  allRoles() {
+    return ALL_ROLES;
+  }
+
+  allPermissions() {
+    return ALL_PERMISSIONS;
   }
 }

@@ -13,13 +13,30 @@ import { User } from '../types';
 @RequirePermission('audit:read')
 @Controller('/alarms')
 export class AlarmsController {
+  /**
+   * Creates a AlarmsController instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   */
   constructor(private readonly store: MemoryStore, private readonly audit: AuditService) {}
 
+  /**
+   * Lists list records for the caller.
+   * @returns The result produced by the operation.
+   */
   @Get()
   list() {
     return this.store.alarms.filter((a) => !a.resolvedAt);
   }
 
+  /**
+   * Resolves resolve configuration.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @Post('/:id/resolve')
   resolve(@Param('id') id: string, @CurrentUser() user: User) {
     const alarm = this.store.alarms.find((a) => a.id === id);

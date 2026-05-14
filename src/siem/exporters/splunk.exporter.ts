@@ -7,12 +7,22 @@ export class SplunkExporter implements EventExporter {
   readonly name = 'splunk';
   private readonly logger = new Logger(SplunkExporter.name);
 
+  /**
+   * Creates a SplunkExporter instance with its required collaborators.
+   *
+   * @param config Configuration object used by the operation.
+   */
   constructor(private readonly config: SiemSplunkConfig) {
     if (!config.url.startsWith('https://')) {
       throw new Error(`Splunk HEC URL must use HTTPS. Got: ${config.url}`);
     }
   }
 
+  /**
+   * Sends send data to its destination.
+   *
+   * @param events events supplied to the function.
+   */
   async send(events: SiemEvent[]): Promise<void> {
     if (events.length === 0) return;
 
@@ -44,6 +54,10 @@ export class SplunkExporter implements EventExporter {
     this.logger.debug(`Splunk: sent ${events.length} event(s) → ${this.config.url}`);
   }
 
+  /**
+   * Validates verify rules.
+   * @returns The result produced by the operation.
+   */
   async verify(): Promise<{ ok: boolean; message: string }> {
     try {
       const testEvent: SiemEvent = {

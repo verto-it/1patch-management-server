@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { AppController } from './app.controller';
 import { AuditService } from './audit/audit.service';
 import { AppsController } from './apps/apps.controller';
+import { AdminController } from './admin/admin.controller';
 import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
 import { AgentController } from './agent/agent.controller';
@@ -15,6 +16,11 @@ import { DashboardHistoryController } from './dashboard-history.controller';
 import { DashboardUiController } from './dashboard-ui.controller';
 import { DevicesController } from './devices.controller';
 import { NodesController } from './nodes/nodes.controller';
+import { NodeEnterpriseController } from './nodes/node-enterprise.controller';
+import { NodeCryptoService } from './nodes/node-crypto.service';
+import { NodeEnterpriseService } from './nodes/node-enterprise.service';
+import { NodeRoutingService } from './nodes/node-routing.service';
+import { NodeTrustService } from './nodes/node-trust.service';
 import { NodesService } from './nodes/nodes.service';
 import { PackagesController } from './packages.controller';
 import { RbacService } from './rbac/rbac.service';
@@ -34,6 +40,7 @@ import { MemoryStore } from './storage/memory.store';
 import { PostgresService } from './storage/postgres.service';
 // Legacy top-level tasks controller is replaced by the tasks module
 import { KillSwitchService } from './tasks/kill-switch.service';
+import { FileReputationService } from './tasks/file-reputation.service';
 import { NotificationService } from './tasks/notification.service';
 import { SecurityGateService } from './tasks/security-gate.service';
 import { TaskAuthorizationService } from './tasks/task-authorization.service';
@@ -46,6 +53,8 @@ import { SiemController } from './siem/siem.controller';
 import { SiemEventService } from './siem/siem-event.service';
 import { SiemPipelineWorker } from './siem/siem-pipeline.worker';
 import { MfaChallengeService } from './auth/mfa-challenge.service';
+import { SsoController } from './auth/sso.controller';
+import { SsoService } from './auth/sso.service';
 import { SecurityPostureController } from './security-posture/security-posture.controller';
 import { SecurityPostureService } from './security-posture/security-posture.service';
 
@@ -58,18 +67,20 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
     }),
   ],
   controllers: [
-    AppController, AuthController, NodesController, AgentController,
+    AppController, AuthController, AdminController, NodesController, NodeEnterpriseController, AgentController,
     AppsController, RulesController, RuleTemplatesController, DevicesController, DashboardController,
     DashboardHistoryController, AlarmsController, AuditController, SiemController, SecurityPostureController,
     DashboardUiController, TasksController, SetupController, PackagesController,
+    SsoController,
   ],
   providers: [
     DragonflyService, PostgresService, MemoryStore,
-    AuditService, AuthService, RbacService, NodesService, SigningService,
+    AuditService, AuthService, RbacService, NodesService, NodeCryptoService, NodeEnterpriseService, NodeRoutingService, NodeTrustService, SigningService,
     JwtAuthGuard, RbacGuard, MtlsNodeGuard, NodeOrJwtGuard,
     VaultPkiService,
     // Task authorization pipeline
     TenantPolicyService,
+    FileReputationService,
     SecurityGateService,
     VirusTotalService,
     TaskLedgerService,
@@ -83,6 +94,7 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
     RulesService,
     RuleTemplatesService,
     MfaChallengeService,
+    SsoService,
   ],
 })
 export class AppModule {}

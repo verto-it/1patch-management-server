@@ -1,6 +1,13 @@
 import { createHash } from 'crypto';
 import { AuditEvent } from '../types';
 
+/**
+ * Computes the event hash value.
+ *
+ * @param event Event object emitted by the runtime or UI.
+ * @param previousHash previous hash supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function computeEventHash(
   event: Omit<AuditEvent, 'eventHash'>,
   previousHash?: string,

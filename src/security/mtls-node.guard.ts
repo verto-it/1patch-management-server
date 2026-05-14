@@ -32,6 +32,12 @@ export const NODE_ID_KEY = "mtlsNodeId";
 export class MtlsNodeGuard implements CanActivate {
   private readonly logger = new Logger(MtlsNodeGuard.name);
 
+  /**
+   * Validates can activate rules.
+   *
+   * @param context context supplied to the function.
+   * @returns The result produced by the operation.
+   */
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
     const socket = request.socket as TLSSocket;
@@ -102,6 +108,10 @@ export class MtlsNodeGuard implements CanActivate {
 /** Vault-issued certificate CNs have the form <nodeId>.1patch.internal. */
 const CN_SUFFIX = ".1patch.internal";
 
+/**
+ * Handles the is dev plain http node fallback allowed operation.
+ * @returns The result produced by the operation.
+ */
 function isDevPlainHttpNodeFallbackAllowed(): boolean {
   if (process.env.NODE_ENV === "production") return false;
   if (process.env.MTLS_DISABLED === "true") return true;

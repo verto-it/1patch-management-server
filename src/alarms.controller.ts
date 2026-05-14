@@ -1,5 +1,6 @@
 // AGPL-3.0-only
-import { Body, Controller, Get, NotFoundException, Param, Post, UseGuards } from '@nestjs/common';
+// AGPL-3.0-only
+import { Controller, Get, NotFoundException, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AuditService } from './audit/audit.service';
 import { MemoryStore } from './storage/memory.store';
@@ -16,9 +17,22 @@ import { User } from './types';
 export class AlarmsController {
   constructor(private readonly store: MemoryStore, private readonly audit: AuditService) {}
 
+  
   @Get()
   list() {
     return this.store.alarms.filter((a) => !a.resolvedAt);
+  }
+
+  @Post('/resolve-all')
+  resolveAll(@CurrentUser() user: User) {
+    const unresolved = this.store.alarms.filter((a) => !a.resolvedAt);
+    const now = new Date().toISOString();
+    for (const alarm of unresolved) {
+      alarm.resolvedAt = now;
+    }
+    void this.store.persist();
+    this.audit.record(user.id, 'alarm.resolved_all', `${unresolved.length} alarms`);
+    return { resolved: unresolved.length };
   }
 
   @Post('/:id/resolve')

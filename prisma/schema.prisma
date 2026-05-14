@@ -61,6 +61,8 @@ model InstalledApp {
   publisher   String
   version     String
   packageId   String?
+  packageManager String?
+  packageScope String?
   productCode String?
 }
 
@@ -73,10 +75,12 @@ model PackageArtifact {
   platform        String
   type            String
   packageId       String?
+  packageManager  String?
+  packageScope    String?
   fileName        String?
   storagePath     String?
   sourceUrl       String?
-  sha256          String
+  sha256          String?
   signatureStatus String
   installArgs     String
   uninstallArgs   String?
@@ -103,6 +107,8 @@ model UpdateTask {
   appName       String?
   packageArtifactId String?
   packageId     String?
+  packageManager String?
+  packageScope   String?
   productCode   String?
   sourceUrl     String?
   sha256        String?

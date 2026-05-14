@@ -12,6 +12,13 @@ export interface VtHashResult {
 export class VirusTotalService {
   private readonly logger = new Logger(VirusTotalService.name);
 
+  /**
+   * Handles the check hash operation for VirusTotalService.
+   *
+   * @param sha256 sha256 supplied to the function.
+   * @param apiKey api key supplied to the function.
+   * @returns The result produced by the operation.
+   */
   async checkHash(sha256: string, apiKey: string): Promise<VtHashResult> {
     const checkedAt = new Date().toISOString();
     try {

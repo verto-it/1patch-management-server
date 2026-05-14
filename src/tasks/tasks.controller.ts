@@ -36,6 +36,20 @@ import { TenantPolicyService } from './tenant-policy.service';
 export class TasksController {
   private readonly logger = new Logger(TasksController.name);
 
+  /**
+   * Creates a TasksController instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param siem siem supplied to the function.
+   * @param nodes nodes supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param authorization authorization supplied to the function.
+   * @param ledger ledger supplied to the function.
+   * @param killSwitch kill switch supplied to the function.
+   * @param policy policy supplied to the function.
+   * @param mfaChallenge mfa challenge supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
@@ -51,6 +65,10 @@ export class TasksController {
 
   // ── Admin: list all tasks ──────────────────────────────────────────────────
 
+  /**
+   * Lists list records for the caller.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get()
@@ -60,6 +78,13 @@ export class TasksController {
 
   // ── Admin: create draft ────────────────────────────────────────────────────
 
+  /**
+   * Creates a draft record.
+   *
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('deployments:write')
   @Post('/draft')
@@ -71,6 +96,8 @@ export class TasksController {
       appName?: string;
       packageArtifactId?: string;
       packageId?: string;
+      packageManager?: UpdateTask['packageManager'];
+      packageScope?: UpdateTask['packageScope'];
       productCode?: string;
       sourceUrl?: string;
       sha256?: string;
@@ -80,7 +107,7 @@ export class TasksController {
   ) {
     const device = this.store.devices.find((d) => d.id === body.deviceId);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = this.nodes.availableNode(device.preferredNodeId);
+    const node = this.nodes.availableNode(device.preferredNodeId, device.tenantId, device);
     if (!node) throw new BadRequestException('No backend node is available for this device');
 
     return this.authorization.createDraft(
@@ -93,6 +120,8 @@ export class TasksController {
         appName: body.appName,
         packageArtifactId: body.packageArtifactId,
         packageId: body.packageId,
+        packageManager: body.packageManager,
+        packageScope: body.packageScope,
         productCode: body.productCode,
         sourceUrl: body.sourceUrl,
         sha256: body.sha256,
@@ -104,13 +133,20 @@ export class TasksController {
 
   // ── Legacy: refresh-inventory shortcut (creates draft + auto-scans for low-risk) ─
 
+  /**
+   * Handles the refresh inventory operation for TasksController.
+   *
+   * @param deviceId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('deployments:write')
   @Post('/refresh-inventory/:deviceId')
   async refreshInventory(@Param('deviceId') deviceId: string, @CurrentUser() user: User) {
     const device = this.store.devices.find((d) => d.id === deviceId);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = this.nodes.availableNode(device.preferredNodeId);
+    const node = this.nodes.availableNode(device.preferredNodeId, device.tenantId, device);
     if (!node) throw new BadRequestException('No backend node is available for this device');
 
     const task = this.authorization.createDraft(
@@ -131,6 +167,12 @@ export class TasksController {
   }
 
   // -- MFA challenge: issue
+  /**
+   * Handles the issue mfa challenge operation for TasksController.
+   *
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:approve')
   @Post('/mfa-challenge/issue')
@@ -140,6 +182,13 @@ export class TasksController {
   }
 
   // -- MFA challenge: verify (submit TOTP code; verified challengeId is single-use for 2 min)
+  /**
+   * Validates mfa challenge rules.
+   *
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:approve')
   @Post('/mfa-challenge/verify')
@@ -154,6 +203,13 @@ export class TasksController {
 
     // ── Step 2: Security scan ──────────────────────────────────────────────────
 
+  /**
+   * Handles the scan operation for TasksController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Post('/:id/scan')
@@ -163,6 +219,14 @@ export class TasksController {
 
   // ── Step 3: Approve ────────────────────────────────────────────────────────
 
+  /**
+   * Handles the approve operation for TasksController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:approve')
   @Post('/:id/approve')
@@ -176,6 +240,13 @@ export class TasksController {
 
   // ── Step 4: Sign ───────────────────────────────────────────────────────────
 
+  /**
+   * Produces the sign security value.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:sign')
   @Post('/:id/sign')
@@ -185,6 +256,14 @@ export class TasksController {
 
   // ── Revoke ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Handles the revoke operation for TasksController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Delete('/:id')
@@ -198,6 +277,12 @@ export class TasksController {
 
   // ── Ledger ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Lists ledger records for the caller.
+   *
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get('/ledger')
@@ -206,6 +291,12 @@ export class TasksController {
     return this.ledger.listAll();
   }
 
+  /**
+   * Gets the ledger entry value.
+   *
+   * @param ledgerId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get('/ledger/:ledgerId')
@@ -215,6 +306,14 @@ export class TasksController {
     return entry;
   }
 
+  /**
+   * Handles the revoke ledger entry operation for TasksController.
+   *
+   * @param ledgerId Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Post('/ledger/:ledgerId/revoke')
@@ -231,6 +330,14 @@ export class TasksController {
 
   // ── Kill switch ────────────────────────────────────────────────────────────
 
+  /**
+   * Changes the kill switch state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('kill_switch:manage')
   @Post('/kill-switch/:tenantId/activate')
@@ -242,6 +349,13 @@ export class TasksController {
     return this.killSwitch.activate(tenantId, user, body.reason);
   }
 
+  /**
+   * Changes the kill switch state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('kill_switch:manage')
   @Post('/kill-switch/:tenantId/deactivate')
@@ -249,6 +363,12 @@ export class TasksController {
     return this.killSwitch.deactivate(tenantId, user);
   }
 
+  /**
+   * Gets the kill switch value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get('/kill-switch/:tenantId')
@@ -258,13 +378,27 @@ export class TasksController {
 
   // ── Tenant policy ──────────────────────────────────────────────────────────
 
+  /**
+   * Gets the policy value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:manage')
   @Get('/policy/:tenantId')
   getPolicy(@Param('tenantId') tenantId: string) {
-    return this.policy.get(tenantId);
+    return publicTenantPolicy(this.policy.get(tenantId));
   }
 
+  /**
+   * Updates the policy record or state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('tasks:sign')
   @Put('/policy/:tenantId')
@@ -274,12 +408,21 @@ export class TasksController {
     @CurrentUser() user: User,
   ) {
     const updated = this.policy.set(tenantId, body as any);
-    this.audit.record(user.id, 'policy.updated', tenantId, { patch: body }, tenantId);
-    return updated;
+    const auditPatch = { ...body };
+    if ('virusTotalApiKey' in auditPatch) auditPatch.virusTotalApiKey = '[redacted]';
+    this.audit.record(user.id, 'policy.updated', tenantId, { patch: auditPatch }, tenantId);
+    return publicTenantPolicy(updated);
   }
 
   // ── Node polls for executable tasks (mTLS authenticated) ──────────────────
 
+  /**
+   * Handles the pending for node operation for TasksController.
+   *
+   * @param certNodeId Identifier used to locate the target record.
+   * @param paramNodeId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(MtlsNodeGuard)
   @Get('/node/:nodeId/pending')
   async pendingForNode(
@@ -292,13 +435,59 @@ export class TasksController {
     }
 
     const now = new Date().toISOString();
+    const STALE_DISPATCH_MS = 5 * 60 * 1000; // 5 minutes
+
+    // Recover stale dispatched tasks (client crashed before reporting result)
+    const staleDispatched = this.store.tasks.filter(
+      (t) =>
+        t.nodeId === certNodeId &&
+        t.status === 'dispatched' &&
+        t.dispatchedAt != null &&
+        Date.now() - new Date(t.dispatchedAt).getTime() > STALE_DISPATCH_MS,
+    );
+    for (const t of staleDispatched) {
+      this.logger.warn(
+        `Task ${t.id} stuck in dispatched since ${t.dispatchedAt} with no result — resetting to executable for retry`,
+      );
+      t.status = 'executable';
+      t.dispatchedAt = undefined;
+    }
+    if (staleDispatched.length > 0) {
+      this.audit.record(certNodeId, 'task.stale_dispatch_reset', certNodeId, { count: staleDispatched.length });
+      void this.store.persist();
+    }
 
     // Promote signed tasks whose notBefore has passed
     const signedTasks = this.store.tasks.filter(
-      (t) => t.nodeId === certNodeId && (t.status === 'signed' || t.status === 'scheduled'),
+      (t) => t.status === 'signed' || t.status === 'scheduled',
     );
     for (const t of signedTasks) {
       try { this.authorization.promoteToExecutable(t.id); } catch { /* not yet ready */ }
+    }
+
+    // Route-at-dispatch: if a task's assigned node is stale, unhealthy, draining,
+    // under maintenance, or quarantined, re-evaluate policy and move it before
+    // any node sees the signed bundle.
+    const routable = this.store.tasks.filter((t) => t.status === 'executable' || t.status === 'pending');
+    for (const task of routable) {
+      const device = this.store.devices.find((candidate) => candidate.id === task.deviceId);
+      const assigned = this.store.backendNodes.find((node) => node.id === task.nodeId);
+      const assignedUnavailable =
+        !assigned ||
+        assigned.status !== 'online' ||
+        assigned.quarantineState === 'quarantined' ||
+        assigned.maintenanceState === 'maintenance' ||
+        assigned.maintenanceState === 'draining' ||
+        assigned.healthState === 'unhealthy' ||
+        assigned.healthState === 'quarantined';
+      if (!assignedUnavailable && task.nodeId === certNodeId) continue;
+      if (!assignedUnavailable) continue;
+      const replacement = this.nodes.availableNode(device?.preferredNodeId, task.tenantId ?? device?.tenantId ?? 'default', device, task.requiredCapabilities);
+      if (replacement && replacement.id !== task.nodeId) {
+        const previousNodeId = task.nodeId;
+        task.nodeId = replacement.id;
+        this.audit.record('system:router', 'task.failover_reassigned', task.id, { previousNodeId, nextNodeId: replacement.id });
+      }
     }
 
     const tasks = this.store.tasks.filter(
@@ -306,11 +495,22 @@ export class TasksController {
     );
 
     for (const task of tasks) {
-      // Backend nodes MUST NOT receive tasks without a valid ledger entry
+      // Backend nodes MUST NOT receive tasks without a valid ledger entry.
+      // Tasks created outside the authorization pipeline have no ledgerEntryId — auto-sign them.
+      if (!task.ledgerEntryId) {
+        try {
+          this.authorization.autoSignTask(task, 'system:dispatch');
+          this.authorization.promoteToExecutable(task.id);
+        } catch (err) {
+          this.logger.warn(`Task ${task.id} could not be auto-signed — skipping dispatch: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+      }
+
       const tenantId = task.tenantId ?? tenantIdForTask(task, this.store.devices);
       const ledgerEntry = task.ledgerEntryId ? this.ledger.findById(task.ledgerEntryId) : undefined;
       if (!ledgerEntry || ledgerEntry.state !== 'active') {
-        this.logger.warn(`Task ${task.id} has no active ledger entry — skipping dispatch`);
+        this.logger.warn(`Task ${task.id} ledger entry ${task.ledgerEntryId} is ${ledgerEntry?.state ?? 'missing'} — skipping dispatch`);
         continue;
       }
 
@@ -340,7 +540,21 @@ export class TasksController {
         return this.signing.signPayload(
           'task_bundle',
           tenantId,
-          { tasks: [task], ledgerEntry: ledgerEntry ?? null },
+          {
+            tasks: [task],
+            ledgerEntry: ledgerEntry ?? null,
+            policyMetadata: {
+              tenantId,
+              requiredCapabilities: task.requiredCapabilities ?? [],
+              routingPolicyId: task.routingPolicyId,
+            },
+            targetScope: { deviceIds: [task.deviceId], nodeId: certNodeId },
+            integrityHashes: {
+              taskHash: task.taskHash,
+              ledgerHash: ledgerEntry?.payloadHash,
+              packageSha256: task.sha256,
+            },
+          },
           this.policy.get(tenantId).defaultTaskTtlSeconds,
         );
       }),
@@ -349,6 +563,13 @@ export class TasksController {
 
   // ── Node reports result (mTLS authenticated) ──────────────────────────────
 
+  /**
+   * Handles the result operation for TasksController.
+   *
+   * @param nodeId Identifier used to locate the target record.
+   * @param dto Request payload or data transfer object.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(MtlsNodeGuard)
   @Post('/result')
   result(
@@ -377,6 +598,21 @@ export class TasksController {
   }
 }
 
+/**
+ * Handles the tenant id for task operation.
+ *
+ * @param task task supplied to the function.
+ * @param devices devices supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function tenantIdForTask(task: UpdateTask, devices: Device[]): string {
   return (task.tenantId ?? devices.find((d) => d.id === task.deviceId)?.tenantId) ?? 'default';
+}
+
+function publicTenantPolicy<T extends { virusTotalApiKey?: string }>(policy: T) {
+  return {
+    ...policy,
+    virusTotalApiKey: policy.virusTotalApiKey ? '********' : '',
+    virusTotalConfigured: Boolean(policy.virusTotalApiKey),
+  };
 }

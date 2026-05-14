@@ -13,17 +13,37 @@ import { SecurityPostureService } from './security-posture.service';
 @Controller('/security/posture')
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SecurityPostureController {
+  /**
+   * Creates a SecurityPostureController instance with its required collaborators.
+   *
+   * @param posture posture supplied to the function.
+   * @param audit audit supplied to the function.
+   */
   constructor(
     private readonly posture: SecurityPostureService,
     private readonly audit: AuditService,
   ) {}
 
+  /**
+   * Gets the posture value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('users:manage')
   @Get()
   async getPosture(@Query('tenantId') tenantId = 'default') {
     return this.posture.generate(tenantId);
   }
 
+  /**
+   * Handles the fix safe operation for SecurityPostureController.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('users:manage')
   @Post('/fix')
   async fixSafe(

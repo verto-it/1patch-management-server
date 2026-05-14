@@ -26,6 +26,14 @@ import { AuditService } from '../audit/audit.service';
 @Controller('/siem')
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SiemController {
+  /**
+   * Creates a SiemController instance with its required collaborators.
+   *
+   * @param configs configs supplied to the function.
+   * @param eventService event service supplied to the function.
+   * @param worker worker supplied to the function.
+   * @param audit audit supplied to the function.
+   */
   constructor(
     private readonly configs: SiemConfigService,
     private readonly eventService: SiemEventService,
@@ -35,12 +43,22 @@ export class SiemController {
 
   // ── Config CRUD ────────────────────────────────────────────────────────────
 
+  /**
+   * Lists configs records for the caller.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:manage')
   @Get('/config')
   listConfigs() {
     return this.configs.listAll();
   }
 
+  /**
+   * Gets the config value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:manage')
   @Get('/config/:tenantId')
   async getConfig(@Param('tenantId') tenantId: string) {
@@ -49,6 +67,14 @@ export class SiemController {
     return { tenantId, config };
   }
 
+  /**
+   * Sets the config value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param body Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:sign')
   @Put('/config/:tenantId')
   async setConfig(
@@ -61,6 +87,13 @@ export class SiemController {
     return result;
   }
 
+  /**
+   * Removes the config record or state.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:sign')
   @Delete('/config/:tenantId')
   async deleteConfig(
@@ -74,12 +107,22 @@ export class SiemController {
 
   // ── Health ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Lists health records for the caller.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('audit:read')
   @Get('/health')
   listHealth() {
     return this.configs.listAllHealth();
   }
 
+  /**
+   * Gets the health value.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('audit:read')
   @Get('/health/:tenantId')
   async getHealth(@Param('tenantId') tenantId: string) {
@@ -157,6 +200,13 @@ export class SiemController {
 
   // ── Verify ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Validates verify rules.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:manage')
   @Post('/verify/:tenantId')
   async verify(
@@ -187,6 +237,10 @@ export class SiemController {
 
   // ── Queue status ────────────────────────────────────────────────────────────
 
+  /**
+   * Handles the queue status operation for SiemController.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('audit:read')
   @Get('/queue/status')
   async queueStatus() {
@@ -194,6 +248,10 @@ export class SiemController {
     return { queueDepth: depth };
   }
 
+  /**
+   * Handles the dead letter queue operation for SiemController.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('audit:read')
   @Get('/queue/dlq')
   async deadLetterQueue() {
@@ -203,6 +261,12 @@ export class SiemController {
 
   // ── Manual flush ────────────────────────────────────────────────────────────
 
+  /**
+   * Handles the manual flush operation for SiemController.
+   *
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @RequirePermission('tasks:sign')
   @Post('/queue/flush')
   async manualFlush(@CurrentUser() user: User) {
@@ -212,6 +276,13 @@ export class SiemController {
   }
 }
 
+/**
+ * Builds the test event payload.
+ *
+ * @param tenantId Identifier used to locate the target record.
+ * @param userId Identifier used to locate the target record.
+ * @returns The result produced by the operation.
+ */
 function buildTestEvent(tenantId: string, userId: string) {
   return {
     eventId: uuid(),

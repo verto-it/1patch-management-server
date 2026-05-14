@@ -11,8 +11,18 @@ export class SentinelExporter implements EventExporter {
   readonly name = 'sentinel';
   private readonly logger = new Logger(SentinelExporter.name);
 
+  /**
+   * Creates a SentinelExporter instance with its required collaborators.
+   *
+   * @param config Configuration object used by the operation.
+   */
   constructor(private readonly config: SiemSentinelConfig) {}
 
+  /**
+   * Sends send data to its destination.
+   *
+   * @param events events supplied to the function.
+   */
   async send(events: SiemEvent[]): Promise<void> {
     if (events.length === 0) return;
     // Batch into slices of BATCH_SIZE
@@ -22,6 +32,10 @@ export class SentinelExporter implements EventExporter {
     }
   }
 
+  /**
+   * Validates verify rules.
+   * @returns The result produced by the operation.
+   */
   async verify(): Promise<{ ok: boolean; message: string }> {
     try {
       // Send a minimal synthetic event to prove auth + connectivity
@@ -43,6 +57,11 @@ export class SentinelExporter implements EventExporter {
     }
   }
 
+  /**
+   * Handles the post batch operation for SentinelExporter.
+   *
+   * @param events events supplied to the function.
+   */
   private async postBatch(events: SiemEvent[]): Promise<void> {
     const body = JSON.stringify(events);
     const contentLength = Buffer.byteLength(body, 'utf8');

@@ -17,16 +17,28 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SiemPipelineWorker.name);
   private timer?: ReturnType<typeof setInterval>;
 
+  /**
+   * Creates a SiemPipelineWorker instance with its required collaborators.
+   *
+   * @param events events supplied to the function.
+   * @param configs configs supplied to the function.
+   */
   constructor(
     private readonly events: SiemEventService,
     private readonly configs: SiemConfigService,
   ) {}
 
+  /**
+   * Handles the on module init operation for SiemPipelineWorker.
+   */
   onModuleInit() {
     this.timer = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS);
     this.logger.log(`SIEM pipeline worker started (interval=${FLUSH_INTERVAL_MS}ms)`);
   }
 
+  /**
+   * Handles the on module destroy operation for SiemPipelineWorker.
+   */
   onModuleDestroy() {
     if (this.timer) clearInterval(this.timer);
   }
@@ -55,6 +67,13 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Handles the export for tenant operation for SiemPipelineWorker.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @param events events supplied to the function.
+   * @param config Configuration object used by the operation.
+   */
   private async exportForTenant(
     tenantId: string,
     events: SiemEvent[],
@@ -74,6 +93,13 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Handles the run exporter operation for SiemPipelineWorker.
+   *
+   * @param exporter exporter supplied to the function.
+   * @param events events supplied to the function.
+   * @param tenantId Identifier used to locate the target record.
+   */
   private async runExporter(
     exporter: EventExporter,
     events: SiemEvent[],
@@ -103,6 +129,12 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
     await this.events.deadLetter(events);
   }
 
+  /**
+   * Builds the exporters payload.
+   *
+   * @param config Configuration object used by the operation.
+   * @returns The result produced by the operation.
+   */
   buildExporters(config: SiemConfig): EventExporter[] {
     const exporters: EventExporter[] = [];
     try {
@@ -121,6 +153,12 @@ export class SiemPipelineWorker implements OnModuleInit, OnModuleDestroy {
   }
 }
 
+/**
+ * Handles the sleep operation.
+ *
+ * @param ms ms supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

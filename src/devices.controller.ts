@@ -13,19 +13,36 @@ import { MemoryStore } from './storage/memory.store';
 import { Device, UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
 import { SigningService } from './signing.service';
+import { TaskAuthorizationService } from './tasks/task-authorization.service';
 
 @ApiTags('devices')
 @UseGuards(JwtAuthGuard, RbacGuard)
 @RequirePermission('apps:read')
 @Controller('/devices')
 export class DevicesController {
+  /**
+   * Creates a DevicesController instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param nodes nodes supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param authorization authorization supplied to the function.
+   */
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
     private readonly nodes: NodesService,
     private readonly signing: SigningService,
+    private readonly authorization: TaskAuthorizationService,
   ) {}
 
+  /**
+   * Lists list records for the caller.
+   *
+   * @param q Search query or filter supplied by the caller.
+   * @returns The result produced by the operation.
+   */
   @Get()
   list(@Query('q') q?: string) {
     return this.store.devices.map((device) => ({
@@ -36,6 +53,12 @@ export class DevicesController {
     })).filter((d) => !q || `${d.hostname} ${d.os} ${d.id} ${d.group ?? ''} ${(d.tags ?? []).join(' ')}`.toLowerCase().includes(q.toLowerCase()));
   }
 
+  /**
+   * Handles the groups operation for DevicesController.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @Get('/groups')
   groups(@Query('tenantId') tenantId = 'default') {
     const groups = new Map<string, { name: string; count: number; online: number; windows: number; linux: number; tags: Set<string>; lastSeenAt?: string }>();
@@ -56,12 +79,18 @@ export class DevicesController {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /**
+   * Handles the detail operation for DevicesController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @Get('/:id')
   detail(@Param('id') id: string) {
     const device = this.store.devices.find((d) => d.id === id);
     const latest = new Map<string, string>();
     for (const app of this.store.installedApps) {
-      const key = `${app.name}|${app.publisher}`;
+      const key = appKey(app, devicePlatform(this.store.devices.find((d) => d.id === app.deviceId)));
       const current = latest.get(key);
       if (!current || app.version.localeCompare(current, undefined, { numeric: true }) > 0) latest.set(key, app.version);
     }
@@ -69,7 +98,7 @@ export class DevicesController {
       .filter((a) => a.deviceId === id)
       .map((app) => ({
         ...app,
-        latestVersion: latest.get(`${app.name}|${app.publisher}`) ?? app.version,
+        latestVersion: latest.get(appKey(app, devicePlatform(device))) ?? app.version,
       }));
     return {
       device,
@@ -79,6 +108,13 @@ export class DevicesController {
     };
   }
 
+  /**
+   * Creates a manual record.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @Post()
   @RequirePermission('apps:manage')
   createManual(@Body() dto: Partial<Device> & { tags?: string[] | string }, @CurrentUser() user: User) {
@@ -107,6 +143,14 @@ export class DevicesController {
     return device;
   }
 
+  /**
+   * Updates the update record or state.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param dto Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @Patch('/:id')
   @RequirePermission('apps:manage')
   update(@Param('id') id: string, @Body() dto: Partial<Device> & { tags?: string[] | string }, @CurrentUser() user: User) {
@@ -125,6 +169,13 @@ export class DevicesController {
     return device;
   }
 
+  /**
+   * Creates a enrollment record.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @Post('/enrollments')
   @RequirePermission('nodes:enroll')
   createEnrollment(@Body() dto: {
@@ -154,6 +205,7 @@ export class DevicesController {
       TenantId: tenantId,
       ManagementUrl: managementUrl,
       EnrollmentToken: enrollmentToken,
+      TrustedSigningKeys: this.signing.publicSigningKeysForConfig(),
       TrustedSigningPublicKeys: this.signing.publicKeysForConfig(),
       TrustedDownloadHosts: trustedDownloadHosts.length ? trustedDownloadHosts : [managementUrl],
       HeartbeatSeconds: heartbeatSeconds,
@@ -198,33 +250,45 @@ export class DevicesController {
     };
   }
 
+  /**
+   * Updates the all outdated record or state.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @Post('/:id/update-all-outdated')
   @RequirePermission('deployments:write')
   updateAllOutdated(@Param('id') id: string, @CurrentUser() user: User) {
     const device = this.store.devices.find((d) => d.id === id);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = this.nodes.availableNode(device.preferredNodeId);
+    const node = this.nodes.availableNode(device.preferredNodeId, device.tenantId, device);
     if (!node) throw new BadRequestException('No backend node is available for this device');
 
     // latest known version per app/publisher key from the entire fleet
     const latest = new Map<string, string>();
+    const platform = devicePlatform(device);
     for (const a of this.store.installedApps) {
-      const k = `${a.name}|${a.publisher}`;
+      const appDevice = this.store.devices.find((candidate) => candidate.id === a.deviceId);
+      if (devicePlatform(appDevice) !== platform) continue;
+      const k = appKey(a, platform);
       const cur = latest.get(k);
       if (!cur || a.version.localeCompare(cur, undefined, { numeric: true }) > 0) latest.set(k, a.version);
     }
 
     const tasks: UpdateTask[] = [];
     for (const a of this.store.installedApps.filter((x) => x.deviceId === id)) {
-      const want = latest.get(`${a.name}|${a.publisher}`);
+      const want = latest.get(appKey(a, platform));
       if (!want || want === a.version) continue;
       const task: UpdateTask = {
         id: uuid(), nodeId: node.id, deviceId: id, appName: a.name,
+        tenantId: device.tenantId,
         packageId: safePackageId(a.packageId), productCode: a.productCode,
         targetVersion: 'latest', type: 'update_package',
         status: 'pending', createdAt: new Date().toISOString(),
       };
       this.store.tasks.push(task);
+      this.authorization.autoSignTask(task, user.id);
       tasks.push(task);
     }
 
@@ -234,28 +298,72 @@ export class DevicesController {
   }
 }
 
+/**
+ * Handles the clean operation.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function clean(value?: string) {
   return (value ?? '').trim();
 }
 
+/**
+ * Handles the positive int operation.
+ *
+ * @param value Value to read, render, or store.
+ * @param fallback fallback supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function positiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/**
+ * Handles the safe package id operation.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function safePackageId(value?: string) {
   const trimmed = clean(value);
   return /^[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * Parses tags input.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function parseTags(value?: string[] | string) {
   const raw = Array.isArray(value) ? value : String(value ?? '').split(/,|\r?\n/);
   return [...new Set(raw.map(clean).filter((tag) => /^[A-Za-z0-9._:-]{1,48}$/.test(tag)))].sort();
 }
 
+/**
+ * Handles the bounded number operation.
+ *
+ * @param value Value to read, render, or store.
+ * @param min min supplied to the function.
+ * @param max max supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function boundedNumber(value: unknown, min: number, max: number) {
   if (value === undefined || value === null || value === '') return undefined;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return undefined;
   return Math.max(min, Math.min(max, parsed));
+}
+
+function appKey(app: { name: string; publisher: string }, platform: string) {
+  return `${platform}|${app.name}|${app.publisher}`;
+}
+
+function devicePlatform(device?: { os?: string }) {
+  const os = device?.os ?? '';
+  if (/(windows|win)/i.test(os)) return 'windows';
+  if (/(linux|ubuntu|debian)/i.test(os)) return 'linux';
+  return 'other';
 }

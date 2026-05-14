@@ -14,6 +14,7 @@ import { RequirePermission } from './security/require-permission.decorator';
 import { MemoryStore } from './storage/memory.store';
 import { PackageArtifact, UpdateTask, User } from './types';
 import { NodesService } from './nodes/nodes.service';
+import { TaskAuthorizationService } from './tasks/task-authorization.service';
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
 
@@ -22,7 +23,7 @@ interface PackageDto {
   architecture?: PackageArtifact['architecture'];
   platform?: PackageArtifact['platform'];
   type?: PackageArtifact['type'];
-  packageId?: string; fileName?: string; fileBase64?: string;
+  packageId?: string; packageManager?: PackageArtifact['packageManager']; packageScope?: PackageArtifact['packageScope']; fileName?: string; fileBase64?: string;
   sourceUrl?: string; sha256?: string;
   signatureStatus?: PackageArtifact['signatureStatus'];
   installArgs?: string; uninstallArgs?: string;
@@ -35,8 +36,25 @@ export class PackagesController {
   private readonly logger = new Logger(PackagesController.name);
   private readonly packageRoot = process.env.PACKAGE_STORAGE_PATH ?? join(process.cwd(), 'packages');
 
-  constructor(private readonly store: MemoryStore, private readonly audit: AuditService, private readonly nodes: NodesService) {}
+  /**
+   * Creates a PackagesController instance with its required collaborators.
+   *
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   * @param nodes nodes supplied to the function.
+   * @param authorization authorization supplied to the function.
+   */
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly audit: AuditService,
+    private readonly nodes: NodesService,
+    private readonly authorization: TaskAuthorizationService,
+  ) {}
 
+  /**
+   * Lists list records for the caller.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('packages:read')
   @Get()
@@ -45,6 +63,13 @@ export class PackagesController {
     return this.store.packages;
   }
 
+  /**
+   * Creates a create record.
+   *
+   * @param dto Request payload or data transfer object.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('packages:write')
   @Post()
@@ -55,6 +80,19 @@ export class PackagesController {
     this.logger.log(`Creating package: ${dto.name} v${dto.version} by ${dto.publisher}`);
 
     const id = uuid();
+    const type = dto.type ?? 'msi';
+    const platform = dto.platform ?? (type === 'apt' ? 'linux' : 'windows');
+    if (type === 'apt') {
+      if (platform !== 'linux') throw new BadRequestException('apt packages must use platform=linux');
+      if (dto.fileBase64 || dto.fileName || dto.sourceUrl || dto.sha256)
+        throw new BadRequestException('apt packages are repo-managed in v1 and must not include uploaded files, sourceUrl, or sha256');
+      if (clean(dto.installArgs)) throw new BadRequestException('installArgs are not supported for apt repo packages');
+    } else if ((type === 'winget' || type === 'chocolatey' || type === 'scoop') && platform !== 'windows') {
+      throw new BadRequestException(`${type} packages must use platform=windows`);
+    } else if (type === 'msi' && platform !== 'windows') {
+      throw new BadRequestException('msi packages must use platform=windows');
+    }
+
     let storagePath: string | undefined;
     let fileName = dto.fileName ? basename(dto.fileName) : undefined;
     let sha256 = dto.sha256;
@@ -74,20 +112,23 @@ export class PackagesController {
       this.logger.log(`Package file saved to ${storagePath} (${file.length} bytes, sha256=${sha256})`);
     }
 
-    const type = dto.type ?? 'msi';
     const isDownloadedPackage = type === 'msi' || !!storagePath || !!dto.sourceUrl;
     if (isDownloadedPackage && !sha256) throw new BadRequestException('sha256 is required for downloadable packages');
-    const packageId = safePackageId(dto.packageId);
-    if ((type === 'winget' || type === 'apt') && !packageId)
-      throw new BadRequestException('packageId is required for winget and apt packages');
+    const packageId = type === 'apt' ? safeAptPackageId(dto.packageId) : safePackageId(dto.packageId);
+    if ((type === 'winget' || type === 'apt' || type === 'chocolatey' || type === 'scoop') && !packageId)
+      throw new BadRequestException('packageId is required for package-manager artifacts');
+    if (dto.packageManager && dto.packageManager !== type)
+      throw new BadRequestException('packageManager must match package type');
+    const packageManager = dto.packageManager ?? type;
+    const packageScope = dto.packageScope ?? (type === 'scoop' ? 'global' : 'system');
 
     const artifact: PackageArtifact = {
       id, name: dto.name, publisher: dto.publisher, version: dto.version,
-      architecture: dto.architecture ?? 'x64', platform: dto.platform ?? 'windows',
-      type, packageId, fileName, storagePath,
+      architecture: dto.architecture ?? 'x64', platform,
+      type, packageId, packageManager, packageScope, fileName, storagePath,
       sourceUrl: dto.sourceUrl ?? (storagePath ? `/packages/${id}/download` : undefined),
       sha256, signatureStatus: dto.signatureStatus ?? 'unknown',
-      installArgs: dto.installArgs ?? '/qn /norestart', uninstallArgs: dto.uninstallArgs,
+      installArgs: isDownloadedPackage ? (dto.installArgs ?? '/qn /norestart') : (dto.installArgs ?? ''), uninstallArgs: dto.uninstallArgs,
       applicability: dto.applicability ?? { appName: dto.name },
       createdAt: new Date().toISOString(),
     };
@@ -98,6 +139,12 @@ export class PackagesController {
     return artifact;
   }
 
+  /**
+   * Handles the detail operation for PackagesController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('packages:read')
   @Get('/:id')
@@ -107,6 +154,12 @@ export class PackagesController {
     return artifact;
   }
 
+  /**
+   * Handles the download operation for PackagesController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(NodeOrJwtGuard)
   @Get('/:id/download')
   @Header('content-type', 'application/octet-stream')
@@ -120,6 +173,14 @@ export class PackagesController {
     });
   }
 
+  /**
+   * Handles the deploy device operation for PackagesController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param deviceId Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('deployments:write')
   @Post('/:id/deploy-device/:deviceId')
@@ -128,40 +189,76 @@ export class PackagesController {
     return this.createDeploymentTask(this.findPackage(id), deviceId, user.id);
   }
 
+  /**
+   * Handles the deploy all operation for PackagesController.
+   *
+   * @param id Identifier used to locate the target record.
+   * @param user user supplied to the function.
+   * @returns The result produced by the operation.
+   */
   @UseGuards(JwtAuthGuard, RbacGuard)
   @RequirePermission('deployments:write')
   @Post('/:id/deploy-all')
   async deployAll(@Param('id') id: string, @CurrentUser() user: User) {
     const artifact = this.findPackage(id);
-    const targets = [...new Set(
+    const candidateTargets = [...new Set(
       this.store.installedApps
         .filter((app) => !artifact.applicability.appName || app.name.toLowerCase().includes(artifact.applicability.appName.toLowerCase()))
         .map((app) => app.deviceId)
     )];
+    const targets = candidateTargets.filter((deviceId) => {
+      const device = this.store.devices.find((candidate) => candidate.id === deviceId);
+      return device && packageMatchesDevice(artifact, device);
+    });
     this.logger.log(`Deploying package ${id} to ${targets.length} device(s)`);
-    return targets.map((deviceId) => this.createDeploymentTask(artifact, deviceId, user.id));
+    return {
+      tasks: targets.map((deviceId) => this.createDeploymentTask(artifact, deviceId, user.id)),
+      skippedDeviceCount: candidateTargets.length - targets.length,
+    };
   }
 
+  /**
+   * Creates a deployment task record.
+   *
+   * @param artifact artifact supplied to the function.
+   * @param deviceId Identifier used to locate the target record.
+   * @param actor actor supplied to the function.
+   * @returns The result produced by the operation.
+   */
   private createDeploymentTask(artifact: PackageArtifact, deviceId: string, actor = 'system') {
     const device = this.store.devices.find((d) => d.id === deviceId);
     if (!device) throw new BadRequestException('Unknown device');
-    const node = this.nodes.availableNode(device.preferredNodeId);
+    if (!packageMatchesDevice(artifact, device)) {
+      throw new BadRequestException(`${artifact.platform} package '${artifact.name}' cannot be deployed to ${devicePlatform(device)} device '${device.hostname}'`);
+    }
+    const node = this.nodes.availableNode(device.preferredNodeId, device.tenantId, device, requiredCapabilitiesForArtifact(artifact));
     if (!node) throw new BadRequestException('No backend node is available for this device');
     const task: UpdateTask = {
       id: uuid(), nodeId: node.id, deviceId,
+      tenantId: device.tenantId,
       appName: artifact.name, packageArtifactId: artifact.id,
-      packageId: safePackageId(artifact.packageId), sourceUrl: artifact.sourceUrl,
+      packageId: artifact.type === 'apt' ? safeAptPackageId(artifact.packageId) : safePackageId(artifact.packageId),
+      packageManager: artifact.packageManager ?? artifact.type,
+      packageScope: artifact.packageScope,
+      sourceUrl: artifact.sourceUrl,
       sha256: artifact.sha256, installArgs: artifact.installArgs,
+      requiredCapabilities: requiredCapabilitiesForArtifact(artifact),
       targetVersion: artifact.version, type: 'update_package',
       status: 'pending', createdAt: new Date().toISOString(),
     };
     this.store.tasks.push(task);
-    void this.store.persist();
+    this.authorization.autoSignTask(task, actor);
     this.audit.record(actor, 'package.deployment_created', task.id, { packageId: artifact.id, deviceId });
     this.logger.log(`Deployment task created: taskId=${task.id} package=${artifact.name} device=${deviceId} node=${node.id}`);
     return task;
   }
 
+  /**
+   * Finds the package record.
+   *
+   * @param id Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   private findPackage(id: string) {
     const artifact = this.store.packages.find((p) => p.id === id);
     if (!artifact) throw new NotFoundException('Unknown package');
@@ -169,7 +266,40 @@ export class PackagesController {
   }
 }
 
+/**
+ * Handles the safe package id operation.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function safePackageId(value?: string) {
   const trimmed = (value ?? '').trim();
   return /^[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : undefined;
+}
+
+function safeAptPackageId(value?: string) {
+  const trimmed = clean(value);
+  return /^[a-z0-9][a-z0-9+.-]*$/.test(trimmed) ? trimmed : undefined;
+}
+
+function packageMatchesDevice(artifact: PackageArtifact, device: { os?: string }) {
+  return artifact.platform === devicePlatform(device);
+}
+
+function requiredCapabilitiesForArtifact(artifact: PackageArtifact) {
+  if (artifact.platform === 'linux') return ['linux-patching' as const];
+  if (artifact.type === 'winget') return ['windows-patching' as const, 'winget-cache' as const];
+  if (artifact.type === 'chocolatey') return ['windows-patching' as const, 'chocolatey-cache' as const];
+  return ['windows-patching' as const];
+}
+
+function devicePlatform(device: { os?: string }) {
+  const os = device.os ?? '';
+  if (/(windows|win)/i.test(os)) return 'windows';
+  if (/(linux|ubuntu|debian)/i.test(os)) return 'linux';
+  return 'other';
+}
+
+function clean(value?: string) {
+  return (value ?? '').trim();
 }

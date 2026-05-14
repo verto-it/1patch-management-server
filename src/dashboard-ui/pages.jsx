@@ -2,6 +2,12 @@
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
 // ---------- Loader hook ----------
+/**
+ * Handles the data signature operation.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function dataSignature(value) {
   try {
     return JSON.stringify(value);
@@ -10,6 +16,13 @@ function dataSignature(value) {
   }
 }
 
+/**
+ * Manages use resource state for the UI.
+ *
+ * @param loader loader supplied to the function.
+ * @param deps deps supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function useResource(loader, deps = []) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -49,14 +62,26 @@ function useResource(loader, deps = []) {
   return { data, error, loading, reload };
 }
 
+/**
+ * Manages use live resource state for the UI.
+ *
+ * @param resource resource supplied to the function.
+ * @param intervalMs interval ms supplied to the function.
+ */
 function useLiveResource(resource, intervalMs = 5_000) {
   useEffect(() => {
     let inFlight = false;
+    /**
+     * Handles the tick operation.
+     */
     const tick = () => {
       if (inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
       Promise.resolve(resource.reload(true)).finally(() => { inFlight = false; });
     };
+    /**
+     * Handles the on visible operation.
+     */
     const onVisible = () => {
       if (document.visibilityState === "visible") tick();
     };
@@ -69,9 +94,21 @@ function useLiveResource(resource, intervalMs = 5_000) {
   }, [resource.reload, intervalMs]);
 }
 
+/**
+ * Renders the skeleton UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function Skeleton({ w = "100%", h = 16, r = 4, style }) {
   return <span className="skel" style={{ display:"inline-block", width:w, height:h, borderRadius:r, ...style }}/>;
 }
+/**
+ * Renders the error alert UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function ErrorAlert({ error, onRetry }) {
   return (
     <div className="alert">
@@ -80,11 +117,23 @@ function ErrorAlert({ error, onRetry }) {
     </div>
   );
 }
+/**
+ * Renders the skeleton rows UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function SkeletonRows({ n = 6, cols = 6 }) {
   return Array.from({ length: n }).map((_, i) => (
     <tr key={i}>{Array.from({ length: cols }).map((_, j) => <td key={j}><Skeleton w={j === 0 ? 160 : 80}/></td>)}</tr>
   ));
 }
+/**
+ * Handles the fmt ago operation.
+ *
+ * @param iso iso supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function fmtAgo(iso) {
   if (!iso) return "never";
   const ms = Date.now() - new Date(iso).getTime();
@@ -94,6 +143,12 @@ function fmtAgo(iso) {
   return `${Math.round(ms / 86_400_000)}d ago`;
 }
 
+/**
+ * Handles the copy text to clipboard operation.
+ *
+ * @param text text supplied to the function.
+ * @returns The result produced by the operation.
+ */
 async function copyTextToClipboard(text) {
   const value = typeof text === "string" ? text : String(text ?? "");
   if (!value) return false;
@@ -143,6 +198,12 @@ async function copyTextToClipboard(text) {
 }
 
 // ---------- Overview ----------
+/**
+ * Renders the overview page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function OverviewPage({ onNav, onOpenDevice }) {
   const summary  = useResource(() => PatchAPI.summary());
   const apps     = useResource(() => PatchAPI.apps());
@@ -156,10 +217,16 @@ function OverviewPage({ onNav, onOpenDevice }) {
   useLiveResource(history, 30_000);
 
   const s = summary.data || {};
-  const trend = (history.data || []).map(p => p.value);
-  const coverage = trend.length ? trend[trend.length - 1] : (s.coverage ?? 0);
+  const historyRows = history.data || [];
+  const coverage = s.coverage ?? historyRows[historyRows.length - 1]?.value ?? 0;
+  const trend = [...historyRows.map(p => p.value)];
+  if (!trend.length || trend[trend.length - 1] !== coverage) trend.push(coverage);
   const trendStart = trend[0] ?? coverage;
-  const topApps = (apps.data || []).filter(a => (a.outdatedDeviceCount ?? a.outdated) > 0).slice(0, 6);
+  const trendDelta = coverage - trendStart;
+  const topApps = (apps.data || [])
+    .filter(a => (a.outdatedDeviceCount ?? a.outdated) > 0)
+    .sort((a,b) => (b.outdatedDeviceCount ?? b.outdated ?? 0) - (a.outdatedDeviceCount ?? a.outdated ?? 0))
+    .slice(0, 6);
   const recentTasks = sortTasksNewestFirst(tasks.data || []).slice(0, 7);
   const recentAlarms = (alarms.data || []).slice(0, 5);
   const compliantApps = s.compliantApps ?? Math.max(0, (apps.data || []).reduce((n,a) => n + (a.deviceCount - (a.outdatedDeviceCount ?? a.outdated ?? 0)), 0));
@@ -196,7 +263,7 @@ function OverviewPage({ onNav, onOpenDevice }) {
             </div>
             <div style={{ display:"flex", gap:18, flexWrap:"wrap" }}>
               <Metric label="Outdated" value={apps.loading ? "—" : outdatedApps} tone="warn"/>
-              <Metric label="Critical CVEs" value={s.criticalCves ?? "—"} tone="crit"/>
+              <Metric label="Critical alarms" value={alarms.loading ? "—" : (s.criticalAlarms ?? (alarms.data || []).filter(a => a.severity === "critical").length)} tone="crit"/>
               <Metric label="Failed tasks" value={tasks.loading ? "—" : (tasks.data || []).filter(t => t.status === "failed").length} tone="crit"/>
               <Metric label="Active rules" value={s.activeRules ?? "—"}/>
             </div>
@@ -204,7 +271,7 @@ function OverviewPage({ onNav, onOpenDevice }) {
           <div className="pulse-spark" style={{ display:"flex", flexDirection:"column", justifyContent:"space-between" }}>
             <div className="pulse-sub" style={{ display:"flex", justifyContent:"space-between" }}>
               <span>30-day trend</span>
-              {trend.length > 1 && <span style={{ color:"var(--ok)" }}>+{coverage - trendStart}%</span>}
+              {trend.length > 1 && <span style={{ color: trendDelta < 0 ? "var(--warn)" : "var(--ok)" }}>{trendDelta > 0 ? "+" : ""}{trendDelta}%</span>}
             </div>
             {history.loading
               ? <Skeleton w={260} h={64}/>
@@ -311,6 +378,12 @@ function OverviewPage({ onNav, onOpenDevice }) {
   );
 }
 
+/**
+ * Renders the stat UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function Stat({ label, value, sub, tone }) {
   return (
     <div className="stat">
@@ -320,6 +393,12 @@ function Stat({ label, value, sub, tone }) {
     </div>
   );
 }
+/**
+ * Renders the metric UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function Metric({ label, value, tone }) {
   const color = tone === "crit" ? "var(--crit)" : tone === "warn" ? "var(--warn)" : "var(--text)";
   return (
@@ -331,6 +410,12 @@ function Metric({ label, value, tone }) {
 }
 
 // ---------- Devices ----------
+/**
+ * Renders the devices page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function DevicesPage({ onOpenDevice, globalSearch = "" }) {
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
@@ -401,6 +486,12 @@ function DevicesPage({ onOpenDevice, globalSearch = "" }) {
   );
 }
 
+/**
+ * Renders the device groups page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function DeviceGroupsPage({ onOpenDevice, globalSearch = "" }) {
   const [selected, setSelected] = useState("all");
   const [q, setQ] = useState("");
@@ -478,11 +569,28 @@ function DeviceGroupsPage({ onOpenDevice, globalSearch = "" }) {
   );
 }
 
+/**
+ * Renders the manual device dialog UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function ManualDeviceDialog({ groups, onClose, onCreated }) {
   const [form, setForm] = useState({ tenantId:"default", hostname:"", os:"windows", group:groups[0]?.name || "ungrouped", tags:"", preferredNodeId:"", deviceTrustScore:80, riskScore:"" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  /**
+   * Sets the set value.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to read, render, or store.
+   */
   const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  /**
+   * Handles the submit operation.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -528,6 +636,12 @@ function ManualDeviceDialog({ groups, onClose, onCreated }) {
   );
 }
 
+/**
+ * Renders the client enrollment wizard UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function ClientEnrollmentWizard({ onClose, onCreated }) {
   const browserManagementUrl = `${window.location.protocol}//${window.location.host}`;
   const [step, setStep] = useState("details");
@@ -547,6 +661,12 @@ function ClientEnrollmentWizard({ onClose, onCreated }) {
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState("");
   const noticeTimer = useRef(null);
+  /**
+   * Sets the set value.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to read, render, or store.
+   */
   const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
   const steps = [
     ["details", "Details"],
@@ -560,6 +680,11 @@ function ClientEnrollmentWizard({ onClose, onCreated }) {
     ? ""
     : JSON.stringify(result.config, null, 2);
 
+  /**
+   * Handles the submit operation.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null); setNotice("");
@@ -586,6 +711,12 @@ function ClientEnrollmentWizard({ onClose, onCreated }) {
     }
   };
 
+  /**
+   * Handles the copy operation.
+   *
+   * @param text text supplied to the function.
+   * @param message message supplied to the function.
+   */
   const copy = async (text, message) => {
     const copied = await copyTextToClipboard(text);
     setNotice(copied ? message : "Copy failed. Select the JSON and copy it manually.");
@@ -709,6 +840,12 @@ function ClientEnrollmentWizard({ onClose, onCreated }) {
 }
 
 // ---------- Apps ----------
+/**
+ * Renders the apps page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function AppsPage({ globalSearch = "" }) {
   const [q, setQ] = useState("");
   const activeQ = globalSearch || q;
@@ -718,6 +855,11 @@ function AppsPage({ globalSearch = "" }) {
   const [recentlyQueued, setRecentlyQueued] = useState(new Set());
   const [notice, setNotice] = useState(null);
 
+  /**
+   * Updates the all record or state.
+   *
+   * @param name name supplied to the function.
+   */
   const updateAll = async (name) => {
     if (recentlyQueued.has(name)) return;
     setQueuing(prev => new Set([...prev, name]));
@@ -802,18 +944,41 @@ function AppsPage({ globalSearch = "" }) {
 }
 
 // ---------- Packages ----------
+/**
+ * Renders the packages page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function PackagesPage({ globalSearch = "" }) {
   const pkgs = useResource(() => PatchAPI.packages());
+  const [notice, setNotice] = useState(null);
   useLiveResource(pkgs, 10_000);
-  const deploy = async (id) => { try { await PatchAPI.deployPackageAll(id); } finally { pkgs.reload(); } };
+  /**
+   * Handles the deploy operation.
+   *
+   * @param id Identifier used to locate the target record.
+   */
+  const deploy = async (id) => {
+    try {
+      const result = await PatchAPI.deployPackageAll(id);
+      const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
+      const skipped = result?.skippedDeviceCount ?? 0;
+      setNotice(`${count} deployment task${count === 1 ? "" : "s"} queued${skipped ? `; ${skipped} device${skipped === 1 ? "" : "s"} skipped by platform` : ""}.`);
+      setTimeout(() => setNotice(null), 5000);
+    } finally {
+      pkgs.reload();
+    }
+  };
   const rows = (pkgs.data || []).filter(p => textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256]));
   return (
     <div className="page">
       <div className="page-head">
-        <div><h2>Package library</h2><p>Signed artifacts deployed to backend nodes · MSI / winget / apt</p></div>
+        <div><h2>Package library</h2><p>Signed artifacts deployed to backend nodes · MSI / winget / Chocolatey / Scoop / apt</p></div>
         <button className="btn primary"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add package</button>
       </div>
       <div className="card">
+        {notice && <div className="toast-inline" style={{ margin:16 }}>{notice}</div>}
         {pkgs.error && <div style={{ padding:16 }}><ErrorAlert error={pkgs.error} onRetry={pkgs.reload}/></div>}
         <table className="tbl">
           <thead><tr><th>Name</th><th>Version</th><th>Type</th><th>Platform</th><th>SHA-256</th><th>Signature</th><th>Created</th><th></th></tr></thead>
@@ -840,6 +1005,12 @@ function PackagesPage({ globalSearch = "" }) {
 }
 
 // ---------- Rules ----------
+/**
+ * Renders the rules page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function RulesPage({ globalSearch = "" }) {
   const [editing, setEditing] = useState(null);
   const [testing, setTesting] = useState(null);
@@ -847,6 +1018,11 @@ function RulesPage({ globalSearch = "" }) {
   const audit = useResource(() => PatchAPI.ruleAudit());
   useLiveResource(rules, 10_000);
   useLiveResource(audit, 10_000);
+  /**
+   * Changes the toggle state.
+   *
+   * @param r r supplied to the function.
+   */
   const toggle = async (r) => { try { await PatchAPI.toggleRule(r.id, !r.enabled); } finally { rules.reload(); audit.reload(true); } };
   const rows = (rules.data || []).filter(r => textMatches(globalSearch, [r.name, r.description, r.trigger?.type, r.trigger?.eventType, JSON.stringify(r.conditionGroup), JSON.stringify(r.actions), r.enabled ? "enabled" : "disabled"]));
   return (
@@ -912,6 +1088,12 @@ function RulesPage({ globalSearch = "" }) {
   );
 }
 
+/**
+ * Renders the rule wizard UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function RuleWizard({ rule, onClose, onCreated }) {
   const [step, setStep] = useState(() => rule?.id ? "trigger" : "templates");
   const [form, setForm] = useState(() => normalizeRuleForm(rule));
@@ -920,9 +1102,18 @@ function RuleWizard({ rule, onClose, onCreated }) {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [templateInputs, setTemplateInputs] = useState({});
   const [templatePreview, setTemplatePreview] = useState(null);
+  const [templateImportOpen, setTemplateImportOpen] = useState(false);
+  const [templateImportText, setTemplateImportText] = useState("");
+  const [templateImportNotice, setTemplateImportNotice] = useState(null);
   const devices = useResource(() => PatchAPI.devices(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  /**
+   * Sets the set value.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to read, render, or store.
+   */
   const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
   const templateRows = templates.data || [];
   const deviceGroups = useMemo(() => buildDeviceGroupOptions(devices.data || []), [devices.data]);
@@ -931,6 +1122,9 @@ function RuleWizard({ rule, onClose, onCreated }) {
   useEffect(() => {
     if (!selectedTemplateId && selectedTemplate?.id) setSelectedTemplateId(selectedTemplate.id);
   }, [selectedTemplateId, selectedTemplate?.id]);
+  /**
+   * Manages use template state for the UI.
+   */
   const useTemplate = async () => {
     if (!selectedTemplate) return;
     setBusy(true); setError(null);
@@ -946,6 +1140,34 @@ function RuleWizard({ rule, onClose, onCreated }) {
       setBusy(false);
     }
   };
+  /**
+   * Handles the import template config operation.
+   */
+  const importTemplateConfig = async () => {
+    const configString = templateImportText.trim();
+    if (!configString) {
+      setTemplateImportNotice({ ok:false, text:"Paste a template config string first." });
+      return;
+    }
+    setBusy(true); setError(null); setTemplateImportNotice(null);
+    try {
+      const imported = await PatchAPI.importRuleTemplateConfig({ configString, tenantId: form.tenantId || "default" });
+      setTemplateImportText("");
+      setTemplateImportNotice({ ok:true, text:`Imported ${imported.name}.` });
+      setTemplateCategory(imported.category || "Recommended");
+      setSelectedTemplateId(imported.id);
+      await templates.reload(false);
+    } catch (err) {
+      setTemplateImportNotice({ ok:false, text:err?.message || String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  /**
+   * Saves save data.
+   *
+   * @param e Event object emitted by the runtime or UI.
+   */
   const save = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -982,8 +1204,29 @@ function RuleWizard({ rule, onClose, onCreated }) {
                     <h4>Start from template</h4>
                     <p>Pick a safe blueprint, fill the missing inputs, then review the disabled draft before saving.</p>
                   </div>
-                  <button type="button" className="btn" onClick={() => setStep("trigger")}>Blank rule</button>
+                  <div className="template-head-actions">
+                    <button type="button" className="btn" onClick={() => setTemplateImportOpen(open => !open)}>Import config</button>
+                    <button type="button" className="btn" onClick={() => setStep("trigger")}>Blank rule</button>
+                  </div>
                 </div>
+                {templateImportOpen && (
+                  <div className="template-import-panel">
+                    <label className="field">
+                      <span>Template config</span>
+                      <textarea
+                        className="mono"
+                        value={templateImportText}
+                        onChange={e => setTemplateImportText(e.target.value)}
+                        placeholder="Paste copied 1Patch template JSON"
+                      />
+                    </label>
+                    <div className="template-import-actions">
+                      <button type="button" className="btn primary" disabled={busy} onClick={importTemplateConfig}>{busy ? "Importing..." : "Import template"}</button>
+                      <button type="button" className="btn" onClick={() => { setTemplateImportText(""); setTemplateImportNotice(null); }}>Clear</button>
+                    </div>
+                    {templateImportNotice && <div className={`template-import-notice ${templateImportNotice.ok ? "ok" : "error"}`}>{templateImportNotice.text}</div>}
+                  </div>
+                )}
                 {templates.error && <ErrorAlert error={templates.error} onRetry={templates.reload}/>}
                 <div className="template-category-row">
                   {templateCategories.map(category => (
@@ -1097,7 +1340,7 @@ function RuleWizard({ rule, onClose, onCreated }) {
                 <div className="form-grid">
                   <label className="field"><span>Action</span><select value={form.actionType} onChange={e => set("actionType", e.target.value)}><option value="create_patch_task">Create patch task</option><option value="create_security_task">Create security task</option><option value="notify">Notify SIEM</option><option value="mark_device">Mark device</option><option value="block_task_creation">Block task creation</option></select></label>
                   {form.actionType === "create_patch_task" && <label className="field"><span>Patch mode</span><select value={form.patchMode} onChange={e => set("patchMode", e.target.value)}><option value="all_outdated">All outdated packages</option><option value="specific_package">Specific package</option></select></label>}
-                  {form.actionType === "create_patch_task" && form.patchMode === "specific_package" && <label className="field"><span>Package</span><input value={form.packageName} onChange={e => set("packageName", e.target.value)} placeholder="Google Chrome"/></label>}
+                  {form.actionType === "create_patch_task" && form.patchMode === "specific_package" && <label className="field"><span>Package</span><input value={form.packageName} onChange={e => set("packageName", e.target.value)} placeholder="Google Chrome, Microsoft Edge"/></label>}
                   {form.actionType === "create_patch_task" && <label className="field"><span>Target version</span><input value={form.targetVersion} onChange={e => set("targetVersion", e.target.value || "latest")}/></label>}
                   {form.actionType === "create_security_task" && <label className="field"><span>Security task</span><select value={form.securityTask} onChange={e => set("securityTask", e.target.value)}><option value="refresh_inventory">Refresh inventory</option></select></label>}
                   {form.actionType === "notify" && <label className="field"><span>Message</span><input value={form.notifyMessage} onChange={e => set("notifyMessage", e.target.value)}/></label>}
@@ -1133,13 +1376,25 @@ function RuleWizard({ rule, onClose, onCreated }) {
   );
 }
 
+/**
+ * Renders the rule tester UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function RuleTester({ rule, onClose, onExecuted }) {
   const devices = useResource(() => PatchAPI.devices());
   const [deviceId, setDeviceId] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState("");
   const sampleId = deviceId || devices.data?.[0]?.id || "";
+  /**
+   * Handles the test operation.
+   */
   const test = async () => { setBusy("test"); try { setResult(await PatchAPI.testRule(rule.id, { deviceId: sampleId })); } finally { setBusy(""); } };
+  /**
+   * Handles the run operation.
+   */
   const run = async () => { setBusy("run"); try { setResult({ executed: await PatchAPI.triggerRule(rule.id, { deviceId: sampleId }) }); onExecuted?.(); } finally { setBusy(""); } };
   return (
     <React.Fragment>
@@ -1161,6 +1416,14 @@ function RuleTester({ rule, onClose, onExecuted }) {
 const conditionFields = ["device.os","device.hostname","device.group","device.tag","device.deviceTrustScore","device.lastInventoryAgeHours","package.outdated","package.name","package.severity","package.version","lastTask.failed","lastTask.retryCount","lastTask.failureRetryable","currentTime.maintenanceWindow","riskScore","task.sourceHostTrusted","task.hashPresent"];
 const conditionOperators = ["eq","neq","contains","matches","lt","lte","gt","gte","in"];
 
+/**
+ * Handles the with template defaults operation.
+ *
+ * @param template template supplied to the function.
+ * @param values values supplied to the function.
+ * @param tenantId Identifier used to locate the target record.
+ * @returns The result produced by the operation.
+ */
 function withTemplateDefaults(template, values, tenantId) {
   const out = { ...values, tenantId };
   (template.requiredInputs || []).forEach(input => {
@@ -1168,6 +1431,12 @@ function withTemplateDefaults(template, values, tenantId) {
   });
   return out;
 }
+/**
+ * Handles the template input display operation.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function templateInputDisplay(value) {
   if (value && typeof value === "object") {
     if (Number.isFinite(value.startHourUtc) && Number.isFinite(value.endHourUtc)) return `${value.startHourUtc}-${value.endHourUtc}`;
@@ -1175,6 +1444,13 @@ function templateInputDisplay(value) {
   }
   return value ?? "";
 }
+/**
+ * Parses template input input.
+ *
+ * @param input input supplied to the function.
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function parseTemplateInput(input, value) {
   if (input.type === "number") return Number(value || 0);
   if (input.type === "maintenance_window") {
@@ -1183,6 +1459,12 @@ function parseTemplateInput(input, value) {
   }
   return value;
 }
+/**
+ * Builds the device group options payload.
+ *
+ * @param devices devices supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function buildDeviceGroupOptions(devices) {
   const groups = new Map();
   for (const device of devices || []) {
@@ -1199,6 +1481,12 @@ function buildDeviceGroupOptions(devices) {
   }
   return [...groups.values()].map(group => ({ ...group, tags:[...group.tags].sort() })).sort((a, b) => a.name.localeCompare(b.name));
 }
+/**
+ * Renders the group select UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function GroupSelect({ groups, value, onChange }) {
   const [query, setQuery] = useState(value || "");
   const matches = groups.filter(group => textMatches(query, [group.name, ...group.samples, ...group.tags])).slice(0, 8);
@@ -1226,6 +1514,12 @@ function GroupSelect({ groups, value, onChange }) {
     </div>
   );
 }
+/**
+ * Renders the device group picker UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function DeviceGroupPicker({ input, groups, loading, value, onChange }) {
   return (
     <div className="field">
@@ -1235,14 +1529,31 @@ function DeviceGroupPicker({ input, groups, loading, value, onChange }) {
     </div>
   );
 }
+/**
+ * Renders the maintenance window picker UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function MaintenanceWindowPicker({ input, value, onChange }) {
   const current = value && typeof value === "object" ? value : { daysOfWeek:[0], startHourUtc:3, endHourUtc:5 };
   const selectedDays = new Set(current.daysOfWeek?.length ? current.daysOfWeek : [0]);
+  /**
+   * Sets the day value.
+   *
+   * @param day day supplied to the function.
+   */
   const setDay = (day) => {
     const next = new Set(selectedDays);
     next.has(day) ? next.delete(day) : next.add(day);
     onChange({ ...current, daysOfWeek:[...next].sort((a, b) => a - b) });
   };
+  /**
+   * Sets the hour value.
+   *
+   * @param key key supplied to the function.
+   * @param raw raw supplied to the function.
+   */
   const setHour = (key, raw) => {
     const hour = Math.max(0, Math.min(key === "endHourUtc" ? 24 : 23, Number(raw)));
     const next = { ...current, [key]: hour };
@@ -1277,18 +1588,45 @@ function MaintenanceWindowPicker({ input, value, onChange }) {
     </div>
   );
 }
+/**
+ * Handles the hour options operation.
+ *
+ * @param min min supplied to the function.
+ * @param max max supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function hourOptions(min, max) {
   const items = [];
   for (let hour = min; hour <= max; hour++) items.push(<option key={hour} value={hour}>{formatHour(hour)}</option>);
   return items;
 }
+/**
+ * Formats the hour value.
+ *
+ * @param hour hour supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function formatHour(hour) {
   return `${String(hour).padStart(2, "0")}:00`;
 }
+/**
+ * Handles the days label operation.
+ *
+ * @param days Number of days to include in the range.
+ * @returns The result produced by the operation.
+ */
 function daysLabel(days) {
   if (days.length === 7) return "Daily";
   return days.map(day => ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][day]).join(", ");
 }
+/**
+ * Handles the client rule draft from template operation.
+ *
+ * @param template template supplied to the function.
+ * @param inputs inputs supplied to the function.
+ * @param tenantId Identifier used to locate the target record.
+ * @returns The result produced by the operation.
+ */
 function clientRuleDraftFromTemplate(template, inputs, tenantId) {
   const rule = {
     id: undefined,
@@ -1316,41 +1654,145 @@ function clientRuleDraftFromTemplate(template, inputs, tenantId) {
     },
   };
 }
+/**
+ * Handles the replace template values operation.
+ *
+ * @param value Value to read, render, or store.
+ * @param inputs inputs supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function replaceTemplateValues(value, inputs) {
   if (typeof value === "string" && value.startsWith("$input.")) return inputs[value.slice(7)];
   if (Array.isArray(value)) return value.map(item => replaceTemplateValues(item, inputs));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, replaceTemplateValues(nested, inputs)]));
   return value;
 }
+const DASHBOARD_BROWSER_PACKAGES = ["Google Chrome","Microsoft Edge","Mozilla Firefox"];
+const DASHBOARD_DEV_PACKAGES = ["Visual Studio Code","Git","Node.js"];
+const DASHBOARD_COLLAB_PACKAGES = ["Microsoft Teams","Zoom","Slack"];
+const DASHBOARD_GROUP_INPUT = { id:"targetDeviceGroup", label:"Target device group", type:"device_group", required:true, description:"Device group the generated rule should target." };
+const DASHBOARD_PACKAGE_INPUT = { id:"packageName", label:"Package name", type:"package_name", required:true, description:"Exact package/app name this rule is allowed to patch.", defaultValue:"Google Chrome" };
+const DASHBOARD_WINDOW_INPUT = { id:"maintenanceWindow", label:"Maintenance window", type:"maintenance_window", required:true, description:"UTC window in which scheduled patch tasks may be created.", defaultValue:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } };
+const DASHBOARD_MAX_DEVICES_INPUT = { id:"maxDevices", label:"Max devices per run", type:"number", required:true, description:"Upper bound for task drafts created by one rule execution.", defaultValue:10 };
+const DASHBOARD_RETRY_LIMIT_INPUT = { id:"retryLimit", label:"Retry limit", type:"number", required:true, description:"Maximum retry attempts before escalation.", defaultValue:2 };
 const DASHBOARD_RULE_TEMPLATES = [
-  { id:"weekly-browser-updates", name:"Weekly Browser Updates", description:"Patch Chrome, Edge, and Firefox on Windows during a maintenance window.", category:"Recommended", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["browser","windows"], trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.os", operator:"eq", value:"windows" },{ field:"package.name", operator:"in", value:["Google Chrome","Microsoft Edge","Mozilla Firefox","Chrome","Edge","Firefox"] },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[{ id:"targetDeviceGroup", label:"Target device group", type:"device_group", required:true, description:"Select the group to target." },{ id:"maintenanceWindow", label:"Maintenance window", type:"maintenance_window", required:true, description:"UTC hours", defaultValue:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }], explanation:["update Chrome, Edge, and Firefox when they are outdated","use delayed execution and security scanning before dispatch"], safety:["delayed execution required","security scan required","disabled by default"] },
-  { id:"critical-patch-fast-track", name:"Critical Patch Fast Track", description:"Fast-track critical package drafts while keeping production behind approval gates.", category:"Recommended", recommendedSecurityMode:"tinfoil", riskLevel:"high", trigger:{ type:"event", eventType:"vulnerability.detected" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"neq", value:"production" },{ field:"package.severity", operator:"eq", value:"critical" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" },{ type:"notify", channel:"siem", message:"Critical patch fast-track draft created" }], requiredInputs:[], explanation:["create patch task drafts for critical packages","send a SIEM notification"], safety:["MFA approval required","high-risk approval policy applies"] },
-  { id:"refresh-inventory-daily", name:"Refresh Inventory Daily", description:"Refresh stale inventory on a daily schedule.", category:"Security / Inventory", recommendedSecurityMode:"normal", riskLevel:"low", trigger:{ type:"schedule" }, schedule:{ cron:"0 1 * * *" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.lastInventoryAgeHours", operator:"gt", value:24 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" }], requiredInputs:[{ id:"targetDeviceGroup", label:"Target device group", type:"device_group", required:true, description:"Select the group to refresh." }], explanation:["refresh inventory for devices older than 24 hours"], safety:["low risk","uses supported signed refresh task"] },
-  { id:"retry-failed-updates", name:"Retry Failed Updates", description:"Retry transient failures with capped exponential backoff.", category:"Failure Handling", recommendedSecurityMode:"strict", riskLevel:"medium", trigger:{ type:"event", eventType:"task.failed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"lastTask.failed", operator:"eq", value:true },{ field:"lastTask.retryCount", operator:"lt", value:"$input.retryLimit" },{ field:"lastTask.failureRetryable", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest", retryLimit:"$input.retryLimit", backoff:"exponential", maxDevices:1 }], requiredInputs:[{ id:"retryLimit", label:"Retry limit", type:"number", required:true, description:"Maximum attempts", defaultValue:2 }], explanation:["create one retry task when the failure is retryable"], safety:["exponential backoff","retry count prevents loops"] },
-  { id:"patch-test-group-first", name:"Patch Test Group First", description:"Patch test devices before any production rollout.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"low", trigger:{ type:"schedule" }, schedule:{ cron:"0 2 * * 0" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"test" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[], explanation:["create patch task drafts only for the test group"], safety:["no production devices affected"] },
-  { id:"notify-on-high-risk-task", name:"Notify on High-Risk Task", description:"Notify security systems when a task scan returns high risk.", category:"Notifications", recommendedSecurityMode:"normal", riskLevel:"low", trigger:{ type:"event", eventType:"task.security_scan.completed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"riskScore", operator:"gte", value:70 }] }, actions:[{ type:"notify", channel:"siem", message:"High-risk task detected by rule template" }], requiredInputs:[], explanation:["send SIEM and configured notifications for high-risk task scans"], safety:["no execution action"] },
-  { id:"production-maintenance-window-only", name:"Production Maintenance Window Only", description:"Permit production patch drafts only inside a configured maintenance window.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"high", trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"production" },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], requiredInputs:[{ id:"maintenanceWindow", label:"Maintenance window", type:"maintenance_window", required:true, description:"UTC hours", defaultValue:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }], explanation:["create production patch task drafts only during the configured window"], safety:["delayed execution required","approval required"] },
-  { id:"block-unsafe-automation", name:"Block Unsafe Automation", description:"Block unsafe automation candidates and notify admins.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"low", trigger:{ type:"event", eventType:"rule.task_candidate.created" }, schedule:{}, conditions:{ combinator:"OR", conditions:[{ field:"riskScore", operator:"gte", value:90 },{ field:"task.sourceHostTrusted", operator:"eq", value:false },{ field:"task.hashPresent", operator:"eq", value:false }] }, actions:[{ type:"block_task_creation", reason:"Unsafe automation candidate" },{ type:"notify", channel:"siem", message:"Blocked unsafe automation candidate" }], requiredInputs:[], explanation:["do not create an executable task","notify admins and SIEM"], safety:["no hidden task","no arbitrary command"] },
+  { id:"weekly-browser-updates", name:"Weekly Browser Updates", description:"Patch only Chrome, Edge, and Firefox on Windows during a maintenance window.", category:"Recommended", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["browser","windows","weekly"], trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.os", operator:"eq", value:"windows" },{ field:"package.name", operator:"in", value:DASHBOARD_BROWSER_PACKAGES },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageNames:DASHBOARD_BROWSER_PACKAGES, targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[DASHBOARD_GROUP_INPUT,DASHBOARD_WINDOW_INPUT,{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:25 }], explanation:["patch only Chrome, Edge, and Firefox packages","skip browsers that are already current","use delayed execution and security scanning before dispatch"], safety:["specific package allow-list","maintenance window required","disabled by default"] },
+  { id:"critical-patch-fast-track", name:"Critical Patch Fast Track", description:"Fast-track one named critical package outside production while preserving approval gates.", category:"Recommended", recommendedSecurityMode:"tinfoil", riskLevel:"high", tags:["critical","vulnerability","approval"], trigger:{ type:"event", eventType:"vulnerability.detected" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"neq", value:"production" },{ field:"package.name", operator:"eq", value:"$input.packageName" },{ field:"package.severity", operator:"eq", value:"critical" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"$input.packageName", targetVersion:"latest", maxDevices:"$input.maxDevices" },{ type:"notify", channel:"siem", message:"Critical package fast-track draft created" }], requiredInputs:[DASHBOARD_PACKAGE_INPUT,DASHBOARD_MAX_DEVICES_INPUT], explanation:["patch only the named critical package","exclude production by default","send a SIEM notification"], safety:["specific package required","MFA approval applies through tenant policy","small max-device cap"] },
+  { id:"patch-test-group-first", name:"Patch Test Group First", description:"Patch all outdated packages only in the test group before any wider rollout.", category:"Recommended", recommendedSecurityMode:"strict", riskLevel:"low", tags:["test-first","patch","pilot"], trigger:{ type:"schedule" }, schedule:{ cron:"0 2 * * 0", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:2, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"test" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest", maxDevices:10 }], requiredInputs:[], explanation:["patch only the hard-coded test ring","allow broader all-outdated coverage only in that pilot ring"], safety:["no production devices affected","max 10 devices per run","disabled by default"] },
+  { id:"chrome-zero-day-response", name:"Chrome Zero-Day Response", description:"Create capped Chrome patch drafts when a high-priority browser issue is detected.", category:"Patch Automation", recommendedSecurityMode:"tinfoil", riskLevel:"high", tags:["browser","zero-day","chrome"], trigger:{ type:"event", eventType:"package.high_priority.detected" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"device.os", operator:"eq", value:"windows" },{ field:"package.name", operator:"eq", value:"Google Chrome" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"Google Chrome", targetVersion:"latest", maxDevices:10 },{ type:"notify", channel:"siem", message:"Chrome high-priority patch draft created" }], requiredInputs:[], explanation:["patch only Google Chrome","react to high-priority package events","notify SIEM"], safety:["specific package only","max 10 devices per execution","high-risk approvals apply"] },
+  { id:"microsoft-edge-stable-ring", name:"Microsoft Edge Stable Ring", description:"Patch Edge on a named Windows device group during a weekly window.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["browser","edge","windows"], trigger:{ type:"schedule" }, schedule:{ cron:"30 3 * * 0", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.os", operator:"eq", value:"windows" },{ field:"package.name", operator:"eq", value:"Microsoft Edge" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"Microsoft Edge", targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[DASHBOARD_GROUP_INPUT,DASHBOARD_WINDOW_INPUT,{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:20 }], explanation:["patch only Microsoft Edge","limit rollout to the selected group"], safety:["specific package only","maintenance window required","device cap required"] },
+  { id:"firefox-maintenance-ring", name:"Firefox Maintenance Ring", description:"Patch Firefox on a selected endpoint ring without touching other apps.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["browser","firefox"], trigger:{ type:"schedule" }, schedule:{ cron:"0 4 * * 0", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:4, endHourUtc:6 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"package.name", operator:"eq", value:"Mozilla Firefox" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"Mozilla Firefox", targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[DASHBOARD_GROUP_INPUT,DASHBOARD_WINDOW_INPUT,{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:20 }], explanation:["patch only Mozilla Firefox","skip unrelated outdated software"], safety:["specific package only","disabled by default"] },
+  { id:"developer-tooling-weekly", name:"Developer Tooling Weekly", description:"Patch VS Code, Git, and Node.js on developer workstations.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["developer","tooling","weekly"], trigger:{ type:"schedule" }, schedule:{ cron:"0 5 * * 6", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[6], startHourUtc:5, endHourUtc:8 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"package.name", operator:"in", value:DASHBOARD_DEV_PACKAGES },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageNames:DASHBOARD_DEV_PACKAGES, targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[DASHBOARD_GROUP_INPUT,{ ...DASHBOARD_WINDOW_INPUT, defaultValue:{ daysOfWeek:[6], startHourUtc:5, endHourUtc:8 } },{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:15 }], explanation:["patch only common developer tools","avoid broad workstation updates"], safety:["specific package allow-list","weekend maintenance default"] },
+  { id:"collaboration-app-weekly", name:"Collaboration Apps Weekly", description:"Patch Teams, Zoom, and Slack on office endpoints.", category:"Patch Automation", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["collaboration","teams","zoom","slack"], trigger:{ type:"schedule" }, schedule:{ cron:"0 4 * * 6", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[6], startHourUtc:4, endHourUtc:7 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"package.name", operator:"in", value:DASHBOARD_COLLAB_PACKAGES },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageNames:DASHBOARD_COLLAB_PACKAGES, targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[DASHBOARD_GROUP_INPUT,{ ...DASHBOARD_WINDOW_INPUT, defaultValue:{ daysOfWeek:[6], startHourUtc:4, endHourUtc:7 } },{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:20 }], explanation:["patch only Teams, Zoom, and Slack","keep unrelated apps out of scope"], safety:["specific package allow-list","maintenance window required"] },
+  { id:"vpn-client-maintenance", name:"VPN Client Maintenance", description:"Patch one VPN client package on remote-user devices.", category:"Patch Automation", recommendedSecurityMode:"tinfoil", riskLevel:"high", tags:["vpn","remote-access"], trigger:{ type:"schedule" }, schedule:{ cron:"0 2 * * 6", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[6], startHourUtc:2, endHourUtc:4 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"package.name", operator:"eq", value:"$input.packageName" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"$input.packageName", targetVersion:"latest", maxDevices:"$input.maxDevices" },{ type:"notify", channel:"siem", message:"VPN client patch draft created" }], requiredInputs:[DASHBOARD_GROUP_INPUT,{ ...DASHBOARD_PACKAGE_INPUT, defaultValue:"FortiClient VPN" },{ ...DASHBOARD_WINDOW_INPUT, defaultValue:{ daysOfWeek:[6], startHourUtc:2, endHourUtc:4 } },{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:10 }], explanation:["patch only the named VPN client","notify security monitoring"], safety:["specific package required","high-risk approvals apply"] },
+  { id:"refresh-inventory-daily", name:"Refresh Inventory Daily", description:"Refresh stale device inventory once per day.", category:"Security / Inventory", recommendedSecurityMode:"normal", riskLevel:"low", tags:["inventory","daily"], trigger:{ type:"schedule" }, schedule:{ cron:"0 1 * * *", timezone:"UTC" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.lastInventoryAgeHours", operator:"gt", value:24 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" }], requiredInputs:[DASHBOARD_GROUP_INPUT], explanation:["refresh inventory for devices whose data should stay current"], safety:["low risk","uses supported signed refresh task"] },
+  { id:"inventory-before-maintenance", name:"Inventory Before Maintenance", description:"Refresh stale inventory shortly before a patch window.", category:"Security / Inventory", recommendedSecurityMode:"normal", riskLevel:"low", tags:["inventory","preflight"], trigger:{ type:"schedule" }, schedule:{ cron:"0 0 * * 0", timezone:"UTC" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.lastInventoryAgeHours", operator:"gt", value:12 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" }], requiredInputs:[DASHBOARD_GROUP_INPUT], explanation:["refresh stale inventory before patch decisions are made"], safety:["no package update action","uses signed inventory task"] },
+  { id:"low-trust-inventory-refresh", name:"Low-Trust Inventory Refresh", description:"Refresh and tag devices whose trust score drops below a review threshold.", category:"Security / Inventory", recommendedSecurityMode:"strict", riskLevel:"low", tags:["trust","inventory","review"], trigger:{ type:"event", eventType:"device.inventory.updated" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"device.deviceTrustScore", operator:"lt", value:60 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" },{ type:"mark_device", tag:"trust-review" },{ type:"notify", channel:"siem", message:"Low-trust device inventory refresh requested" }], requiredInputs:[], explanation:["refresh questionable inventory","tag the device for review","notify SIEM"], safety:["no package execution action","metadata tag only"] },
+  { id:"retry-failed-updates", name:"Retry Failed Package Update", description:"Retry one named package after a transient failure with capped exponential backoff.", category:"Failure Handling", recommendedSecurityMode:"strict", riskLevel:"medium", tags:["retry","failed-task","specific-package"], trigger:{ type:"event", eventType:"task.failed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"lastTask.failed", operator:"eq", value:true },{ field:"lastTask.retryCount", operator:"lt", value:"$input.retryLimit" },{ field:"lastTask.failureRetryable", operator:"eq", value:true },{ field:"package.name", operator:"eq", value:"$input.packageName" },{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"$input.packageName", targetVersion:"latest", retryLimit:"$input.retryLimit", backoff:"exponential", maxDevices:1 }], requiredInputs:[DASHBOARD_PACKAGE_INPUT,DASHBOARD_RETRY_LIMIT_INPUT], explanation:["retry only the named package","create at most one retry draft"], safety:["exponential backoff","retry count prevents loops","no all-outdated retry"] },
+  { id:"repeated-failure-inventory-reset", name:"Repeated Failure Inventory Reset", description:"Refresh inventory and notify SIEM after repeated update failures.", category:"Failure Handling", recommendedSecurityMode:"strict", riskLevel:"low", tags:["failure","inventory","siem"], trigger:{ type:"event", eventType:"task.failed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"lastTask.failed", operator:"eq", value:true },{ field:"lastTask.retryCount", operator:"gte", value:2 }] }, actions:[{ type:"create_security_task", task:"refresh_inventory" },{ type:"notify", channel:"siem", message:"Inventory refresh created after repeated patch failures" }], requiredInputs:[], explanation:["refresh inventory instead of blindly retrying patches","notify SIEM after repeated failures"], safety:["no package execution action","breaks retry loops"] },
+  { id:"failed-task-siem-escalation", name:"Failed Task SIEM Escalation", description:"Escalate repeated failed tasks without creating new patch work.", category:"Failure Handling", recommendedSecurityMode:"normal", riskLevel:"low", tags:["failure","siem","tag"], trigger:{ type:"event", eventType:"task.failed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"lastTask.failed", operator:"eq", value:true },{ field:"lastTask.retryCount", operator:"gte", value:2 }] }, actions:[{ type:"mark_device", tag:"patch-failure-review" },{ type:"notify", channel:"siem", message:"Device marked for patch failure review" }], requiredInputs:[], explanation:["tag devices after repeated failures","notify SIEM for manual follow-up"], safety:["no retry task created","metadata-only device mark"] },
+  { id:"production-maintenance-window-only", name:"Production Package Window", description:"Patch one named production package only inside an explicit maintenance window.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"high", tags:["production","maintenance-window","specific-package"], trigger:{ type:"schedule" }, schedule:{ cron:"0 3 * * 0", timezone:"UTC", maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"production" },{ field:"package.name", operator:"eq", value:"$input.packageName" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"$input.packageName", targetVersion:"latest", maxDevices:"$input.maxDevices" }], requiredInputs:[{ ...DASHBOARD_PACKAGE_INPUT, defaultValue:"Microsoft Edge" },DASHBOARD_WINDOW_INPUT,{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:5 }], explanation:["patch only one named production package","create drafts only during the configured window"], safety:["specific package required","max 5 devices by default","tinfoil approval defaults"] },
+  { id:"production-hotfix-window", name:"Production Hotfix Window", description:"Create tightly capped production hotfix drafts for one critical package.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"critical", tags:["production","hotfix","critical"], trigger:{ type:"event", eventType:"vulnerability.detected" }, schedule:{ maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"production" },{ field:"package.name", operator:"eq", value:"$input.packageName" },{ field:"package.severity", operator:"eq", value:"critical" },{ field:"package.outdated", operator:"eq", value:true },{ field:"currentTime.maintenanceWindow", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"specific_package", packageName:"$input.packageName", targetVersion:"latest", maxDevices:"$input.maxDevices" },{ type:"notify", channel:"siem", message:"Production critical hotfix draft created" }], requiredInputs:[DASHBOARD_PACKAGE_INPUT,DASHBOARD_WINDOW_INPUT,{ ...DASHBOARD_MAX_DEVICES_INPUT, defaultValue:3 }], explanation:["patch only the named critical production package","notify SIEM immediately"], safety:["critical risk approval path","max 3 devices by default","maintenance window required"] },
+  { id:"block-production-outside-window", name:"Block Production Outside Window", description:"Block production task candidates outside the configured maintenance window.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"low", tags:["production","guardrail","maintenance-window"], trigger:{ type:"event", eventType:"rule.task_candidate.created" }, schedule:{ maintenanceWindow:{ daysOfWeek:[0], startHourUtc:3, endHourUtc:5 } }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"production" },{ field:"currentTime.maintenanceWindow", operator:"eq", value:false }] }, actions:[{ type:"block_task_creation", reason:"Production task candidate outside maintenance window" },{ type:"notify", channel:"siem", message:"Blocked production task outside maintenance window" }], requiredInputs:[DASHBOARD_WINDOW_INPUT], explanation:["block instead of creating endpoint work","notify SIEM on policy violation"], safety:["no executable task created","guardrail action only"] },
+  { id:"block-unsafe-automation", name:"Block Unsafe Automation", description:"Stop automation candidates with critical risk, untrusted source, or missing hashes.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"low", tags:["block","guardrail"], trigger:{ type:"event", eventType:"rule.task_candidate.created" }, schedule:{}, conditions:{ combinator:"OR", conditions:[{ field:"riskScore", operator:"gte", value:90 },{ field:"task.sourceHostTrusted", operator:"eq", value:false },{ field:"task.hashPresent", operator:"eq", value:false }] }, actions:[{ type:"block_task_creation", reason:"Unsafe automation candidate" },{ type:"notify", channel:"siem", message:"Blocked unsafe automation candidate" }], requiredInputs:[], explanation:["do not create an executable task","notify admins and SIEM"], safety:["no hidden task","no arbitrary command","blocks instead of executes"] },
+  { id:"low-trust-automation-block", name:"Low-Trust Automation Block", description:"Block task candidates for low-trust devices or high-risk automation.", category:"Compliance", recommendedSecurityMode:"tinfoil", riskLevel:"low", tags:["trust","block","guardrail"], trigger:{ type:"event", eventType:"rule.task_candidate.created" }, schedule:{}, conditions:{ combinator:"OR", conditions:[{ field:"device.deviceTrustScore", operator:"lt", value:40 },{ field:"riskScore", operator:"gte", value:80 },{ field:"task.sourceHostTrusted", operator:"eq", value:false },{ field:"task.hashPresent", operator:"eq", value:false }] }, actions:[{ type:"block_task_creation", reason:"Low-trust or high-risk automation candidate" },{ type:"notify", channel:"siem", message:"Blocked low-trust automation candidate" }], requiredInputs:[], explanation:["block risky automation candidates","notify SIEM with audit context"], safety:["no hidden task","no arbitrary command","blocks instead of executes"] },
+  { id:"notify-on-high-risk-task", name:"Notify on High-Risk Task", description:"Notify security systems when a task scan returns high risk.", category:"Notifications", recommendedSecurityMode:"normal", riskLevel:"low", tags:["notification","siem"], trigger:{ type:"event", eventType:"task.security_scan.completed" }, schedule:{}, conditions:{ combinator:"AND", conditions:[{ field:"riskScore", operator:"gte", value:70 }] }, actions:[{ type:"notify", channel:"siem", message:"High-risk task detected by rule template" }], requiredInputs:[], explanation:["send SIEM and configured tenant notifications for high-risk task scans"], safety:["no execution action"] },
+  { id:"stale-inventory-notification", name:"Stale Inventory Notification", description:"Notify SIEM when devices in a group have stale inventory.", category:"Notifications", recommendedSecurityMode:"normal", riskLevel:"low", tags:["inventory","notification"], trigger:{ type:"schedule" }, schedule:{ cron:"0 8 * * *", timezone:"UTC" }, conditions:{ combinator:"AND", conditions:[{ field:"device.group", operator:"eq", value:"$input.targetDeviceGroup" },{ field:"device.lastInventoryAgeHours", operator:"gt", value:72 }] }, actions:[{ type:"notify", channel:"siem", message:"Stale device inventory detected" }], requiredInputs:[DASHBOARD_GROUP_INPUT], explanation:["notify without creating tasks","surface stale inventory for operations review"], safety:["notification only","no endpoint execution"] },
 ];
+/**
+ * Handles the default rule operation.
+ * @returns The result produced by the operation.
+ */
 function defaultRule() {
   return { enabled:true, tenantId:"default", name:"", description:"", priority:100, trigger:{ type:"manual" }, conditionGroup:{ combinator:"AND", conditions:[{ field:"package.outdated", operator:"eq", value:true }] }, actions:[{ type:"create_patch_task", mode:"all_outdated", targetVersion:"latest" }], schedule:{ maintenanceWindow:{ startHourUtc:0, endHourUtc:6 } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:60 } };
 }
+/**
+ * Handles the normalize rule form operation.
+ *
+ * @param rule rule supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function normalizeRuleForm(rule) {
   const r = rule || defaultRule();
   const action = (r.actions || defaultRule().actions)[0];
-  return { id:r.id, tenantId:r.tenantId || "default", name:r.name || "", description:r.description || "", enabled:r.enabled !== false, priority:r.priority ?? 100, triggerType:r.trigger?.type || "manual", eventType:r.trigger?.eventType || "device.inventory.updated", cron:r.schedule?.cron || "0 2 * * 0", combinator:r.conditionGroup?.combinator || "AND", conditions:r.conditionGroup?.conditions?.filter(c => !c.combinator) || [], actionType:action.type, patchMode:action.mode || "all_outdated", packageName:action.packageName || "", targetVersion:action.targetVersion || "latest", securityTask:action.task || "refresh_inventory", notifyMessage:action.message || "Rule matched", tag:action.tag || "rule-matched", blockReason:action.reason || "Unsafe automation candidate", startHourUtc:r.schedule?.maintenanceWindow?.startHourUtc ?? 0, endHourUtc:r.schedule?.maintenanceWindow?.endHourUtc ?? 6, requireApprovalAtRiskScore:r.safeMode?.requireApprovalAtRiskScore ?? 60, sourceTemplateId:r.sourceTemplateId, sourceTemplateName:r.sourceTemplateName };
+  return { id:r.id, tenantId:r.tenantId || "default", name:r.name || "", description:r.description || "", enabled:r.enabled !== false, priority:r.priority ?? 100, triggerType:r.trigger?.type || "manual", eventType:r.trigger?.eventType || "device.inventory.updated", cron:r.schedule?.cron || "0 2 * * 0", combinator:r.conditionGroup?.combinator || "AND", conditions:r.conditionGroup?.conditions?.filter(c => !c.combinator) || [], actions:r.actions || [], actionType:action.type, patchMode:action.mode || "all_outdated", packageName:action.packageName || (action.packageNames || []).join(", "), targetVersion:action.targetVersion || "latest", securityTask:action.task || "refresh_inventory", notifyMessage:action.message || "Rule matched", tag:action.tag || "rule-matched", blockReason:action.reason || "Unsafe automation candidate", startHourUtc:r.schedule?.maintenanceWindow?.startHourUtc ?? 0, endHourUtc:r.schedule?.maintenanceWindow?.endHourUtc ?? 6, requireApprovalAtRiskScore:r.safeMode?.requireApprovalAtRiskScore ?? 60, sourceTemplateId:r.sourceTemplateId, sourceTemplateName:r.sourceTemplateName };
 }
+/**
+ * Handles the rule payload operation.
+ *
+ * @param form form supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function rulePayload(form) {
-  const action = form.actionType === "create_patch_task" ? { type:"create_patch_task", mode:form.patchMode, packageName:form.packageName || undefined, targetVersion:form.targetVersion || "latest" } : form.actionType === "create_security_task" ? { type:"create_security_task", task:form.securityTask } : form.actionType === "notify" ? { type:"notify", channel:"siem", message:form.notifyMessage || "Rule matched" } : form.actionType === "block_task_creation" ? { type:"block_task_creation", reason:form.blockReason || "Unsafe automation candidate" } : { type:"mark_device", tag:form.tag || "rule-matched" };
-  return { tenantId:form.tenantId || "default", name:form.name.trim(), description:form.description.trim(), enabled:form.enabled, priority:Number(form.priority || 100), trigger:{ type:form.triggerType, ...(form.triggerType === "event" ? { eventType:form.eventType } : {}) }, conditionGroup:{ combinator:form.combinator, conditions:form.conditions }, actions:[action], schedule:{ cron:form.triggerType === "schedule" ? form.cron : undefined, maintenanceWindow:{ startHourUtc:Number(form.startHourUtc), endHourUtc:Number(form.endHourUtc) } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:Number(form.requireApprovalAtRiskScore || 60) }, sourceTemplateId:form.sourceTemplateId, sourceTemplateName:form.sourceTemplateName };
+  const packageNames = String(form.packageName || "").split(",").map(name => name.trim()).filter(Boolean);
+  const originalActions = Array.isArray(form.actions) ? form.actions : [];
+  const originalAction = originalActions[0] || {};
+  const originalPatchAction = originalAction.type === "create_patch_task" ? { ...originalAction } : {};
+  delete originalPatchAction.packageName;
+  delete originalPatchAction.packageNames;
+  delete originalPatchAction.packageId;
+  const action = form.actionType === "create_patch_task" ? cleanPatchAction({ ...originalPatchAction, type:"create_patch_task", mode:form.patchMode, ...(form.patchMode === "specific_package" ? (packageNames.length > 1 ? { packageNames } : { packageName:packageNames[0] || undefined }) : {}), targetVersion:form.targetVersion || "latest" }) : form.actionType === "create_security_task" ? { type:"create_security_task", task:form.securityTask } : form.actionType === "notify" ? { type:"notify", channel:"siem", message:form.notifyMessage || "Rule matched" } : form.actionType === "block_task_creation" ? { type:"block_task_creation", reason:form.blockReason || "Unsafe automation candidate" } : { type:"mark_device", tag:form.tag || "rule-matched" };
+  const actions = originalActions.length > 1 && originalAction.type === action.type ? [action, ...originalActions.slice(1)] : [action];
+  return { tenantId:form.tenantId || "default", name:form.name.trim(), description:form.description.trim(), enabled:form.enabled, priority:Number(form.priority || 100), trigger:{ type:form.triggerType, ...(form.triggerType === "event" ? { eventType:form.eventType } : {}) }, conditionGroup:{ combinator:form.combinator, conditions:form.conditions }, actions, schedule:{ cron:form.triggerType === "schedule" ? form.cron : undefined, maintenanceWindow:{ startHourUtc:Number(form.startHourUtc), endHourUtc:Number(form.endHourUtc) } }, safeMode:{ enabled:true, requireApprovalAtRiskScore:Number(form.requireApprovalAtRiskScore || 60) }, sourceTemplateId:form.sourceTemplateId, sourceTemplateName:form.sourceTemplateName };
 }
+/**
+ * Handles the clean patch action operation.
+ *
+ * @param action action supplied to the function.
+ * @returns The result produced by the operation.
+ */
+function cleanPatchAction(action) {
+  if (action.mode !== "specific_package") {
+    delete action.packageName;
+    delete action.packageNames;
+    delete action.packageId;
+  }
+  return action;
+}
+/**
+ * Updates the condition record or state.
+ *
+ * @param setForm set form supplied to the function.
+ * @param index index supplied to the function.
+ * @param patch patch supplied to the function.
+ */
 function updateCondition(setForm, index, patch) { setForm(prev => ({ ...prev, conditions: prev.conditions.map((c,i) => i === index ? { ...c, ...patch } : c) })); }
+/**
+ * Removes the condition record or state.
+ *
+ * @param setForm set form supplied to the function.
+ * @param index index supplied to the function.
+ */
 function removeCondition(setForm, index) { setForm(prev => ({ ...prev, conditions: prev.conditions.filter((_, i) => i !== index) })); }
+/**
+ * Parses condition value input.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function parseConditionValue(value) { if (value === "true") return true; if (value === "false") return false; const n = Number(value); return value.trim() !== "" && Number.isFinite(n) ? n : value; }
+/**
+ * Handles the condition summary operation.
+ *
+ * @param group group supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function conditionSummary(group) { const count = group?.conditions?.length || 0; return `${group?.combinator || "AND"} · ${count} condition${count === 1 ? "" : "s"}`; }
-function actionSummary(action) { if (!action) return "none"; if (action.type === "create_patch_task") return action.mode === "all_outdated" ? "patch all outdated" : `patch ${action.packageName || action.packageId || "package"}`; if (action.type === "create_security_task") return action.task; if (action.type === "notify") return `notify ${action.channel}`; if (action.type === "mark_device") return `tag ${action.tag}`; return action.type; }
+/**
+ * Handles the action summary operation.
+ *
+ * @param action action supplied to the function.
+ * @returns The result produced by the operation.
+ */
+function actionSummary(action) { if (!action) return "none"; if (action.type === "create_patch_task") return action.mode === "all_outdated" ? "patch all outdated" : `patch ${action.packageName || (action.packageNames || []).join(", ") || action.packageId || "package"}`; if (action.type === "create_security_task") return action.task; if (action.type === "notify") return `notify ${action.channel}`; if (action.type === "mark_device") return `tag ${action.tag}`; return action.type; }
 
 // ---------- Tasks ----------
+/**
+ * Renders the tasks page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function TasksPage({ globalSearch = "" }) {
   const [filter, setFilter] = useState("all");
   const tasks = useResource(() => PatchAPI.tasks());
@@ -1359,6 +1801,11 @@ function TasksPage({ globalSearch = "" }) {
   const [outputTask, setOutputTask] = useState(null);
   const [copied, setCopied] = useState(false);
 
+  /**
+   * Handles the cancel operation.
+   *
+   * @param id Identifier used to locate the target record.
+   */
   const cancel = async (id) => {
     setCancelling(prev => new Set([...prev, id]));
     try { await PatchAPI.cancelTask(id); tasks.reload(true); }
@@ -1366,6 +1813,9 @@ function TasksPage({ globalSearch = "" }) {
     finally { setCancelling(prev => { const s = new Set(prev); s.delete(id); return s; }); }
   };
 
+  /**
+   * Handles the copy output operation.
+   */
   const copyOutput = () => {
     navigator.clipboard.writeText(outputTask?.output || "").then(() => {
       setCopied(true);
@@ -1444,61 +1894,586 @@ function TasksPage({ globalSearch = "" }) {
 }
 
 // ---------- Nodes ----------
-function NodesPage({ globalSearch = "" }) {
-  const nodes = useResource(() => PatchAPI.nodes());
-  useLiveResource(nodes, 5_000);
-  const rows = (nodes.data || []).filter(n => textMatches(globalSearch, [n.name, n.id, n.publicUrl, n.url, n.region, n.site, n.status, n.version]));
-  const [enrolling, setEnrolling] = useState(false);
-  const [enrollment, setEnrollment] = useState(null);
+const FINDING_SEVERITY_COLOR = {
+  critical: "var(--crit)",
+  high: "var(--warn)",
+  medium: "var(--accent)",
+  low: "var(--text-3)",
+  info: "var(--text-3)",
+};
+
+const FINDING_CATEGORY_LABEL = {
+  os_security: "OS security",
+  ip_reputation: "Public URL / IP",
+  node_age: "Node age",
+  configuration: "Configuration",
+  health: "Health",
+};
+
+function trustReasonImpact(reason) {
+  const text = String(reason || "").toLowerCase();
+  if (text.includes("unhealthy component")) return "-25 each";
+  if (text.includes("degraded component")) return "-8 each";
+  if (text.includes("scanner unhealthy")) return "-12";
+  if (text.includes("cache unhealthy")) return "-8";
+  if (text.includes("package verifier")) return "-20";
+  if (text.includes("update source")) return "-6";
+  if (text.includes("clock skew")) return "-15";
+  if (text.includes("high queue")) return "-8";
+  if (text.includes("high latency")) return "-6";
+  if (text.includes("less than 1 hour")) return "-20 and cap 60";
+  if (text.includes("less than 24 hours")) return "-10 and cap 75";
+  if (text.includes("less than 7 days")) return "-5 and cap 90";
+  if (text.includes("denylisted")) return "-35";
+  if (text.includes("warnlisted")) return "-18";
+  if (text.includes("local-only")) return "-15";
+  if (text.includes("private or reserved")) return "-8";
+  if (text.includes("raw public ip")) return "-8";
+  if (text.includes("plain http")) return "-12";
+  if (text.includes("unusual public")) return "-3";
+  if (text.includes("invalid public url")) return "-7";
+  return "factor";
+}
+
+function NodeTrustBreakdown({ trust, node }) {
+  const findings = trust?.securityFindings || [];
+  const reasons = (trust?.reasons || []).filter(r => r !== "signed health report accepted");
+  const quarantines = node?.activeQuarantineEvents || node?.quarantineEvents || [];
+  const history = node?.trustHistory || [];
+  const trustScore = trust?.trustScore ?? node?.trustScore ?? 0;
+  const shouldDefaultOpen = trustScore < 70 || node?.quarantineState === "quarantined" || findings.length > 0 || reasons.length > 0;
+  const [open, setOpen] = useState(shouldDefaultOpen);
+  useEffect(() => { if (shouldDefaultOpen) setOpen(true); }, [shouldDefaultOpen, trust?.id]);
+  if (findings.length === 0 && reasons.length === 0 && quarantines.length === 0 && history.length === 0) return null;
+
+  const grouped = findings.reduce((acc, finding) => {
+    const key = finding.category || "health";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(finding);
+    return acc;
+  }, {});
+  const categories = Object.keys(grouped);
+  const highRisk = findings.some(f => f.severity === "critical" || f.severity === "high") || trustScore < 30 || node?.quarantineState === "quarantined";
+  const previous = trust?.previousTrustScore;
+  const delta = trust?.scoreDelta;
+
   return (
-    <div className="page">
-      <div className="page-head">
-        <div><h2>Backend nodes</h2><p>Regional workers that fan out tasks to enrolled clients</p></div>
-        <button className="btn primary" onClick={() => { setEnrollment(null); setEnrolling(true); }}>
-          <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Enroll node
-        </button>
-      </div>
-      {nodes.error && <ErrorAlert error={nodes.error} onRetry={nodes.reload}/>}
-      <div className="row-3">
-        {nodes.loading && Array.from({ length:3 }).map((_,i) => <div className="card" key={i}><div className="card-body"><Skeleton h={80}/></div></div>)}
-        {!nodes.loading && rows.length === 0 && <div className="card"><div className="card-body" style={{ color:"var(--text-3)" }}>No nodes enrolled.</div></div>}
-        {!nodes.loading && rows.map(n => (
-          <div className="card" key={n.id}>
-            <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
-                <div>
-                  <div style={{ fontWeight:600, fontSize:15 }}>{n.name}</div>
-                  <div className="muted mono" style={{ fontSize:12 }}>{n.publicUrl || n.url}</div>
+    <div style={{ paddingTop:10, borderTop:"1px solid var(--line)" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{ all:"unset", cursor:"pointer", display:"flex", alignItems:"center", gap:6, width:"100%" }}>
+        <span className="muted" style={{ fontSize:10, flex:1 }}>WHY THIS TRUST SCORE</span>
+        {delta != null && (
+          <span style={{ fontSize:10, color: delta < 0 ? "var(--crit)" : "var(--ok)" }}>
+            {previous ?? "?"} -> {trust?.trustScore ?? "?"} ({delta > 0 ? "+" : ""}{delta})
+          </span>
+        )}
+        {findings.length > 0 && (
+          <span style={{ fontSize:10, color: highRisk ? "var(--crit)" : "var(--warn)" }}>
+            {findings.length} finding{findings.length === 1 ? "" : "s"}
+          </span>
+        )}
+        <span style={{ fontSize:10, color:"var(--text-3)" }}>{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:10 }}>
+          {node?.quarantineState === "quarantined" && (
+            <div style={{ padding:10, border:"1px solid color-mix(in oklch, var(--crit), white 70%)", background:"var(--crit-soft)", borderRadius:8 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"var(--crit)", marginBottom:4 }}>Node is quarantined</div>
+              <div style={{ fontSize:11 }}>
+                {node.quarantineReason || quarantines[0]?.reason || "Trust fell below the quarantine threshold."}
+              </div>
+              {quarantines[0]?.trigger && (
+                <div className="mono muted" style={{ fontSize:10, marginTop:4 }}>
+                  trigger: {quarantines[0].trigger} · {fmtAgo(quarantines[0].createdAt)}
                 </div>
-                <StatusPill status={n.status}/>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, paddingTop:12, borderTop:"1px solid var(--line)" }}>
-                <div><div className="muted" style={{ fontSize:11 }}>REGION</div><div className="mono" style={{ fontSize:13 }}>{n.region || "—"}</div></div>
-                <div><div className="muted" style={{ fontSize:11 }}>VERSION</div><div className="mono" style={{ fontSize:13 }}>{n.version || "—"}</div></div>
-                <div><div className="muted" style={{ fontSize:11 }}>CAPACITY</div><div className="mono" style={{ fontSize:13 }}>{n.capacity ? JSON.stringify(n.capacity) : "—"}</div></div>
-                <div><div className="muted" style={{ fontSize:11 }}>LAST SEEN</div><div className="mono" style={{ fontSize:13 }}>{fmtAgo(n.lastSeenAt)}</div></div>
-              </div>
+              )}
             </div>
-          </div>
-        ))}
-      </div>
-      {enrolling && (
-        <EnrollNodeDrawer
-          result={enrollment}
-          onClose={() => setEnrolling(false)}
-          onCreated={(created) => { setEnrollment(created); nodes.reload(); }}
-        />
+          )}
+
+          {(reasons.length > 0 || delta != null || trust?.maxTrustScore != null) && (
+            <div>
+              <div className="muted" style={{ fontSize:9, fontWeight:700, marginBottom:4 }}>SCORING FACTORS</div>
+              {delta != null && (
+                <div style={{ display:"flex", justifyContent:"space-between", gap:8, fontSize:11, padding:"6px 0", borderBottom:"1px solid var(--line)" }}>
+                  <span>Latest signed health report changed trust from <strong>{previous}</strong> to <strong>{trust.trustScore}</strong>.</span>
+                  <span className="mono" style={{ color: delta < 0 ? "var(--crit)" : "var(--ok)", whiteSpace:"nowrap" }}>{delta > 0 ? "+" : ""}{delta}</span>
+                </div>
+              )}
+              {trust?.maxTrustScore != null && trust.maxTrustScore < 100 && (
+                <div style={{ display:"flex", justifyContent:"space-between", gap:8, fontSize:11, padding:"6px 0", borderBottom:"1px solid var(--line)" }}>
+                  <span>Trust is capped while this node builds an operational baseline.</span>
+                  <span className="mono" style={{ color:"var(--warn)", whiteSpace:"nowrap" }}>cap {trust.maxTrustScore}</span>
+                </div>
+              )}
+              {reasons.map(reason => (
+                <div key={reason} style={{ display:"flex", justifyContent:"space-between", gap:8, fontSize:11, padding:"6px 0", borderBottom:"1px solid var(--line)" }}>
+                  <span style={{ color:"var(--text)" }}>{reason}</span>
+                  <span className="mono" style={{ color:"var(--warn)", whiteSpace:"nowrap" }}>{trustReasonImpact(reason)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {categories.map(category => (
+            <div key={category}>
+              <div className="muted" style={{ fontSize:9, fontWeight:700, marginBottom:4 }}>
+                {FINDING_CATEGORY_LABEL[category] || category} findings
+              </div>
+              {grouped[category].map(finding => (
+                <div
+                  key={finding.code}
+                  style={{
+                    marginBottom:6,
+                    paddingLeft:8,
+                    borderLeft:"2px solid " + (FINDING_SEVERITY_COLOR[finding.severity] || "var(--line)"),
+                  }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:2, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:10, fontWeight:700, color:FINDING_SEVERITY_COLOR[finding.severity] || "var(--text-3)", textTransform:"uppercase" }}>
+                      {finding.severity}
+                    </span>
+                    <span className="mono" style={{ fontSize:10, color:"var(--text-3)" }}>{finding.code}</span>
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--text)" }}>{finding.message}</div>
+                  {finding.remediationHint && (
+                    <div style={{ fontSize:10, color:"var(--text-3)", marginTop:2 }}>
+                      Fix: {finding.remediationHint}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+
+          {history.length > 1 && (
+            <div>
+              <div className="muted" style={{ fontSize:9, fontWeight:700, marginBottom:4 }}>RECENT TRUST HISTORY</div>
+              {history.slice(0, 5).map(item => (
+                <div key={item.id} style={{ display:"flex", justifyContent:"space-between", gap:8, fontSize:11, marginBottom:4 }}>
+                  <span>{fmtAgo(item.createdAt)} · {(item.reasons || []).filter(r => r !== "signed health report accepted")[0] || item.healthState}</span>
+                  <span className="mono" style={{ color:(item.scoreDelta ?? 0) < 0 ? "var(--crit)" : "var(--ok)" }}>
+                    {item.previousTrustScore ?? "?"} -> {item.trustScore}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function EnrollNodeDrawer({ result, onClose, onCreated }) {
+function NodeTrustInvestigationDrawer({ node, onClose, onResetSafe }) {
+  if (!node) return null;
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const trust = node.trust || {};
+  const trustScore = trust.trustScore ?? node.trustScore ?? 0;
+  const healthState = node.quarantineState === "quarantined" ? "quarantined" : (node.healthState ?? trust.healthState ?? node.status);
+  const findings = trust.securityFindings || [];
+  const reasons = (trust.reasons || []).filter(r => r !== "signed health report accepted");
+  const latestReason = node.quarantineReason || reasons[0] || findings[0]?.message || "No trust findings recorded.";
+  const components = node.health?.components || [];
+  const quarantines = node.activeQuarantineEvents || node.quarantineEvents || [];
+  const canReset = node.quarantineState === "quarantined" || trustScore < 70;
+  const resetSafe = () => {
+    setResetBusy(true);
+    setResetError('');
+    PatchAPI.clearNodeQuarantine(node.id)
+      .then((updated) => {
+        setConfirmReset(false);
+        onResetSafe?.(updated);
+      })
+      .catch(err => setResetError(err.message || "Trust reset failed"))
+      .finally(() => setResetBusy(false));
+  };
+
+  return (
+    <React.Fragment>
+      <div className="drawer-backdrop" onClick={onClose}/>
+      <div className="trust-detail-drawer" role="dialog" aria-modal="true" aria-label={`Trust investigation for ${node.name || node.id}`}>
+        <div className="wizard-head">
+          <div>
+            <h3>Trust investigation</h3>
+            <p>{node.name || node.id}</p>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {canReset && (
+              <button className="btn sm primary" onClick={() => setConfirmReset(true)}>
+                Mark safe & reset trust
+              </button>
+            )}
+            <button className="icon-btn" onClick={onClose} aria-label="Close trust investigation">
+              <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span>
+            </button>
+          </div>
+        </div>
+        <div className="trust-detail-body">
+          {resetError && <div className="banner error">{resetError}</div>}
+          <div className="trust-detail-summary">
+            <div>
+              <span className="muted">Current trust</span>
+              <strong>{trustScore}</strong>
+            </div>
+            <div>
+              <span className="muted">State</span>
+              <StatusPill status={healthState}/>
+            </div>
+            <div>
+              <span className="muted">Findings</span>
+              <strong>{findings.length}</strong>
+            </div>
+            <div>
+              <span className="muted">Quarantine events</span>
+              <strong>{quarantines.length}</strong>
+            </div>
+          </div>
+
+          <div className={"trust-detail-callout " + (node.quarantineState === "quarantined" ? "crit" : trustScore < 70 ? "warn" : "ok")}>
+            <strong>{node.quarantineState === "quarantined" ? "Node is quarantined" : trustScore < 70 ? "Node trust is degraded" : "Node trust is acceptable"}</strong>
+            <span>{latestReason}</span>
+            {canReset && (
+              <button className="btn sm" style={{ justifySelf:"start", marginTop:6 }} onClick={() => setConfirmReset(true)}>
+                I verified this node is safe
+              </button>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-head"><h3>Health Components</h3><div className="sub">{components.length ? `${components.length} reported` : "No report"}</div></div>
+            <div className="card-body">
+              <NodeComponentsRow components={components}/>
+              {components.length === 0 && <div className="empty">No health component report has been received.</div>}
+              {components.length > 0 && (
+                <div className="trust-component-list">
+                  {components.map(component => (
+                    <div key={component.name}>
+                      <NodeHealthDot status={component.status}/>
+                      <span>{component.name}</span>
+                      <strong>{component.status}</strong>
+                      {component.message && <em>{component.message}</em>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head"><h3>Score Explanation</h3><div className="sub">Audit-grade scoring reasons</div></div>
+            <div className="card-body">
+              <NodeTrustBreakdown trust={trust} node={node}/>
+            </div>
+          </div>
+        </div>
+      </div>
+      {confirmReset && (
+        <div className="modal-overlay" onClick={() => !resetBusy && setConfirmReset(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Reset node trust?</h3>
+            <p>This clears quarantine and restores this node to the manual reapproval baseline. Only do this after verifying certificate identity, node host integrity, package cache integrity, and network exposure.</p>
+            {resetError && <div className="banner error">{resetError}</div>}
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setConfirmReset(false)} disabled={resetBusy}>Cancel</button>
+              <button className="btn danger" onClick={resetSafe} disabled={resetBusy}>
+                {resetBusy ? <span className="search-spinner"/> : null}
+                Mark safe & reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
+function NodeHealthDot({ status }) {
+  const color = status === "ok" ? "var(--ok)" : status === "degraded" ? "var(--warn)" : status === "unhealthy" ? "var(--crit)" : "var(--text-3)";
+  return <span style={{ display:"inline-block", width:7, height:7, borderRadius:"50%", background:color, flexShrink:0 }}/>;
+}
+
+function NodeComponentsRow({ components }) {
+  if (!components || components.length === 0) return null;
+  const show = components.filter(c => c.status !== "ok");
+  if (show.length === 0) return (
+    <div style={{ fontSize:11, color:"var(--ok)", display:"flex", alignItems:"center", gap:5 }}>
+      <NodeHealthDot status="ok"/> All components healthy
+    </div>
+  );
+  return (
+    <div style={{ display:"flex", flexWrap:"wrap", gap:"4px 10px" }}>
+      {show.map(c => (
+        <span key={c.name} style={{ display:"flex", alignItems:"center", gap:4, fontSize:11 }}>
+          <NodeHealthDot status={c.status}/>
+          <span style={{ color:"var(--text-2)" }}>{c.name}</span>
+          <span style={{ color: c.status === "degraded" ? "var(--warn)" : "var(--crit)" }}>{c.status}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Renders the nodes page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+function NodesPage({ globalSearch = "" }) {
+  const nodes = useResource(() => PatchAPI.nodeTrustCenter ? PatchAPI.nodeTrustCenter() : PatchAPI.nodes());
+  useLiveResource(nodes, 5_000);
+  const [filter, setFilter] = useState("all");
+  const all = nodes.data || [];
+
+  const counts = {
+    all: all.length,
+    healthy: all.filter(n => (n.healthState ?? n.trust?.healthState) === "healthy").length,
+    "low-trust": all.filter(n => (n.trust?.trustScore ?? n.trustScore ?? 0) < 70).length,
+    maintenance: all.filter(n => ["maintenance","draining"].includes(n.maintenanceState)).length,
+    quarantined: all.filter(n => n.quarantineState === "quarantined").length,
+  };
+
+  const rows = all.filter(n => {
+    const trust = n.trust?.trustScore ?? n.trustScore ?? 0;
+    if (filter === "quarantined" && n.quarantineState !== "quarantined") return false;
+    if (filter === "low-trust" && trust >= 70) return false;
+    if (filter === "maintenance" && !["maintenance","draining"].includes(n.maintenanceState)) return false;
+    if (filter === "healthy" && (n.healthState ?? n.trust?.healthState) !== "healthy") return false;
+    return textMatches(globalSearch, [n.name, n.id, n.publicUrl, n.url, n.region, n.site, n.status, n.version, n.healthState, n.quarantineState, ...(n.capabilities || [])]);
+  });
+
+  const onlineCount = all.filter(n => n.status === "online" || n.healthState === "healthy" || n.healthState === "degraded").length;
+  const avgTrust = all.length > 0 ? Math.round(all.reduce((s, n) => s + (n.trust?.trustScore ?? n.trustScore ?? 0), 0) / all.length) : null;
+
+  const [enrolling, setEnrolling] = useState(false);
+  const [removing, setRemoving] = useState(null);
+  const [investigatingNode, setInvestigatingNode] = useState(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState('');
+  const handleRemove = () => {
+    setRemoveBusy(true); setRemoveError('');
+    PatchAPI.deleteNode(removing.id)
+      .then(() => { setRemoving(null); nodes.reload(); })
+      .catch(err => setRemoveError(err.message || 'Remove failed'))
+      .finally(() => setRemoveBusy(false));
+  };
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Node Trust Center</h2><p>Regional execution, cache health, trust scoring, quarantine, and failover state</p></div>
+        <button className="btn primary" onClick={() => setEnrolling(true)}>
+          <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Enroll node
+        </button>
+      </div>
+
+      {!nodes.loading && all.length > 0 && (
+        <div style={{ display:"flex", gap:24, padding:"10px 0 4px", flexWrap:"wrap" }}>
+          {[
+            ["Nodes", all.length, null],
+            ["Online", onlineCount, "var(--ok)"],
+            ["Avg trust", avgTrust != null ? avgTrust : "—", avgTrust >= 90 ? "var(--ok)" : avgTrust >= 70 ? "var(--accent)" : "var(--warn)"],
+            ["Low trust", counts["low-trust"], counts["low-trust"] > 0 ? "var(--warn)" : null],
+            ["Quarantined", counts.quarantined, counts.quarantined > 0 ? "var(--crit)" : null],
+          ].map(([label, val, color]) => (
+            <div key={label} style={{ display:"flex", flexDirection:"column", gap:2 }}>
+              <span className="muted" style={{ fontSize:11 }}>{label}</span>
+              <span style={{ fontSize:20, fontWeight:700, color: color || "var(--text)", letterSpacing:"-0.02em" }}>{val}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="filterbar">
+        {[["all","All"],["healthy","Healthy"],["low-trust","Low trust"],["maintenance","Maintenance"],["quarantined","Quarantined"]].map(([k,l]) => (
+          <button key={k} className={"chip " + (filter === k ? "active" : "")} onClick={() => setFilter(k)}>
+            {l}{counts[k] > 0 && k !== "all" ? <span style={{ marginLeft:5, opacity:0.6, fontSize:11 }}>{counts[k]}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {nodes.error && <ErrorAlert error={nodes.error} onRetry={nodes.reload}/>}
+      <div className="row-3">
+        {nodes.loading && Array.from({ length:3 }).map((_,i) => <div className="card" key={i}><div className="card-body"><Skeleton h={140}/></div></div>)}
+        {!nodes.loading && rows.length === 0 && (
+          <div className="card"><div className="card-body" style={{ color:"var(--text-3)" }}>
+            {filter === "all" ? "No nodes enrolled." : "No nodes match this filter."}
+          </div></div>
+        )}
+        {!nodes.loading && rows.map(n => {
+          const trustScore = n.trust?.trustScore ?? n.trustScore ?? 0;
+          const healthState = n.quarantineState === "quarantined" ? "quarantined" : (n.healthState ?? n.trust?.healthState ?? n.status);
+          const reasons = (n.trust?.reasons || []).filter(r => r !== "signed health report accepted");
+          const components = n.health?.components || [];
+          const mem = n.health?.memoryPressurePercent;
+          const disk = n.health?.diskFreeBytes;
+          const skew = n.health?.clockSkewMs;
+          const latency = n.trust?.latencyMs;
+          const queueLag = n.health?.queueLag ?? n.trust?.queueLag;
+          const certValid = n.trust?.certValid;
+          const quarantined = n.quarantineState === "quarantined";
+          const inMaintenance = ["maintenance","draining"].includes(n.maintenanceState);
+
+          return (
+            <div className="card" key={n.id} style={{ overflow:"hidden" }}>
+              {quarantined && (
+                <div style={{ background:"var(--crit)", color:"#fff", fontSize:11, fontWeight:600, padding:"5px 14px", letterSpacing:"0.03em" }}>
+                  QUARANTINED{n.quarantineReason ? ` — ${n.quarantineReason}` : ""}
+                </div>
+              )}
+              {!quarantined && inMaintenance && (
+                <div style={{ background:"var(--accent)", color:"#fff", fontSize:11, fontWeight:600, padding:"5px 14px", letterSpacing:"0.03em" }}>
+                  MAINTENANCE{n.maintenanceState === "draining" ? " (draining)" : ""}
+                </div>
+              )}
+              <div className="card-body" style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+                {/* Header: name + status + trust donut */}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight:700, fontSize:15, marginBottom:3 }}>{n.name}</div>
+                    <a href={n.publicUrl || n.url || "#"} target="_blank" rel="noreferrer"
+                       style={{ display:"flex", alignItems:"center", gap:4, textDecoration:"none" }}>
+                      <span className="muted mono" style={{ fontSize:11, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.publicUrl || n.url || "—"}</span>
+                      <span style={{ width:10, height:10, display:"inline-flex", color:"var(--text-3)", flexShrink:0 }}>{Icon.externalLink}</span>
+                    </a>
+                    {(n.region || n.site) && (
+                      <div style={{ display:"flex", gap:6, marginTop:5, flexWrap:"wrap" }}>
+                        {n.region && <span className="pill">{n.region}</span>}
+                        {n.site && <span className="pill">{n.site}</span>}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, flexShrink:0 }}>
+                    <Donut value={trustScore} size={62} stroke={8}/>
+                    <StatusPill status={healthState}/>
+                  </div>
+                </div>
+
+                {/* Health components */}
+                <div style={{ paddingTop:10, borderTop:"1px solid var(--line)" }}>
+                  <NodeComponentsRow components={components}/>
+                  {components.length === 0 && (
+                    <div style={{ fontSize:11, color:"var(--text-3)" }}>No health data yet</div>
+                  )}
+                </div>
+
+                {/* Metrics grid */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 16px" }}>
+                  {[
+                    ["LAST SEEN", fmtAgo(n.lastSeenAt)],
+                    ["VERSION", n.version || "—"],
+                    mem != null ? ["MEMORY", mem + "%", mem > 90 ? "var(--crit)" : mem > 75 ? "var(--warn)" : null] : null,
+                    disk != null ? ["DISK FREE", fmtBytes(disk), disk < 1e9 ? "var(--warn)" : null] : null,
+                    latency != null ? ["LATENCY", latency + " ms", latency > 500 ? "var(--warn)" : null] : null,
+                    skew != null && skew > 5000 ? ["CLOCK SKEW", Math.round(skew / 1000) + "s", "var(--warn)"] : null,
+                    queueLag ? ["QUEUE LAG", queueLag, queueLag === "high" ? "var(--crit)" : queueLag === "medium" ? "var(--warn)" : null] : null,
+                    certValid != null ? ["CERT", certValid ? "valid" : "expired/none", certValid ? null : "var(--warn)"] : null,
+                  ].filter(Boolean).map(([label, val, color]) => (
+                    <div key={label}>
+                      <div className="muted" style={{ fontSize:10 }}>{label}</div>
+                      <div className="mono" style={{ fontSize:12, color: color || "var(--text)" }}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ paddingTop:10, borderTop:"1px solid var(--line)", display:"grid", gap:8 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                    <div style={{ minWidth:0 }}>
+                      <div className="muted" style={{ fontSize:10 }}>TRUST INVESTIGATION</div>
+                      <div style={{ fontSize:12, color: quarantined ? "var(--crit)" : trustScore < 70 ? "var(--warn)" : "var(--text-2)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {n.quarantineReason || reasons[0] || n.trust?.securityFindings?.[0]?.message || "No active trust findings"}
+                      </div>
+                    </div>
+                    <button className="btn sm" onClick={() => setInvestigatingNode(n)}>
+                      Investigate trust
+                    </button>
+                  </div>
+                </div>
+
+                {/* Capabilities */}
+                {(n.capabilities || []).length > 0 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5, paddingTop:8, borderTop:"1px solid var(--line)" }}>
+                    {n.capabilities.map(c => <span className="pill" key={c} style={{ fontSize:11 }}>{c}</span>)}
+                  </div>
+                )}
+
+                {/* Footer */}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingTop:8, borderTop:"1px solid var(--line)" }}>
+                  <span className="muted" style={{ fontSize:11 }}>
+                    {n.firstSeenAt ? `Since ${fmtAgo(n.firstSeenAt)}` : n.id}
+                  </span>
+                  <button className="btn sm ghost danger" onClick={() => { setRemoveError(''); setRemoving(n); }}>Remove</button>
+                </div>
+
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {investigatingNode && (
+        <NodeTrustInvestigationDrawer
+          node={(nodes.data || []).find(item => item.id === investigatingNode.id) || investigatingNode}
+          onClose={() => setInvestigatingNode(null)}
+          onResetSafe={() => {
+            nodes.reload();
+            setInvestigatingNode(null);
+          }}
+        />
+      )}
+
+      {enrolling && <EnrollNodeWizard onClose={() => setEnrolling(false)} onCreated={nodes.reload}/>}
+      {removing && (
+        <div className="modal-overlay" onClick={() => !removeBusy && setRemoving(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Remove node?</h3>
+            <p>This will permanently decommission <strong>{removing.name}</strong>, revoke its mTLS certificate, and remove it from all node lists. This cannot be undone.</p>
+            {removeError && <div className="banner error">{removeError}</div>}
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setRemoving(null)} disabled={removeBusy}>Cancel</button>
+              <button className="btn danger" onClick={handleRemove} disabled={removeBusy}>
+                {removeBusy ? <span className="search-spinner"/> : null}
+                Remove node
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Renders the enroll node drawer UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
+function EnrollNodeWizard({ onClose, onCreated }) {
+  const [step, setStep] = useState("details");
   const [form, setForm] = useState({ name:"", publicUrl:"http://localhost:4200", region:"", site:"" });
+  const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const enrollmentJson = result ? JSON.stringify(result, null, 2) : "";
-  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const [notice, setNotice] = useState(null);
+  const noticeTimer = useRef(null);
+
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+
+  const oneLinerJson = result ? JSON.stringify(result) : "";
+  const prettyJson = result ? JSON.stringify(result, null, 2) : "";
+
+  const steps = [
+    ["details", "Details"],
+    ["enrollment", "Enrollment"],
+    ["install", "Install"],
+  ];
+
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -1509,63 +2484,106 @@ function EnrollNodeDrawer({ result, onClose, onCreated }) {
         region: form.region.trim() || undefined,
         site: form.site.trim() || undefined,
       });
-      onCreated(created);
+      setResult(created);
+      setStep("enrollment");
+      onCreated?.(created);
     } catch (err) {
       setError(err);
     } finally {
       setBusy(false);
     }
   };
-  const copy = async () => {
-    await copyTextToClipboard(enrollmentJson);
+
+  const copy = async (text) => {
+    const copied = await copyTextToClipboard(text);
+    setNotice({ msg: copied ? "Copied to clipboard." : "Copy failed — select and copy manually.", ok: copied });
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 2400);
   };
 
   return (
     <React.Fragment>
       <div className="drawer-backdrop" onClick={onClose}/>
-      <div className="drawer">
-        <div className="drawer-head">
-          <h3>Enroll backend node</h3>
+      <div className="wizard-modal" role="dialog" aria-modal="true">
+        <div className="wizard-head">
+          <div>
+            <h3>Enroll backend node</h3>
+            <p>Generate an enrollment token for a new backend node.</p>
+          </div>
           <button className="icon-btn" onClick={onClose}><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span></button>
         </div>
-        <div className="drawer-body">
-          {!result && (
-            <form onSubmit={submit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
-              <label className="field">
-                <span>Name</span>
-                <input required value={form.name} placeholder="node-1" onChange={e => set("name", e.target.value)}/>
-              </label>
-              <label className="field">
-                <span>Public URL</span>
-                <input required value={form.publicUrl} placeholder="http://host:4200" onChange={e => set("publicUrl", e.target.value)}/>
-              </label>
-              <label className="field">
-                <span>Region</span>
-                <input value={form.region} placeholder="eu-central" onChange={e => set("region", e.target.value)}/>
-              </label>
-              <label className="field">
-                <span>Site</span>
-                <input value={form.site} placeholder="office-1" onChange={e => set("site", e.target.value)}/>
-              </label>
-              {error && <ErrorAlert error={error}/>}
-              <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
-                <button type="button" className="btn" onClick={onClose}>Cancel</button>
-                <button className="btn primary" disabled={busy}>{busy ? "Creating…" : "Create enrollment"}</button>
+        <div className="wizard-body">
+          <div className="wizard-steps">
+            {steps.map(([id, label]) => {
+              const done = (id === "details" && result) || (id === "enrollment" && result && step === "install");
+              const active = step === id;
+              return (
+                <button key={id} className={"wizard-step " + (active ? "active " : "") + (done ? "done" : "")}
+                  onClick={() => (id === "details" || result) && setStep(id)}>
+                  <span>{done ? "OK" : "--"}</span>{label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="wizard-panel">
+            {step === "details" && (
+              <form onSubmit={submit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="form-grid">
+                  <label className="field">
+                    <span>Name</span>
+                    <input required value={form.name} placeholder="node-1" onChange={e => set("name", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Public URL</span>
+                    <input required value={form.publicUrl} placeholder="http://host:4200" onChange={e => set("publicUrl", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Region</span>
+                    <input value={form.region} placeholder="eu-central" onChange={e => set("region", e.target.value)}/>
+                  </label>
+                  <label className="field">
+                    <span>Site</span>
+                    <input value={form.site} placeholder="office-1" onChange={e => set("site", e.target.value)}/>
+                  </label>
+                </div>
+                {error && <ErrorAlert error={error}/>}
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                  <button type="button" className="btn" onClick={onClose}>Cancel</button>
+                  <button className="btn primary" disabled={busy}>{busy ? "Creating…" : "Create enrollment"}</button>
+                </div>
+              </form>
+            )}
+            {step === "enrollment" && result && (
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="success-card">
+                  <strong>Enrollment created</strong>
+                  <span>Copy the JSON and paste it when the backend node asks for the enrollment.</span>
+                </div>
+                <textarea className="codebox one-line" readOnly value={oneLinerJson}/>
+                <details>
+                  <summary className="muted" style={{ cursor:"pointer" }}>Pretty JSON</summary>
+                  <textarea className="codebox" readOnly value={prettyJson}/>
+                </details>
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                  <button type="button" className="btn" disabled={!oneLinerJson} onClick={() => copy(oneLinerJson)}>Copy JSON</button>
+                  <button className="btn primary" onClick={() => setStep("install")}>Next</button>
+                </div>
+                <div className={"notice-slot " + (notice ? "show " + (notice.ok ? "ok" : "err") : "")} aria-live="polite">{notice?.msg}</div>
               </div>
-            </form>
-          )}
-          {result && (
-            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-              <div className="alert" style={{ color:"var(--ok)", background:"var(--ok-soft)", borderColor:"transparent" }}>
-                <strong>Enrollment created.</strong><span className="muted">Use this JSON in the backend node setup.</span>
+            )}
+            {step === "install" && result && (
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div className="success-card">
+                  <strong>Start the backend node</strong>
+                  <span>Run the node in an interactive console. When prompted for the enrollment JSON, paste what you copied.</span>
+                </div>
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+                  <button className="btn" onClick={() => setStep("enrollment")}>Back</button>
+                  <button className="btn primary" onClick={onClose}>Done</button>
+                </div>
               </div>
-              <textarea className="codebox" readOnly value={enrollmentJson}/>
-              <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
-                <button className="btn" onClick={copy}>Copy JSON</button>
-                <button className="btn primary" onClick={onClose}>Done</button>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </React.Fragment>
@@ -1573,15 +2591,29 @@ function EnrollNodeDrawer({ result, onClose, onCreated }) {
 }
 
 // ---------- Alarms ----------
+/**
+ * Renders the alarms page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function AlarmsPage({ globalSearch = "" }) {
   const alarms = useResource(() => PatchAPI.alarms());
   useLiveResource(alarms, 5_000);
+  /**
+   * Resolves resolve configuration.
+   *
+   * @param id Identifier used to locate the target record.
+   */
   const resolve = async (id) => { try { await PatchAPI.resolveAlarm(id); } finally { alarms.reload(); } };
+  const [resolvingAll, setResolvingAll] = React.useState(false);
+  const resolveAll = async () => { setResolvingAll(true); try { await PatchAPI.resolveAllAlarms(); } finally { setResolvingAll(false); alarms.reload(); } };
   const rows = (alarms.data || []).filter(a => textMatches(globalSearch, [a.message, a.deviceId, a.severity, a.id]));
   return (
     <div className="page">
       <div className="page-head">
         <div><h2>Alarms</h2><p>{alarms.loading ? "…" : `${rows.length} active across the fleet`}</p></div>
+        {rows.length > 0 && <button className="btn" disabled={resolvingAll} onClick={resolveAll}>{resolvingAll ? "Resolving…" : "Resolve all"}</button>}
       </div>
       <div className="card">
         {alarms.error && <div style={{ padding:16 }}><ErrorAlert error={alarms.error} onRetry={alarms.reload}/></div>}
@@ -1606,6 +2638,12 @@ function AlarmsPage({ globalSearch = "" }) {
 }
 
 // ---------- Audit ----------
+/**
+ * Renders the audit page UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function AuditPage({ globalSearch = "" }) {
   const audit = useResource(() => PatchAPI.audit(100));
   useLiveResource(audit, 10_000);
@@ -1639,6 +2677,10 @@ function AuditPage({ globalSearch = "" }) {
 }
 
 // ---------- SIEM ----------
+/**
+ * Renders the siem page UI.
+ * @returns The result produced by the operation.
+ */
 function SiemPage() {
   const [tenantId, setTenantId] = useState("default");
   const [form, setForm] = useState(defaultSiemConfig());
@@ -1652,6 +2694,12 @@ function SiemPage() {
     if (config.data?.config) setForm(mergeSiemConfig(config.data.config));
   }, [config.data]);
 
+  /**
+   * Sets the set value.
+   *
+   * @param path Filesystem or URL path used by the operation.
+   * @param value Value to read, render, or store.
+   */
   const set = (path, value) => {
     setForm(prev => {
       const next = JSON.parse(JSON.stringify(prev));
@@ -1663,6 +2711,10 @@ function SiemPage() {
     });
   };
 
+  /**
+   * Handles the payload operation.
+   * @returns The result produced by the operation.
+   */
   const payload = () => {
     const next = mergeSiemConfig(form);
     if (!next.webhook.url) delete next.webhook;
@@ -1671,6 +2723,11 @@ function SiemPage() {
     return next;
   };
 
+  /**
+   * Handles the run operation.
+   *
+   * @param kind kind supplied to the function.
+   */
   const run = async (kind) => {
     setBusy(kind); setNotice(null);
     try {
@@ -1832,6 +2889,10 @@ function SiemPage() {
   );
 }
 
+/**
+ * Handles the default siem config operation.
+ * @returns The result produced by the operation.
+ */
 function defaultSiemConfig() {
   return {
     mode: "standard",
@@ -1842,6 +2903,12 @@ function defaultSiemConfig() {
   };
 }
 
+/**
+ * Handles the merge siem config operation.
+ *
+ * @param config Configuration object used by the operation.
+ * @returns The result produced by the operation.
+ */
 function mergeSiemConfig(config) {
   const base = defaultSiemConfig();
   return {
@@ -1855,6 +2922,10 @@ function mergeSiemConfig(config) {
 }
 
 // ---------- Security Posture ----------
+/**
+ * Renders the security posture page UI.
+ * @returns The result produced by the operation.
+ */
 function SecurityPosturePage() {
   const [tenantId, setTenantId] = useState("default");
   const [notice, setNotice] = useState(null);
@@ -1865,10 +2936,16 @@ function SecurityPosturePage() {
   const findings = report?.findings || [];
   const safeFixCount = findings.filter(f => f.autoFixAvailable && f.severity !== "critical").length;
 
+  /**
+   * Handles the rerun operation.
+   */
   const rerun = () => {
     setNotice(null);
     posture.reload(false);
   };
+  /**
+   * Handles the apply safe operation.
+   */
   const applySafe = async () => {
     setBusy("fix");
     setNotice(null);
@@ -1882,6 +2959,9 @@ function SecurityPosturePage() {
       setBusy("");
     }
   };
+  /**
+   * Handles the export json operation.
+   */
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1980,6 +3060,12 @@ function SecurityPosturePage() {
   );
 }
 
+/**
+ * Renders the security finding card UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function SecurityFindingCard({ finding, onFix, busy }) {
   return (
     <div className={`posture-finding ${finding.severity}`}>
@@ -2003,12 +3089,31 @@ function SecurityFindingCard({ finding, onFix, busy }) {
   );
 }
 
+/**
+ * Handles the severity tone operation.
+ *
+ * @param severity severity supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function severityTone(severity) {
   return severity === "critical" ? "crit" : severity === "high" || severity === "medium" ? "warn" : "accent";
 }
+/**
+ * Handles the mode tone operation.
+ *
+ * @param mode mode supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function modeTone(mode) {
   return mode === "tinfoil" ? "crit" : mode === "strict" ? "ok" : "warn";
 }
+/**
+ * Handles the enterprise verdict operation.
+ *
+ * @param score score supplied to the function.
+ * @param criticalCount critical count supplied to the function.
+ * @returns The result produced by the operation.
+ */
 function enterpriseVerdict(score, criticalCount) {
   if (criticalCount > 0) return "Not enterprise-ready yet";
   if (score >= 85) return "Enterprise-ready posture";
@@ -2017,6 +3122,12 @@ function enterpriseVerdict(score, criticalCount) {
 }
 
 // ---------- Device drawer ----------
+/**
+ * Renders the device drawer UI.
+ *
+ * @param props Component props supplied by the caller.
+ * @returns The result produced by the operation.
+ */
 function DeviceDrawer({ deviceId, onClose }) {
   const detail = useResource(() => PatchAPI.device(deviceId), [deviceId]);
   useLiveResource(detail, 2_500);
@@ -2038,7 +3149,13 @@ function DeviceDrawer({ deviceId, onClose }) {
   const platform = d?.platform || (/(windows|win)/i.test(d?.os || "") ? "windows" : "linux");
   const online = d?.lastSeenAt ? Date.now() - new Date(d.lastSeenAt).getTime() < 2 * 60_000 : false;
 
+  /**
+   * Handles the refresh operation.
+   */
   const refresh = async () => { try { await PatchAPI.refreshInventory(deviceId); } finally { detail.reload(); } };
+  /**
+   * Updates the all record or state.
+   */
   const updateAll = async () => {
     try {
       const result = await PatchAPI.updateAllOutdated(deviceId);
@@ -2052,6 +3169,11 @@ function DeviceDrawer({ deviceId, onClose }) {
       detail.reload();
     }
   };
+  /**
+   * Updates the app record or state.
+   *
+   * @param app app supplied to the function.
+   */
   const updateApp = async (app) => {
     const key = `${app.name}|${app.publisher || ""}`;
     if (queuingApp === key) return;
@@ -2163,7 +3285,1213 @@ function DeviceDrawer({ deviceId, onClose }) {
   );
 }
 
+// ── SSO Settings Page ──────────────────────────────────────────────────────
+
+const SSO_PROVIDER_LABELS = {
+  microsoft: 'Microsoft Entra ID',
+  google:    'Google Workspace',
+  github:    'GitHub',
+  okta:      'Okta',
+  oidc:      'Generic OIDC',
+};
+
+const SSO_PROVIDER_META = [
+  { type: 'microsoft', label: 'Microsoft Entra ID', desc: 'Azure AD · Office 365', badge: 'Popular' },
+  { type: 'google',    label: 'Google Workspace',   desc: 'Google accounts' },
+  { type: 'github',    label: 'GitHub',             desc: 'GitHub.com or GHES' },
+  { type: 'okta',      label: 'Okta',               desc: 'Okta Universal Directory' },
+  { type: 'oidc',      label: 'Generic OIDC',       desc: 'Any OIDC-compliant IdP' },
+];
+
+const SSO_ROLE_OPTIONS = [
+  { value: 'viewer',        label: 'Viewer' },
+  { value: 'auditor',       label: 'Auditor' },
+  { value: 'node_operator', label: 'Node Operator' },
+  { value: 'patch_manager', label: 'Patch Manager' },
+  { value: 'admin',         label: 'Admin' },
+];
+
+const SSO_SETUP_GUIDE = {
+  microsoft: {
+    portalUrl:   'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+    portalLabel: 'Open Azure Portal',
+    steps: [
+      { text: 'Go to Azure Portal → App registrations' },
+      { text: 'Click New registration and give the app a name (e.g. "1Patch")' },
+      { text: 'Choose Supported account types — Single tenant for your org only, or Multitenant / organizations for any work account' },
+      { text: 'Under Redirect URI, select Web and paste this callback URL:', uri: true },
+      { text: 'Click Register — note the Application (client) ID and Directory (tenant) ID from the Overview page' },
+      { text: 'Go to Certificates & secrets → New client secret → copy the Value (not the Secret ID)' },
+    ],
+    tip: {
+      title: 'Security recommendations',
+      items: [
+        {
+          heading: 'Restrict sign-in to specific groups',
+          text: 'By default, any user in your tenant can authenticate. Set the app to require explicit assignment.',
+          steps: [
+            'Open Enterprise applications and find the app you just registered',
+            'Under Properties, set "Assignment required?" to Yes',
+            'Under Users and groups, add the groups or users allowed to sign in to 1Patch',
+          ],
+          linkUrl:   'https://portal.azure.com/#view/Microsoft_AAD_IAM/StartboardApplicationsMenuBlade/~/AppAppsPreview',
+          linkLabel: 'Enterprise applications',
+        },
+        {
+          heading: 'Configure Conditional Access',
+          text: 'Enforce MFA, require compliant devices, or restrict by location for all 1Patch sign-ins.',
+          steps: [
+            'Go to Azure AD → Security → Conditional Access → New policy',
+            'Under Cloud apps, select the 1Patch app registration',
+            'Add conditions (device compliance, named location, sign-in risk) and require MFA as a grant control',
+          ],
+          linkUrl:   'https://portal.azure.com/#view/Microsoft_AAD_ConditionalAccess/CaTemplates.ReactView',
+          linkLabel: 'Conditional Access',
+        },
+        {
+          heading: 'Rotate client secrets before expiry',
+          text: 'Client secrets have a fixed expiry. Letting one expire will break SSO until rotated.',
+          steps: [
+            'In App registrations → Certificates & secrets, note the expiry date of your secret',
+            'Create a new secret before it expires, update it in 1Patch (Settings → Edit), then delete the old one',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Monitor sign-in activity',
+          text: 'Review Entra sign-in logs regularly to detect anomalous or unexpected access.',
+          steps: [
+            'Azure AD → Monitoring → Sign-in logs — filter by your app to see all authentications',
+            'Consider exporting logs to a Log Analytics workspace or SIEM via Diagnostic settings',
+          ],
+          linkUrl:   'https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/SignIns',
+          linkLabel: 'Sign-in logs',
+        },
+      ],
+    },
+  },
+  google: {
+    portalUrl:   'https://console.cloud.google.com/apis/credentials',
+    portalLabel: 'Open Google Cloud Console',
+    steps: [
+      { text: 'Go to APIs & Services → Credentials' },
+      { text: 'Click Create credentials → OAuth client ID' },
+      { text: 'Application type: Web application' },
+      { text: 'Under Authorized redirect URIs, paste this URL:', uri: true },
+      { text: 'Copy the Client ID and Client secret from the confirmation dialog' },
+    ],
+    tip: {
+      title: 'Security recommendations',
+      items: [
+        {
+          heading: 'Restrict to your Google Workspace org',
+          text: 'By default, any Google account can authenticate — including personal accounts.',
+          steps: [
+            'Go to APIs & Services → OAuth consent screen',
+            'Set User type to Internal to limit sign-in to your Workspace org only',
+            'For partner domains, use the "Allowed email domains" field in the next step instead',
+          ],
+          linkUrl:   'https://console.cloud.google.com/apis/credentials/consent',
+          linkLabel: 'OAuth consent screen',
+        },
+        {
+          heading: 'Configure Context-Aware Access',
+          text: 'Google Workspace\'s equivalent of Conditional Access — restrict by device trust level, location, or IP range.',
+          steps: [
+            'In Google Admin → Security → Access and data control → Context-Aware Access',
+            'Create an access level (e.g. require corp device or specific IP range)',
+            'Assign the access level to the OAuth app under "App access control"',
+          ],
+          linkUrl:   'https://admin.google.com/ac/contextawareaccess/accesslevel',
+          linkLabel: 'Context-Aware Access',
+        },
+        {
+          heading: 'Enforce 2-Step Verification',
+          text: 'Require 2SV for all users in your org before they can authenticate to any app including 1Patch.',
+          steps: [
+            'Google Admin → Security → 2-Step Verification → turn on enforcement for your org',
+          ],
+          linkUrl:   'https://admin.google.com/ac/security/2sv',
+          linkLabel: 'Google Admin 2SV',
+        },
+        {
+          heading: 'Review OAuth app access',
+          text: 'Audit which apps have access to your users\' data in the Google security dashboard.',
+          steps: [
+            'Google Admin → Security → API controls → App access control — review and revoke as needed',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+      ],
+    },
+  },
+  github: {
+    portalUrl:   'https://github.com/settings/developers',
+    portalLabel: 'Open GitHub Developer Settings',
+    steps: [
+      { text: 'Go to Settings → Developer settings → OAuth Apps → New OAuth App' },
+      { text: 'Fill in Application name and Homepage URL' },
+      { text: 'Under Authorization callback URL, paste this URL:', uri: true },
+      { text: 'Click Register application, then generate a new client secret' },
+    ],
+    tip: {
+      title: 'Security recommendations',
+      items: [
+        {
+          heading: 'GitHub OAuth cannot restrict by org membership',
+          text: 'Unlike Entra or Okta, GitHub OAuth Apps have no native group restriction. Use these controls instead.',
+          steps: [
+            'Set "Allowed email domains" in the next step to your company domain — this blocks personal GitHub accounts',
+            'Keep auto-provision off and manually approve each user after their first sign-in',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Require 2FA for all organization members',
+          text: 'Enforce two-factor authentication for your GitHub org — accounts without 2FA will be blocked.',
+          steps: [
+            'GitHub → Your organization → Settings → Authentication security → Require two-factor authentication',
+          ],
+          linkUrl:   'https://github.com/organizations',
+          linkLabel: 'GitHub Organization settings',
+        },
+        {
+          heading: 'Rotate the client secret periodically',
+          text: 'GitHub client secrets don\'t expire automatically, but rotating them limits exposure if leaked.',
+          steps: [
+            'In your OAuth App settings, click "Generate a new client secret"',
+            'Update the secret in 1Patch (Settings → Edit), then delete the old one from GitHub',
+          ],
+          linkUrl:   'https://github.com/settings/developers',
+          linkLabel: 'GitHub Developer settings',
+        },
+      ],
+    },
+  },
+  okta: {
+    portalUrl:   null,
+    portalLabel: 'Open Okta Admin Console',
+    steps: [
+      { text: 'Go to Applications → Create App Integration' },
+      { text: 'Choose OIDC – OpenID Connect → Web Application' },
+      { text: 'Under Sign-in redirect URIs, paste this URL:', uri: true },
+      { text: 'Copy the Client ID and Client secret, and note your Okta domain' },
+    ],
+    tip: {
+      title: 'Security recommendations',
+      items: [
+        {
+          heading: 'Restrict sign-in to specific groups',
+          text: 'By default the app is accessible to everyone in your org. Limit it to specific groups.',
+          steps: [
+            'Open the application in Okta Admin Console',
+            'Go to the Assignments tab → change from "Everyone" to specific groups',
+            'Add only the groups that should have access to 1Patch',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Configure an MFA sign-on policy',
+          text: 'Require MFA specifically for 1Patch sign-ins, independently of your global Okta policy.',
+          steps: [
+            'In the application, go to the Sign On tab → Sign On Policy',
+            'Add a rule that requires MFA for all users (or a subset based on group or network zone)',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Set session and token lifetime',
+          text: 'Limit how long an Okta session is valid to reduce the window of a stolen token.',
+          steps: [
+            'In Sign On Policy, configure "Max Okta session" and set a reasonable idle/max duration',
+            'Consider setting a short access token lifetime for API-facing apps',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Monitor with the Okta System Log',
+          text: 'Review authentication events and failed logins for 1Patch in the Okta System Log.',
+          steps: [
+            'Okta Admin Console → Reports → System Log — filter by your app client ID',
+            'Set up a log streaming integration to send events to your SIEM',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+      ],
+    },
+  },
+  oidc: {
+    portalUrl:   null,
+    portalLabel: null,
+    steps: [
+      { text: 'Register 1Patch as an OAuth 2.0 client in your identity provider' },
+      { text: 'Set the redirect / callback URI to this URL:', uri: true },
+      { text: 'Ensure the provider exposes /.well-known/openid-configuration (OIDC discovery)' },
+      { text: 'Note the Client ID, Client secret, and the discovery base URL' },
+    ],
+    tip: {
+      title: 'Security recommendations',
+      items: [
+        {
+          heading: 'Restrict access at the identity provider level',
+          text: 'Most OIDC providers support app assignment or group-based access — check your provider\'s documentation.',
+          steps: [
+            'Use the "Allowed email domains" field in the next step as a baseline domain filter',
+            'Disable auto-provision and manually approve users for tighter control',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Use short-lived tokens where possible',
+          text: 'Configure your IdP to issue short access token lifetimes to reduce the impact of a leaked token.',
+          steps: [
+            'Check your provider\'s token lifetime settings and set access tokens to 15–60 minutes',
+            '1Patch uses server-side sessions so users will re-authenticate via SSO when the token expires',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+        {
+          heading: 'Rotate the client secret regularly',
+          text: 'Rotate credentials at least annually, or immediately if you suspect exposure.',
+          steps: [
+            'Generate a new client secret in your IdP',
+            'Update it in 1Patch (Settings → Edit provider) before deleting the old one',
+          ],
+          linkUrl:   null,
+          linkLabel: null,
+        },
+      ],
+    },
+  },
+};
+
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+  return (
+    <button type="button" className={`sso-copy-btn ${copied ? 'copied' : ''}`} onClick={copy}>
+      {copied ? <>{Icon.check} Copied</> : <>{Icon.copy} Copy</>}
+    </button>
+  );
+}
+
+function ToggleSwitch({ checked, onChange, label }) {
+  return (
+    <label className="toggle-switch" aria-label={label}>
+      <input type="checkbox" checked={checked} onChange={onChange}/>
+      <span className="toggle-track"/>
+    </label>
+  );
+}
+
+// ── Wizard step indicator ──────────────────────────────────────────────────
+
+function SsoWizardSteps({ current }) {
+  const steps = ['Provider', 'Setup', 'Credentials', 'Access'];
+  return (
+    <div className="sso-wizard-steps">
+      {steps.map((label, i) => {
+        const n = i + 1;
+        const state = n < current ? 'done' : n === current ? 'active' : 'idle';
+        return (
+          <React.Fragment key={n}>
+            {i > 0 && <div className={`sso-wizard-connector ${n <= current ? 'filled' : ''}`}/>}
+            <div className={`sso-wizard-step-dot ${state}`}>
+              <div className="sso-wizard-dot-num">
+                {state === 'done' ? Icon.check : n}
+              </div>
+              <span className="sso-wizard-dot-label">{label}</span>
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Step 1: Choose provider type ──────────────────────────────────────────
+
+function SsoTypeStep({ type, setType, onNext, onCancel }) {
+  return (
+    <div className="sso-wizard-body">
+      <div className="sso-wizard-header">
+        <h3>Choose an identity provider</h3>
+        <p>Select the SSO provider your organization uses.</p>
+      </div>
+      <div className="sso-type-grid">
+        {SSO_PROVIDER_META.map(p => (
+          <button key={p.type} type="button"
+            className={`sso-type-card ${type === p.type ? 'selected' : ''}`}
+            onClick={() => setType(p.type)}
+          >
+            {p.badge && <span className="sso-type-badge">{p.badge}</span>}
+            <div className="sso-type-card-icon">
+              <SsoProviderIcon type={p.type} size={26}/>
+            </div>
+            <span className="sso-type-card-label">{p.label}</span>
+            <span className="sso-type-card-desc">{p.desc}</span>
+          </button>
+        ))}
+      </div>
+      <div className="sso-wizard-actions">
+        <button type="button" className="btn ghost" onClick={onCancel}>Cancel</button>
+        <button type="button" className="btn primary" onClick={onNext}>
+          Continue <span className="btn-icon">{Icon.arrowR}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Setup tip callout ─────────────────────────────────────────────────────
+
+function SsoSetupTip({ tip }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="sso-setup-tip">
+      <button type="button" className="sso-setup-tip-toggle" onClick={() => setOpen(o => !o)}>
+        <span className="sso-setup-tip-icon">{Icon.lightbulb}</span>
+        <strong>{tip.title}</strong>
+        <span className={`sso-setup-tip-chevron ${open ? 'open' : ''}`}>{Icon.arrowR}</span>
+      </button>
+      {open && (
+        <div className="sso-setup-tip-body">
+          {tip.items.map((item, i) => (
+            <div key={i} className="sso-setup-tip-item">
+              <div className="sso-setup-tip-item-head">
+                <span className="sso-setup-tip-item-title">{item.heading}</span>
+                {item.linkUrl && (
+                  <a href={item.linkUrl} target="_blank" rel="noopener noreferrer" className="sso-setup-tip-link">
+                    {item.linkLabel} <span className="btn-icon">{Icon.externalLink}</span>
+                  </a>
+                )}
+              </div>
+              <p className="sso-setup-tip-item-text">{item.text}</p>
+              {item.steps && (
+                <ol className="sso-setup-tip-steps">
+                  {item.steps.map((s, j) => <li key={j}>{s}</li>)}
+                </ol>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Step 2: Setup guide ───────────────────────────────────────────────────
+
+function SsoSetupStep({ type, callbackUrl, onNext, onBack }) {
+  const guide = SSO_SETUP_GUIDE[type] || SSO_SETUP_GUIDE.oidc;
+  const meta  = SSO_PROVIDER_META.find(p => p.type === type);
+  return (
+    <div className="sso-wizard-body">
+      <div className="sso-wizard-header">
+        <div className="sso-wizard-header-row">
+          <span className="sso-wizard-provider-icon"><SsoProviderIcon type={type} size={20}/></span>
+          <h3>Set up {meta?.label}</h3>
+        </div>
+        <p>Register 1Patch in your identity provider before entering credentials.</p>
+      </div>
+
+      <div className="sso-setup-guide">
+        <div className="sso-setup-guide-head">
+          <span className="sso-setup-guide-title">Setup instructions</span>
+          {guide.portalUrl && (
+            <a href={guide.portalUrl} target="_blank" rel="noopener noreferrer" className="sso-setup-guide-link">
+              {guide.portalLabel} <span className="btn-icon">{Icon.externalLink}</span>
+            </a>
+          )}
+        </div>
+        <ol className="sso-setup-guide-steps">
+          {guide.steps.map((step, i) => (
+            <li key={i} className="sso-setup-guide-step">
+              <div className="sso-setup-guide-step-num">{i + 1}</div>
+              <div className="sso-setup-guide-step-body">
+                <span>{step.text}</span>
+                {step.uri && (
+                  <div className="sso-callback-uri">
+                    <span className="sso-callback-uri-url">{callbackUrl}</span>
+                    <CopyButton text={callbackUrl}/>
+                  </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+        {guide.tip && <SsoSetupTip tip={guide.tip}/>}
+      </div>
+
+      <div className="sso-wizard-actions">
+        <button type="button" className="btn ghost" onClick={onBack}>
+          <span className="btn-icon">{Icon.arrowL}</span> Back
+        </button>
+        <button type="button" className="btn primary" onClick={onNext}>
+          Continue <span className="btn-icon">{Icon.arrowR}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 3: Credentials ───────────────────────────────────────────────────
+
+function SsoCredsStep({ type, name, setName, clientId, setClientId, clientSecret, setClientSecret,
+  tenantId, setTenantId, domain, setDomain, discoveryUrl, setDiscoveryUrl, onNext, onBack }) {
+
+  const meta = SSO_PROVIDER_META.find(p => p.type === type);
+  const canContinue = name.trim() && clientId.trim() && clientSecret.trim()
+    && (type !== 'microsoft' || tenantId.trim())
+    && (type !== 'okta'      || domain.trim())
+    && (type !== 'oidc'      || discoveryUrl.trim());
+
+  return (
+    <div className="sso-wizard-body">
+      <div className="sso-wizard-header">
+        <div className="sso-wizard-header-row">
+          <span className="sso-wizard-provider-icon"><SsoProviderIcon type={type} size={20}/></span>
+          <h3>{meta?.label} credentials</h3>
+        </div>
+        <p>Enter the app registration details from your identity provider.</p>
+      </div>
+
+      <div className="sso-wizard-fields">
+        <label className="field">
+          <span>Display name</span>
+          <input type="text" value={name} onChange={e => setName(e.target.value)}
+            placeholder="e.g. Contoso AD" autoFocus required/>
+        </label>
+
+        {type === 'microsoft' && (
+          <label className="field">
+            <span>Directory (Tenant) ID</span>
+            <input type="text" value={tenantId} onChange={e => setTenantId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required/>
+            <span className="field-sub">Use <code>common</code> for multi-tenant, <code>organizations</code> for any work account, or your specific tenant UUID</span>
+          </label>
+        )}
+
+        <label className="field">
+          <span>Application (Client) ID</span>
+          <input type="text" value={clientId} onChange={e => setClientId(e.target.value)}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required/>
+        </label>
+
+        <label className="field">
+          <span>Client secret</span>
+          <input type="password" autoComplete="new-password" value={clientSecret}
+            onChange={e => setClientSecret(e.target.value)}
+            placeholder="Paste the client secret value" required/>
+          {type === 'microsoft' && (
+            <span className="field-sub">Copy the <strong>Value</strong> from Certificates &amp; secrets — not the Secret ID</span>
+          )}
+        </label>
+
+        {type === 'okta' && (
+          <label className="field">
+            <span>Okta domain</span>
+            <input type="text" value={domain} onChange={e => setDomain(e.target.value)}
+              placeholder="dev-12345.okta.com" required/>
+          </label>
+        )}
+
+        {type === 'oidc' && (
+          <label className="field">
+            <span>Discovery base URL</span>
+            <input type="url" value={discoveryUrl} onChange={e => setDiscoveryUrl(e.target.value)}
+              placeholder="https://idp.example.com" required/>
+            <span className="field-sub">/<code>.well-known/openid-configuration</code> is appended automatically</span>
+          </label>
+        )}
+      </div>
+
+      <div className="sso-wizard-actions">
+        <button type="button" className="btn ghost" onClick={onBack}>
+          <span className="btn-icon">{Icon.arrowL}</span> Back
+        </button>
+        <button type="button" className="btn primary" onClick={onNext} disabled={!canContinue}>
+          Continue <span className="btn-icon">{Icon.arrowR}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Step 4: Access control ────────────────────────────────────────────────
+
+function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefaultRole,
+  autoProvision, setAutoProvision, enabled, setEnabled, onSubmit, onBack, saving, saveError }) {
+  return (
+    <div className="sso-wizard-body">
+      <div className="sso-wizard-header">
+        <h3>Access control</h3>
+        <p>Configure who can sign in and what permissions they receive.</p>
+      </div>
+
+      <div className="sso-wizard-fields">
+        <label className="field">
+          <span>Allowed email domains</span>
+          <input type="text" value={allowedDomains} onChange={e => setAllowedDomains(e.target.value)}
+            placeholder="company.com, partner.com"/>
+          <span className="field-sub">Comma-separated. Leave blank to allow any verified account from this provider.</span>
+        </label>
+
+        <div className="sso-toggle-card">
+          <div>
+            <strong>Auto-provision new users</strong>
+            <p>Automatically create accounts for first-time SSO users.</p>
+          </div>
+          <ToggleSwitch checked={autoProvision} onChange={e => setAutoProvision(e.target.checked)} label="Auto-provision"/>
+        </div>
+
+        {autoProvision && (
+          <label className="field">
+            <span>Default role for auto-provisioned users</span>
+            <select value={defaultRole} onChange={e => setDefaultRole(e.target.value)}>
+              {SSO_ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+        )}
+
+        <div className="sso-toggle-card">
+          <div>
+            <strong>Enable provider</strong>
+            <p>Show this provider on the login screen and accept sign-ins.</p>
+          </div>
+          <ToggleSwitch checked={enabled} onChange={e => setEnabled(e.target.checked)} label="Enable provider"/>
+        </div>
+      </div>
+
+      {saveError && <div className="banner error" style={{ marginBottom: 12 }}>{saveError}</div>}
+
+      <div className="sso-wizard-actions">
+        <button type="button" className="btn ghost" onClick={onBack} disabled={saving}>
+          <span className="btn-icon">{Icon.arrowL}</span> Back
+        </button>
+        <button type="button" className="btn primary" onClick={onSubmit} disabled={saving}>
+          {saving ? <span className="search-spinner"/> : null}
+          Add provider
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Full add-provider wizard ──────────────────────────────────────────────
+
+function SsoWizard({ onSave, onCancel, saving, saveError }) {
+  const [step,          setStep]          = useState(1);
+  const [type,          setType]          = useState('microsoft');
+  const [name,          setName]          = useState('');
+  const [clientId,      setClientId]      = useState('');
+  const [clientSecret,  setClientSecret]  = useState('');
+  const [tenantId,      setTenantId]      = useState('');
+  const [domain,        setDomain]        = useState('');
+  const [discoveryUrl,  setDiscoveryUrl]  = useState('');
+  const [allowedDomains, setAllowedDomains] = useState('');
+  const [defaultRole,   setDefaultRole]   = useState('viewer');
+  const [autoProvision, setAutoProvision] = useState(false);
+  const [enabled,       setEnabled]       = useState(true);
+
+  const callbackUrl = `${window.location.origin}/auth/sso/callback`;
+
+  const submit = () => {
+    const dto = {
+      type, name, clientId, clientSecret, enabled, autoProvision, defaultRole,
+      allowedDomains: allowedDomains.split(',').map(s => s.trim()).filter(Boolean),
+    };
+    if (type === 'microsoft') dto.tenantId = tenantId;
+    if (type === 'okta')      dto.domain = domain;
+    if (type === 'oidc')      dto.discoveryUrl = discoveryUrl;
+    onSave(dto);
+  };
+
+  return (
+    <div className="sso-wizard">
+      <SsoWizardSteps current={step}/>
+      {step === 1 && (
+        <SsoTypeStep type={type} setType={setType}
+          onNext={() => setStep(2)} onCancel={onCancel}/>
+      )}
+      {step === 2 && (
+        <SsoSetupStep type={type} callbackUrl={callbackUrl}
+          onNext={() => setStep(3)} onBack={() => setStep(1)}/>
+      )}
+      {step === 3 && (
+        <SsoCredsStep
+          type={type}
+          name={name} setName={setName}
+          clientId={clientId} setClientId={setClientId}
+          clientSecret={clientSecret} setClientSecret={setClientSecret}
+          tenantId={tenantId} setTenantId={setTenantId}
+          domain={domain} setDomain={setDomain}
+          discoveryUrl={discoveryUrl} setDiscoveryUrl={setDiscoveryUrl}
+          onNext={() => setStep(4)} onBack={() => setStep(2)}/>
+      )}
+      {step === 4 && (
+        <SsoAccessStep
+          allowedDomains={allowedDomains} setAllowedDomains={setAllowedDomains}
+          defaultRole={defaultRole} setDefaultRole={setDefaultRole}
+          autoProvision={autoProvision} setAutoProvision={setAutoProvision}
+          enabled={enabled} setEnabled={setEnabled}
+          onSubmit={submit} onBack={() => setStep(3)}
+          saving={saving} saveError={saveError}/>
+      )}
+    </div>
+  );
+}
+
+// ── Edit form (compact, for existing providers) ───────────────────────────
+
+function SsoEditForm({ initial, onSave, onCancel, saving, saveError }) {
+  const [name,          setName]          = useState(initial?.name          ?? '');
+  const [clientId,      setClientId]      = useState(initial?.clientId      ?? '');
+  const [clientSecret,  setClientSecret]  = useState('');
+  const [tenantId,      setTenantId]      = useState(initial?.tenantId      ?? '');
+  const [domain,        setDomain]        = useState(initial?.domain        ?? '');
+  const [discoveryUrl,  setDiscoveryUrl]  = useState(initial?.discoveryUrl  ?? '');
+  const [allowedDomains, setAllowedDomains] = useState((initial?.allowedDomains ?? []).join(', '));
+  const [defaultRole,   setDefaultRole]   = useState(initial?.defaultRole   ?? 'viewer');
+  const [autoProvision, setAutoProvision] = useState(initial?.autoProvision ?? false);
+  const [enabled,       setEnabled]       = useState(initial?.enabled       ?? true);
+
+  const submit = (e) => {
+    e.preventDefault();
+    const dto = { name, clientId, enabled, autoProvision, defaultRole,
+      allowedDomains: allowedDomains.split(',').map(s => s.trim()).filter(Boolean) };
+    if (clientSecret) dto.clientSecret = clientSecret;
+    if (initial?.type === 'microsoft') dto.tenantId = tenantId;
+    if (initial?.type === 'okta')      dto.domain = domain;
+    if (initial?.type === 'oidc')      dto.discoveryUrl = discoveryUrl;
+    onSave(dto);
+  };
+
+  return (
+    <form className="sso-edit-form" onSubmit={submit}>
+      <div className="sso-wizard-header" style={{ paddingBottom: 16, marginBottom: 16, borderBottom: '1px solid var(--line)' }}>
+        <div className="sso-wizard-header-row">
+          <span className="sso-wizard-provider-icon"><SsoProviderIcon type={initial?.type} size={18}/></span>
+          <h3 style={{ margin: 0 }}>Edit {SSO_PROVIDER_LABELS[initial?.type] || 'provider'}</h3>
+        </div>
+      </div>
+
+      <div className="sso-wizard-fields">
+        <div className="form-grid-2">
+          <label className="field">
+            <span>Display name</span>
+            <input type="text" value={name} onChange={e => setName(e.target.value)} required/>
+          </label>
+          <label className="field">
+            <span>Client ID</span>
+            <input type="text" value={clientId} onChange={e => setClientId(e.target.value)} required/>
+          </label>
+        </div>
+
+        <label className="field">
+          <span>Client secret <span className="field-sub" style={{ marginLeft: 0 }}>(leave blank to keep current)</span></span>
+          <input type="password" autoComplete="new-password" value={clientSecret}
+            onChange={e => setClientSecret(e.target.value)} placeholder="••••••••"/>
+        </label>
+
+        {initial?.type === 'microsoft' && (
+          <label className="field">
+            <span>Tenant ID</span>
+            <input type="text" value={tenantId} onChange={e => setTenantId(e.target.value)} required/>
+          </label>
+        )}
+        {initial?.type === 'okta' && (
+          <label className="field">
+            <span>Okta domain</span>
+            <input type="text" value={domain} onChange={e => setDomain(e.target.value)} required/>
+          </label>
+        )}
+        {initial?.type === 'oidc' && (
+          <label className="field">
+            <span>Discovery base URL</span>
+            <input type="url" value={discoveryUrl} onChange={e => setDiscoveryUrl(e.target.value)} required/>
+          </label>
+        )}
+
+        <label className="field">
+          <span>Allowed email domains</span>
+          <input type="text" value={allowedDomains} onChange={e => setAllowedDomains(e.target.value)}
+            placeholder="company.com, partner.com"/>
+          <span className="field-sub">Comma-separated. Leave blank to allow any verified account.</span>
+        </label>
+
+        <div className="sso-toggle-card">
+          <div>
+            <strong>Auto-provision new users</strong>
+            <p>Automatically create accounts for first-time SSO users.</p>
+          </div>
+          <ToggleSwitch checked={autoProvision} onChange={e => setAutoProvision(e.target.checked)} label="Auto-provision"/>
+        </div>
+
+        {autoProvision && (
+          <label className="field">
+            <span>Default role for auto-provisioned users</span>
+            <select value={defaultRole} onChange={e => setDefaultRole(e.target.value)}>
+              {SSO_ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+        )}
+
+        <div className="sso-toggle-card">
+          <div>
+            <strong>Enable provider</strong>
+            <p>Show this provider on the login screen and accept sign-ins.</p>
+          </div>
+          <ToggleSwitch checked={enabled} onChange={e => setEnabled(e.target.checked)} label="Enable provider"/>
+        </div>
+      </div>
+
+      {saveError && <div className="banner error" style={{ marginTop: 8, marginBottom: 4 }}>{saveError}</div>}
+
+      <div className="sso-form-actions">
+        <button type="button" className="btn ghost" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="submit" className="btn primary" disabled={saving}>
+          {saving ? <span className="search-spinner"/> : null}
+          Save changes
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ── Provider card (replaces table row) ────────────────────────────────────
+
+function SsoProviderCard({ provider, onEdit, onDelete, onToggle }) {
+  return (
+    <div className={`sso-provider-card ${provider.enabled ? '' : 'sso-provider-card--off'}`}>
+      <div className="sso-provider-card-header">
+        <div className="sso-provider-card-identity">
+          <div className="sso-provider-card-icon">
+            <SsoProviderIcon type={provider.type} size={20}/>
+          </div>
+          <div>
+            <strong>{provider.name}</strong>
+            <span>{SSO_PROVIDER_LABELS[provider.type] || provider.type}</span>
+          </div>
+        </div>
+        <ToggleSwitch checked={provider.enabled} onChange={() => onToggle(provider)}
+          label={provider.enabled ? 'Disable provider' : 'Enable provider'}/>
+      </div>
+
+      <div className="sso-provider-card-meta">
+        <div className="sso-provider-card-meta-item">
+          <span className="sso-meta-label">Client ID</span>
+          <span className="sso-meta-value mono">{provider.clientId.slice(0, 8)}…</span>
+        </div>
+        <div className="sso-provider-card-meta-item">
+          <span className="sso-meta-label">Domains</span>
+          <span className="sso-meta-value">
+            {provider.allowedDomains?.length > 0 ? provider.allowedDomains.join(', ') : <span className="muted">Any</span>}
+          </span>
+        </div>
+        {provider.autoProvision && (
+          <div className="sso-provider-card-meta-item">
+            <span className="sso-meta-label">Auto-provision</span>
+            <span className="sso-meta-value">{provider.defaultRole || 'viewer'}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="sso-provider-card-footer">
+        <span className={`status-pill ${provider.enabled ? 'ok' : 'off'}`}>
+          {provider.enabled ? 'Active' : 'Disabled'}
+        </span>
+        <div style={{ flex: 1 }}/>
+        <button className="btn sm ghost" onClick={() => onEdit(provider)}>Edit</button>
+        <button className="btn sm ghost danger" onClick={() => onDelete(provider)}>Delete</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Settings page ──────────────────────────────────────────────────────────
+
+function SsoSettingsPage() {
+  const { data: providers, loading, error, reload } = useResource(() => PatchAPI.ssoProvidersAdmin());
+  const [mode,     setMode]     = useState('list');  // 'list' | 'add' | 'edit'
+  const [editing,  setEditing]  = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [saving,   setSaving]   = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  const openAdd  = () => { setSaveError(''); setMode('add'); };
+  const openEdit = (p) => { setSaveError(''); setEditing(p); setMode('edit'); };
+  const closeForm = () => { setMode('list'); setEditing(null); setSaveError(''); };
+
+  const handleSave = (dto) => {
+    setSaving(true);
+    setSaveError('');
+    const action = mode === 'edit'
+      ? PatchAPI.ssoUpdateProvider(editing.id, dto)
+      : PatchAPI.ssoCreateProvider(dto);
+    action
+      .then(() => { closeForm(); reload(); })
+      .catch(err => setSaveError(err.message || 'Save failed'))
+      .finally(() => setSaving(false));
+  };
+
+  const handleDelete = () => {
+    setSaving(true);
+    PatchAPI.ssoDeleteProvider(deleting.id)
+      .then(() => { setDeleting(null); reload(); })
+      .catch(err => setSaveError(err.message || 'Delete failed'))
+      .finally(() => setSaving(false));
+  };
+
+  const handleToggle = (provider) => {
+    PatchAPI.ssoUpdateProvider(provider.id, { enabled: !provider.enabled })
+      .then(() => reload())
+      .catch(() => {});
+  };
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h2>Settings</h2>
+          <p className="sub">Identity provider configuration for single sign-on</p>
+        </div>
+        {mode === 'list' && (
+          <button className="btn primary" onClick={openAdd}>
+            {Icon.plus} Add provider
+          </button>
+        )}
+      </div>
+
+      {mode === 'add' && (
+        <div className="card sso-wizard-card">
+          <SsoWizard onSave={handleSave} onCancel={closeForm} saving={saving} saveError={saveError}/>
+        </div>
+      )}
+
+      {mode === 'edit' && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <SsoEditForm
+            initial={editing}
+            onSave={handleSave}
+            onCancel={closeForm}
+            saving={saving}
+            saveError={saveError}
+          />
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-head">
+          <h3>Identity Providers</h3>
+          <div className="sub">{Array.isArray(providers) ? providers.length : 0} configured</div>
+        </div>
+        <div className="sso-security-note">
+          {Icon.shield}
+          <span>All SSO logins use PKCE (S256), nonce replay protection, ID token signature verification, and server-side state validation. Client secrets are stored AES-256-GCM encrypted.</span>
+        </div>
+        {loading && <div className="empty-state"><span className="search-spinner"/> Loading providers…</div>}
+        {error  && <div className="banner error" style={{ margin: 12 }}>Failed to load providers.</div>}
+        {!loading && !error && Array.isArray(providers) && providers.length === 0 && (
+          <div className="empty-state">
+            <div style={{ color: 'var(--text-3)', marginBottom: 6 }}>{Icon.shield}</div>
+            <p>No SSO providers configured.</p>
+            <p className="sub">Add a provider to enable single sign-on for your team.</p>
+            {mode === 'list' && (
+              <button className="btn primary" style={{ marginTop: 12 }} onClick={openAdd}>
+                {Icon.plus} Add your first provider
+              </button>
+            )}
+          </div>
+        )}
+        {!loading && !error && Array.isArray(providers) && providers.length > 0 && (
+          <div className="sso-providers-list">
+            {providers.map(p => (
+              <SsoProviderCard
+                key={p.id}
+                provider={p}
+                onEdit={openEdit}
+                onDelete={p => setDeleting(p)}
+                onToggle={handleToggle}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {deleting && (
+        <div className="modal-overlay" onClick={() => setDeleting(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Delete SSO provider?</h3>
+            <p>This will permanently remove <strong>{deleting.name}</strong>. Users who sign in via this provider will need to use a password or another provider.</p>
+            {saveError && <div className="banner error">{saveError}</div>}
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setDeleting(null)} disabled={saving}>Cancel</button>
+              <button className="btn danger" onClick={handleDelete} disabled={saving}>
+                {saving ? <span className="search-spinner"/> : null}
+                Delete provider
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TenantPolicySettings() {
+  const [tenantId, setTenantId] = useState('default');
+  const policy = useResource(() => PatchAPI.tenantPolicy(tenantId), [tenantId]);
+  const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    if (!policy.data) return;
+    setForm({
+      securityMode: policy.data.securityMode || 'normal',
+      requireVirusTotalForStrict: Boolean(policy.data.requireVirusTotalForStrict),
+      requireVirusTotalForTinfoil: Boolean(policy.data.requireVirusTotalForTinfoil),
+      virusTotalApiKey: policy.data.virusTotalConfigured ? '********' : '',
+      trustedSourceHosts: (policy.data.trustedSourceHosts || []).join('\n'),
+    });
+  }, [policy.data]);
+  const set = (key, value) => setForm(prev => ({ ...(prev || {}), [key]: value }));
+  const save = (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setNotice('');
+    PatchAPI.saveTenantPolicy(tenantId, {
+      securityMode: form.securityMode,
+      requireVirusTotalForStrict: form.requireVirusTotalForStrict,
+      requireVirusTotalForTinfoil: form.requireVirusTotalForTinfoil,
+      virusTotalApiKey: form.virusTotalApiKey,
+      trustedSourceHosts: form.trustedSourceHosts.split(/\r?\n|,/).map(v => v.trim()).filter(Boolean),
+    }).then(() => {
+      setNotice('Policy saved.');
+      policy.reload();
+    }).catch(err => {
+      setNotice(err.message || 'Save failed');
+    }).finally(() => setSaving(false));
+  };
+  return (
+    <div>
+      <div className="page-head">
+        <div><h2>Security policy</h2><p>Tenant guardrails, trusted sources, and BYO VirusTotal reputation</p></div>
+      </div>
+      <div className="card">
+        <form className="card-body" onSubmit={save} style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          <div className="form-grid">
+            <label className="field"><span>Tenant</span><input value={tenantId} onChange={e => setTenantId(e.target.value || 'default')}/></label>
+            <label className="field"><span>Security mode</span><select value={form?.securityMode || 'normal'} onChange={e => set('securityMode', e.target.value)}><option value="normal">Normal</option><option value="strict">Strict</option><option value="tinfoil">Tinfoil</option></select></label>
+          </div>
+          {policy.error && <ErrorAlert error={policy.error} onRetry={policy.reload}/>}
+          {policy.loading || !form ? <Skeleton h={160}/> : (
+            <React.Fragment>
+              <label className="field">
+                <span>VirusTotal API key <em className="field-hint">BYO key, stored server-side only; never sent to nodes or clients</em></span>
+                <input type="password" autoComplete="new-password" value={form.virusTotalApiKey} onChange={e => set('virusTotalApiKey', e.target.value)} placeholder={policy.data?.virusTotalConfigured ? 'Configured' : 'Paste API key'}/>
+              </label>
+              <div className="checkbox-group">
+                <label className="checkbox-label"><input type="checkbox" checked={form.requireVirusTotalForStrict} onChange={e => set('requireVirusTotalForStrict', e.target.checked)}/> Require VirusTotal in strict mode</label>
+                <label className="checkbox-label"><input type="checkbox" checked={form.requireVirusTotalForTinfoil} onChange={e => set('requireVirusTotalForTinfoil', e.target.checked)}/> Require VirusTotal in tinfoil mode</label>
+              </div>
+              <label className="field"><span>Trusted source hosts</span><textarea value={form.trustedSourceHosts} onChange={e => set('trustedSourceHosts', e.target.value)} placeholder="packages.example.com, vendor.example.com"/></label>
+              {notice && <div className="banner">{notice}</div>}
+              <div style={{ display:'flex', justifyContent:'flex-end' }}><button className="btn primary" disabled={saving}>{saving ? 'Saving...' : 'Save policy'}</button></div>
+            </React.Fragment>
+          )}
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AccessSettings() {
+  const users = useResource(() => PatchAPI.adminUsers());
+  const rbac = useResource(() => PatchAPI.adminRbac());
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ email:'', password:'', roles:['viewer'] });
+  const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [resetUser, setResetUser] = useState(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [deletingUser, setDeletingUser] = useState(null);
+  const roles = rbac.data?.roles || ['viewer'];
+  const toggleRole = (role) => setForm(prev => ({ ...prev, roles: prev.roles.includes(role) ? prev.roles.filter(r => r !== role) : [...prev.roles, role] }));
+  const create = (e) => {
+    e.preventDefault();
+    setError('');
+    PatchAPI.adminCreateUser(form)
+      .then(() => { setCreating(false); setForm({ email:'', password:'', roles:['viewer'] }); users.reload(); })
+      .catch(err => setError(err.message || 'Create failed'));
+  };
+  const updateUser = (user, patch) => {
+    setActionError('');
+    return PatchAPI.adminUpdateUser(user.id, patch).then(() => users.reload()).catch(err => {
+      setActionError(err.message || 'User update failed');
+      throw err;
+    });
+  };
+  const confirmResetPassword = (e) => {
+    e.preventDefault();
+    if (!resetUser) return;
+    updateUser(resetUser, { password: resetPassword }).then(() => {
+      setResetUser(null);
+      setResetPassword('');
+    });
+  };
+  const confirmDeleteUser = () => {
+    if (!deletingUser) return;
+    setActionError('');
+    PatchAPI.adminDeleteUser(deletingUser.id)
+      .then(() => { setDeletingUser(null); users.reload(); })
+      .catch(err => setActionError(err.message || 'Delete failed'));
+  };
+  return (
+    <div>
+      <div className="page-head">
+        <div><h2>Users</h2><p>Accounts, roles, status, password resets, and access lifecycle</p></div>
+        <button className="btn primary" onClick={() => setCreating(true)}>{Icon.plus} Add user</button>
+      </div>
+      {(users.error || rbac.error) && <ErrorAlert error={users.error || rbac.error} onRetry={() => { users.reload(); rbac.reload(); }}/>}
+      {actionError && <div className="banner error">{actionError}</div>}
+      {creating && (
+        <div className="card">
+          <form className="card-body" onSubmit={create} style={{ display:'flex', flexDirection:'column', gap:14 }}>
+            <div className="form-grid">
+              <label className="field"><span>Email</span><input type="email" required value={form.email} onChange={e => setForm(prev => ({ ...prev, email:e.target.value }))}/></label>
+              <label className="field"><span>Temporary password</span><input type="password" required minLength="12" value={form.password} onChange={e => setForm(prev => ({ ...prev, password:e.target.value }))}/></label>
+            </div>
+            <div className="checkbox-group">{roles.map(role => <label className="checkbox-label" key={role}><input type="checkbox" checked={form.roles.includes(role)} onChange={() => toggleRole(role)}/>{role}</label>)}</div>
+            {error && <div className="banner error">{error}</div>}
+            <div style={{ display:'flex', justifyContent:'space-between' }}><button type="button" className="btn ghost" onClick={() => setCreating(false)}>Cancel</button><button className="btn primary">Create user</button></div>
+          </form>
+        </div>
+      )}
+      <div className="card">
+        <div className="card-head"><h3>Users</h3><div className="sub">{(users.data || []).length} accounts</div></div>
+        <div className="table-wrap">
+          <table className="tbl">
+            <thead><tr><th>Email</th><th>Roles</th><th>Permissions</th><th>MFA</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              {(users.loading || rbac.loading) && <SkeletonRows n={4} cols={6}/>}
+              {!users.loading && (users.data || []).map(user => (
+                <tr key={user.id}>
+                  <td><strong>{user.email}</strong><div className="mono muted">{user.id}</div></td>
+                  <td>{roles.map(role => <label className="checkbox-label" key={role} style={{ marginRight:8 }}><input type="checkbox" checked={(user.roles || []).includes(role)} onChange={e => {
+                    const next = e.target.checked ? [...user.roles, role] : user.roles.filter(r => r !== role);
+                    updateUser(user, { roles: next });
+                  }}/>{role}</label>)}</td>
+                  <td className="mono muted">{(user.permissions || []).join(', ')}</td>
+                  <td>{user.mfaEnabled ? <span className="pill ok">Enabled</span> : <span className="pill">Off</span>}</td>
+                  <td>{user.disabled ? <span className="pill crit">Disabled</span> : <span className="pill ok">Active</span>}</td>
+                  <td>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                      <button className="btn sm ghost" onClick={() => updateUser(user, { disabled: !user.disabled })}>{user.disabled ? 'Enable' : 'Disable'}</button>
+                      <button className="btn sm ghost" onClick={() => { setResetUser(user); setResetPassword(''); }}>Reset password</button>
+                      <button className="btn sm ghost danger" onClick={() => setDeletingUser(user)}>Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {resetUser && (
+        <div className="modal-overlay" onClick={() => setResetUser(null)}>
+          <form className="modal-box" onSubmit={confirmResetPassword} onClick={e => e.stopPropagation()}>
+            <h3>Reset password</h3>
+            <p>Set a new temporary password for <strong>{resetUser.email}</strong>.</p>
+            <label className="field"><span>New temporary password</span><input type="password" minLength="12" required value={resetPassword} onChange={e => setResetPassword(e.target.value)}/></label>
+            <div className="modal-actions">
+              <button type="button" className="btn ghost" onClick={() => setResetUser(null)}>Cancel</button>
+              <button className="btn primary">Reset password</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {deletingUser && (
+        <div className="modal-overlay" onClick={() => setDeletingUser(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Delete user?</h3>
+            <p>This permanently removes <strong>{deletingUser.email}</strong> from the management server.</p>
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setDeletingUser(null)}>Cancel</button>
+              <button className="btn danger" onClick={confirmDeleteUser}>Delete user</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PermissionSettings() {
+  const rbac = useResource(() => PatchAPI.adminRbac());
+  return (
+    <div>
+      <div className="page-head">
+        <div><h2>Permissions</h2><p>Role matrix and effective permission catalog</p></div>
+      </div>
+      {rbac.error && <ErrorAlert error={rbac.error} onRetry={rbac.reload}/>}
+      <div className="card">
+        <div className="card-head"><h3>Role permissions</h3><div className="sub">{(rbac.data?.permissions || []).length} permissions</div></div>
+        <div className="card-body">
+          {rbac.loading && <Skeleton h={140}/>}
+          {!rbac.loading && Object.entries(rbac.data?.matrix || {}).map(([role, permissions]) => (
+            <div key={role} style={{ marginBottom:14 }}>
+              <strong>{role}</strong>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:6 }}>{permissions.map(p => <span className="pill" key={p}>{p}</span>)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminSettingsPage({ initialTab = 'policy', onAdminTabChange }) {
+  const [tab, setTab] = useState(initialTab);
+  useEffect(() => setTab(initialTab), [initialTab]);
+  const tabs = [['policy','Policy'], ['users','Users'], ['permissions','Permissions'], ['siem','SIEM'], ['sso','SSO'], ['posture','Posture']];
+  const switchTab = (id) => {
+    setTab(id);
+    onAdminTabChange?.(id);
+  };
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div><h2>Admin settings</h2><p>Security policy, users, permissions, SIEM, SSO, and posture</p></div>
+      </div>
+      <div className="filterbar">{tabs.map(([id, label]) => <button key={id} className={"chip " + (tab === id ? "active" : "")} onClick={() => switchTab(id)}>{label}</button>)}</div>
+      {tab === 'policy' && <TenantPolicySettings/>}
+      {tab === 'users' && <AccessSettings/>}
+      {tab === 'permissions' && <PermissionSettings/>}
+      {tab === 'siem' && <SiemPage/>}
+      {tab === 'sso' && <SsoSettingsPage/>}
+      {tab === 'posture' && <SecurityPosturePage/>}
+    </div>
+  );
+}
+
 Object.assign(window, {
-  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer
+  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage
 });
 

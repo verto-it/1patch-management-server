@@ -28,6 +28,12 @@ export class SiemEventService {
   /** In-process head hash — authoritative when Dragonfly is unavailable */
   private headHash: string | null = null;
 
+  /**
+   * Creates a SiemEventService instance with its required collaborators.
+   *
+   * @param dragonfly dragonfly supplied to the function.
+   * @param postgres postgres supplied to the function.
+   */
   constructor(
     private readonly dragonfly: DragonflyService,
     private readonly postgres: PostgresService,
@@ -42,6 +48,11 @@ export class SiemEventService {
     });
   }
 
+  /**
+   * Sends async data to its destination.
+   *
+   * @param opts Optional settings that tune the operation.
+   */
   private async emitAsync(opts: EmitOptions): Promise<void> {
     const previousEventHash = this.headHash ?? await this.dragonfly.getJson<string>(CHAIN_HEAD_KEY) ?? undefined;
 
@@ -106,15 +117,28 @@ export class SiemEventService {
     this.logger.warn(`SIEM: ${events.length} event(s) moved to dead-letter queue`);
   }
 
+  /**
+   * Gets the dead letter queue value.
+   * @returns The result produced by the operation.
+   */
   async getDeadLetterQueue(): Promise<SiemEvent[]> {
     return await this.dragonfly.getJson<SiemEvent[]>('1patch:siem:dlq') ?? [];
   }
 
+  /**
+   * Handles the queue depth operation for SiemEventService.
+   * @returns The result produced by the operation.
+   */
   async queueDepth(): Promise<number> {
     const raw = await this.dragonfly.getJson<SiemEvent[]>(QUEUE_KEY);
     return raw?.length ?? 0;
   }
 
+  /**
+   * Manages enqueue queue entries.
+   *
+   * @param event Event object emitted by the runtime or UI.
+   */
   private async enqueue(event: SiemEvent): Promise<void> {
     const raw = await this.dragonfly.getJson<SiemEvent[]>(QUEUE_KEY) ?? [];
     if (raw.length >= MAX_QUEUE) {
@@ -125,6 +149,11 @@ export class SiemEventService {
     await this.dragonfly.setJson(QUEUE_KEY, raw);
   }
 
+  /**
+   * Handles the append log operation for SiemEventService.
+   *
+   * @param event Event object emitted by the runtime or UI.
+   */
   private async appendLog(event: SiemEvent): Promise<void> {
     const raw = await this.dragonfly.getJson<SiemEvent[]>(APPEND_LOG_KEY) ?? [];
     raw.push(event);
@@ -137,6 +166,13 @@ export class SiemEventService {
   }
 }
 
+/**
+ * Computes the siem hash value.
+ *
+ * @param event Event object emitted by the runtime or UI.
+ * @param previousHash previous hash supplied to the function.
+ * @returns The result produced by the operation.
+ */
 export function computeSiemHash(event: Omit<SiemEvent, 'eventHash'>, previousHash?: string): string {
   const canonical = JSON.stringify({
     eventId: event.eventId,
@@ -153,6 +189,12 @@ export function computeSiemHash(event: Omit<SiemEvent, 'eventHash'>, previousHas
   return createHash('sha256').update(canonical).digest('hex');
 }
 
+/**
+ * Produces the canonicalize security value.
+ *
+ * @param value Value to read, render, or store.
+ * @returns The result produced by the operation.
+ */
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') {

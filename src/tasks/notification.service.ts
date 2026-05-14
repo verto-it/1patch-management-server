@@ -13,6 +13,11 @@ export interface NotificationPayload {
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
 
+  /**
+   * Creates a NotificationService instance with its required collaborators.
+   *
+   * @param audit audit supplied to the function.
+   */
   constructor(private readonly audit: AuditService) {}
 
   /** Enqueue a notification — delivery is async; failures are audit-logged, never thrown */
@@ -22,6 +27,12 @@ export class NotificationService {
     void this.deliverAsync(config, payload);
   }
 
+  /**
+   * Sends deliver async data to its destination.
+   *
+   * @param config Configuration object used by the operation.
+   * @param payload Request payload or data transfer object.
+   */
   private async deliverAsync(config: TenantNotificationConfig, payload: NotificationPayload): Promise<void> {
     const body = JSON.stringify({ event: payload.event, tenantId: payload.tenantId, message: payload.message, details: payload.details ?? {}, sentAt: new Date().toISOString() });
 

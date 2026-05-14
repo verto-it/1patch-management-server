@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import * as bcrypt from 'bcryptjs';
 import { AuditService } from '../audit/audit.service';
 import { NodesService } from '../nodes/nodes.service';
+import { NodeRoutingService } from '../nodes/node-routing.service';
 import { MtlsNodeGuard } from '../security/mtls-node.guard';
 import { NodeId } from '../security/node-id.decorator';
 import { SigningService } from '../signing.service';
@@ -15,29 +16,62 @@ export class AgentController {
   private readonly logger = new Logger(AgentController.name);
 
   
+  /**
+   * Creates a AgentController instance with its required collaborators.
+   *
+   * @param nodes nodes supplied to the function.
+   * @param signing signing supplied to the function.
+   * @param store store supplied to the function.
+   * @param audit audit supplied to the function.
+   */
   constructor(
     private readonly nodes: NodesService,
+    private readonly routing: NodeRoutingService,
     private readonly signing: SigningService,
     private readonly store: MemoryStore,
     private readonly audit: AuditService,
   ) {}
 
   // Bootstrap and rules are public — clients need them before they have a session
+  /**
+   * Handles the bootstrap operation for AgentController.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @Get('/agent/bootstrap/:tenantId')
   bootstrap(@Param('tenantId') tenantId: string) {
-    const onlineNodes = this.nodes.onlineNodes();
-    this.logger.log(`Bootstrap request for tenant=${tenantId} — returning ${onlineNodes.length} online node(s)`);
+    const decision = this.routing.route({ tenantId });
+    const nodes = decision.candidates.filter((candidate) => candidate.healthy);
+    this.logger.log(`Bootstrap request for tenant=${tenantId} — returning ${nodes.length} policy-eligible node(s)`);
     const manifest = {
-      nodes: onlineNodes.map((node) => ({
-        id: node.id,
-        publicUrl: node.publicUrl,
-        region: node.region,
-        site: node.site,
+      tenantId,
+      issuedAt: new Date().toISOString(),
+      policyId: decision.policyId,
+      requiredCapabilities: decision.requiredCapabilities,
+      nodes: nodes.map((candidate) => ({
+        id: candidate.nodeId,
+        publicUrl: candidate.publicUrl,
+        region: candidate.region,
+        site: candidate.site,
+        capabilities: candidate.capabilities,
+        healthState: candidate.healthState,
+        trustScore: candidate.trustScore,
+        latencyMs: candidate.latencyMs,
+        priority: candidate.priority,
+        weight: candidate.weight,
       })),
+      failover: nodes.map((candidate) => candidate.nodeId),
     };
     return this.signing.signPayload('bootstrap_manifest', tenantId, manifest);
   }
 
+  /**
+   * Handles the rules operation for AgentController.
+   *
+   * @param tenantId Identifier used to locate the target record.
+   * @returns The result produced by the operation.
+   */
   @Get('/agent/rules/:tenantId')
   rules(@Param('tenantId') tenantId: string) {
     const enabledRules = this.store.rules.filter((r) => r.enabled);
