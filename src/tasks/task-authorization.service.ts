@@ -74,7 +74,7 @@ export class TaskAuthorizationService implements OnModuleInit {
    * @returns The result produced by the operation.
    */
   createDraft(
-    params: Pick<UpdateTask, 'nodeId' | 'deviceId' | 'tenantId' | 'type' | 'targetVersion' | 'appName' | 'packageArtifactId' | 'packageId' | 'packageManager' | 'packageScope' | 'productCode' | 'sourceUrl' | 'sha256' | 'installArgs'>,
+    params: Pick<UpdateTask, 'nodeId' | 'deviceId' | 'tenantId' | 'type' | 'targetVersion' | 'appName' | 'packageArtifactId' | 'packageId' | 'packageManager' | 'packageScope' | 'productCode' | 'sourceUrl' | 'managementSourceUrl' | 'sha256' | 'installArgs'>,
     creator: User,
   ): UpdateTask {
     const task: UpdateTask = {

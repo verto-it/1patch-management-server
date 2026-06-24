@@ -45,12 +45,30 @@ export class TaskLedgerService {
       deviceId: task.deviceId,
       type: task.type,
       sourceUrl: task.sourceUrl ?? null,
+      managementSourceUrl: task.managementSourceUrl ?? null,
       sha256: task.sha256 ?? null,
       installArgs: task.installArgs ?? null,
       targetVersion: task.targetVersion,
       packageId: task.packageId ?? null,
       productCode: task.productCode ?? null,
     };
+    return createHash('sha256').update(canonicalJson(fields)).digest('hex');
+  }
+
+  static computePreProxyTaskHash(task: UpdateTask): string {
+    const fields: Record<string, unknown> = {
+      id: task.id,
+      deviceId: task.deviceId,
+      type: task.type,
+      sourceUrl: task.sourceUrl ?? null,
+      sha256: task.sha256 ?? null,
+      installArgs: task.installArgs ?? null,
+      targetVersion: task.targetVersion,
+      packageId: task.packageId ?? null,
+      productCode: task.productCode ?? null,
+    };
+    if (task.packageManager !== undefined) fields.packageManager = task.packageManager ?? null;
+    if (task.packageScope !== undefined) fields.packageScope = task.packageScope ?? null;
     return createHash('sha256').update(canonicalJson(fields)).digest('hex');
   }
 
@@ -167,9 +185,10 @@ export class TaskLedgerService {
     // 4. taskHash must match the actual task
     const expectedHash = TaskLedgerService.computeTaskHash(task);
     if (entry.taskHash !== expectedHash) {
+      const preProxyHash = TaskLedgerService.computePreProxyTaskHash(task);
       const canUseLegacyHash = task.packageManager === undefined && task.packageScope === undefined;
       const legacyHash = canUseLegacyHash ? TaskLedgerService.computeLegacyTaskHash(task) : undefined;
-      if (entry.taskHash !== legacyHash) {
+      if (entry.taskHash !== preProxyHash && entry.taskHash !== legacyHash) {
         return { valid: false, reason: `taskHash mismatch: ledger=${entry.taskHash} task=${expectedHash}` };
       }
     }

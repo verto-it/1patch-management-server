@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { v4 as uuid } from 'uuid';
 import { AuditService } from './audit/audit.service';
+import { PackageCatalogService } from './package-catalog.service';
 import { CurrentUser } from './security/current-user.decorator';
 import { JwtAuthGuard } from './security/jwt-auth.guard';
 import { NodeOrJwtGuard } from './security/node-or-jwt.guard';
@@ -28,6 +29,7 @@ interface PackageDto {
   signatureStatus?: PackageArtifact['signatureStatus'];
   installArgs?: string; uninstallArgs?: string;
   applicability?: PackageArtifact['applicability'];
+  catalogCategory?: string;
 }
 
 @ApiTags('packages')
@@ -49,6 +51,7 @@ export class PackagesController {
     private readonly audit: AuditService,
     private readonly nodes: NodesService,
     private readonly authorization: TaskAuthorizationService,
+    private readonly catalog: PackageCatalogService,
   ) {}
 
   /**
@@ -81,16 +84,16 @@ export class PackagesController {
 
     const id = uuid();
     const type = dto.type ?? 'msi';
-    const platform = dto.platform ?? (type === 'apt' ? 'linux' : 'windows');
-    if (type === 'apt') {
-      if (platform !== 'linux') throw new BadRequestException('apt packages must use platform=linux');
+    const platform = dto.platform ?? (isLinuxPackageManager(type) ? 'linux' : 'windows');
+    if (isLinuxPackageManager(type)) {
+      if (platform !== 'linux') throw new BadRequestException(`${type} packages must use platform=linux`);
       if (dto.fileBase64 || dto.fileName || dto.sourceUrl || dto.sha256)
-        throw new BadRequestException('apt packages are repo-managed in v1 and must not include uploaded files, sourceUrl, or sha256');
-      if (clean(dto.installArgs)) throw new BadRequestException('installArgs are not supported for apt repo packages');
+        throw new BadRequestException(`${type} packages are repo-managed in v1 and must not include uploaded files, sourceUrl, or sha256`);
+      if (clean(dto.installArgs)) throw new BadRequestException(`installArgs are not supported for ${type} repo packages`);
     } else if ((type === 'winget' || type === 'chocolatey' || type === 'scoop') && platform !== 'windows') {
       throw new BadRequestException(`${type} packages must use platform=windows`);
-    } else if (type === 'msi' && platform !== 'windows') {
-      throw new BadRequestException('msi packages must use platform=windows');
+    } else if ((type === 'msi' || type === 'exe') && platform !== 'windows') {
+      throw new BadRequestException(`${type} packages must use platform=windows`);
     }
 
     let storagePath: string | undefined;
@@ -112,10 +115,10 @@ export class PackagesController {
       this.logger.log(`Package file saved to ${storagePath} (${file.length} bytes, sha256=${sha256})`);
     }
 
-    const isDownloadedPackage = type === 'msi' || !!storagePath || !!dto.sourceUrl;
+    const isDownloadedPackage = type === 'msi' || type === 'exe' || !!storagePath || !!dto.sourceUrl;
     if (isDownloadedPackage && !sha256) throw new BadRequestException('sha256 is required for downloadable packages');
-    const packageId = type === 'apt' ? safeAptPackageId(dto.packageId) : safePackageId(dto.packageId);
-    if ((type === 'winget' || type === 'apt' || type === 'chocolatey' || type === 'scoop') && !packageId)
+    const packageId = isLinuxPackageManager(type) ? linuxPackageId(type, dto.packageId) : safePackageId(dto.packageId);
+    if ((type === 'winget' || isLinuxPackageManager(type) || type === 'chocolatey' || type === 'scoop') && !packageId)
       throw new BadRequestException('packageId is required for package-manager artifacts');
     if (dto.packageManager && dto.packageManager !== type)
       throw new BadRequestException('packageManager must match package type');
@@ -128,8 +131,10 @@ export class PackagesController {
       type, packageId, packageManager, packageScope, fileName, storagePath,
       sourceUrl: dto.sourceUrl ?? (storagePath ? `/packages/${id}/download` : undefined),
       sha256, signatureStatus: dto.signatureStatus ?? 'unknown',
-      installArgs: isDownloadedPackage ? (dto.installArgs ?? '/qn /norestart') : (dto.installArgs ?? ''), uninstallArgs: dto.uninstallArgs,
+      installArgs: isDownloadedPackage ? (dto.installArgs ?? defaultInstallArgs(type)) : (dto.installArgs ?? ''), uninstallArgs: dto.uninstallArgs,
       applicability: dto.applicability ?? { appName: dto.name },
+      catalogSource: 'custom',
+      catalogCategory: dto.catalogCategory,
       createdAt: new Date().toISOString(),
     };
     this.store.packages.push(artifact);
@@ -137,6 +142,13 @@ export class PackagesController {
     this.audit.record(user.id, 'package.created', artifact.id, { name: artifact.name, version: artifact.version, sha256: artifact.sha256 });
     this.logger.log(`Package created: id=${artifact.id} name=${artifact.name} v${artifact.version}`);
     return artifact;
+  }
+
+  @UseGuards(JwtAuthGuard, RbacGuard)
+  @RequirePermission('packages:read')
+  @Get('/catalog')
+  listCatalog() {
+    return this.catalog.getCatalog();
   }
 
   /**
@@ -237,10 +249,11 @@ export class PackagesController {
       id: uuid(), nodeId: node.id, deviceId,
       tenantId: device.tenantId,
       appName: artifact.name, packageArtifactId: artifact.id,
-      packageId: artifact.type === 'apt' ? safeAptPackageId(artifact.packageId) : safePackageId(artifact.packageId),
+      packageId: linuxPackageId(artifact.type, artifact.packageId) ?? safePackageId(artifact.packageId),
       packageManager: artifact.packageManager ?? artifact.type,
       packageScope: artifact.packageScope,
-      sourceUrl: artifact.sourceUrl,
+      sourceUrl: proxiedSourceUrl(artifact, node),
+      managementSourceUrl: artifact.sourceUrl,
       sha256: artifact.sha256, installArgs: artifact.installArgs,
       requiredCapabilities: requiredCapabilitiesForArtifact(artifact),
       targetVersion: artifact.version, type: 'update_package',
@@ -282,6 +295,21 @@ function safeAptPackageId(value?: string) {
   return /^[a-z0-9][a-z0-9+.-]*$/.test(trimmed) ? trimmed : undefined;
 }
 
+function safeFlatpakPackageId(value?: string) {
+  const trimmed = clean(value);
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) && trimmed.includes('.') ? trimmed : undefined;
+}
+
+function isLinuxPackageManager(value?: string): value is 'apt' | 'snap' | 'flatpak' {
+  return value === 'apt' || value === 'snap' || value === 'flatpak';
+}
+
+function linuxPackageId(type: PackageArtifact['type'], value?: string) {
+  if (type === 'apt' || type === 'snap') return safeAptPackageId(value);
+  if (type === 'flatpak') return safeFlatpakPackageId(value);
+  return undefined;
+}
+
 function packageMatchesDevice(artifact: PackageArtifact, device: { os?: string }) {
   return artifact.platform === devicePlatform(device);
 }
@@ -293,6 +321,13 @@ function requiredCapabilitiesForArtifact(artifact: PackageArtifact) {
   return ['windows-patching' as const];
 }
 
+function proxiedSourceUrl(artifact: PackageArtifact, node: { publicUrl?: string }) {
+  if (!artifact.sourceUrl || !artifact.sha256) return artifact.sourceUrl;
+  const base = clean(node.publicUrl).replace(/\/$/, '');
+  if (!base) return artifact.sourceUrl;
+  return `${base}/packages/cache/${encodeURIComponent(artifact.id)}`;
+}
+
 function devicePlatform(device: { os?: string }) {
   const os = device.os ?? '';
   if (/(windows|win)/i.test(os)) return 'windows';
@@ -302,4 +337,8 @@ function devicePlatform(device: { os?: string }) {
 
 function clean(value?: string) {
   return (value ?? '').trim();
+}
+
+function defaultInstallArgs(type: PackageArtifact['type']) {
+  return type === 'exe' ? '/quiet /norestart' : '/qn /norestart';
 }

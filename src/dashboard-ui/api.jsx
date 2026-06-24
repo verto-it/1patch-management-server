@@ -1,5 +1,6 @@
 // AGPL-3.0-only — 1Patch management UI API client
 const SESSION_KEY = '1patch-session';
+const DEMO_MODE = /^\/ui\/demo(?:\/|$)/.test(window.location.pathname) || new URLSearchParams(window.location.search).has('demo');
 
 /**
  * Handles the session operation.
@@ -100,8 +101,11 @@ async function api(path, init) {
     err.code = 'AUTH_REQUIRED';
     throw err;
   }
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText} — ${path}`);
   const ct = r.headers.get('content-type') || '';
+  if (!r.ok) {
+    const body = ct.includes('application/json') ? await r.json().catch(() => ({})) : await r.text().catch(() => '');
+    throw new Error(body?.message || body?.error || body || `${r.status} ${r.statusText} — ${path}`);
+  }
   return ct.includes('application/json') ? r.json() : r.text();
 }
 // SSO helpers
@@ -130,7 +134,274 @@ async function ssoComplete(handoffToken) {
   return storeSession(body);
 }
 
-window.PatchAPI = {
+function demoIso(minutesAgo) {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString();
+}
+
+function makeDemoData() {
+  const sites = ['Berlin HQ', 'Munich DC', 'Frankfurt Edge', 'Hamburg Office', 'Remote EMEA', 'US East'];
+  const groups = ['Finance', 'Engineering', 'Operations', 'Executive', 'Retail', 'Build Farm'];
+  const nodeIds = ['node-eu-central-1', 'node-eu-west-1', 'node-us-east-1', 'node-lab-1'];
+  const appDefs = [
+    ['Google Chrome', 'Google', '125.0.6422.142', '124.0.6367.207', true],
+    ['Microsoft Edge', 'Microsoft', '125.0.2535.92', '124.0.2478.109', false],
+    ['Mozilla Firefox ESR', 'Mozilla', '115.12.0', '115.9.1', true],
+    ['7-Zip', 'Igor Pavlov', '24.06', '23.01', false],
+    ['Notepad++', 'Notepad++ Team', '8.6.8', '8.5.7', false],
+    ['Git', 'Git SCM', '2.45.2', '2.43.0', false],
+    ['OpenJDK Runtime', 'Eclipse Adoptium', '21.0.3', '17.0.10', true],
+    ['Microsoft Teams', 'Microsoft', '24124.2312.2911', '24060.2623.2790', false],
+    ['Zoom Workplace', 'Zoom', '6.0.11', '5.17.11', true],
+    ['Docker Desktop', 'Docker', '4.31.0', '4.27.1', false],
+    ['Visual Studio Code', 'Microsoft', '1.90.0', '1.88.1', false],
+    ['LibreOffice', 'The Document Foundation', '24.2.4', '7.6.7', false],
+  ];
+  const devices = Array.from({ length: 96 }, (_, i) => {
+    const n = i + 1;
+    const linux = i % 5 === 0 || i % 13 === 0;
+    const online = i % 9 !== 0;
+    return {
+      id: `dev-${String(n).padStart(4, '0')}`,
+      hostname: `${linux ? 'lin' : 'win'}-${sites[i % sites.length].toLowerCase().replace(/[^a-z]+/g, '-')}-${String(n).padStart(3, '0')}`,
+      os: linux ? (i % 2 ? 'Ubuntu 22.04.4 LTS' : 'Debian GNU/Linux 12') : (i % 3 ? 'Microsoft Windows 10.0.22631' : 'Microsoft Windows 10.0.26100'),
+      platform: linux ? 'linux' : 'windows',
+      site: sites[i % sites.length],
+      group: groups[i % groups.length],
+      tags: [i % 4 === 0 ? 'production' : 'standard', i % 7 === 0 ? 'browser-critical' : 'auto-update'],
+      preferredNodeId: nodeIds[i % nodeIds.length],
+      installedAppCount: 18 + (i % 31),
+      pendingTaskCount: i % 8 === 0 ? 3 : i % 6 === 0 ? 1 : 0,
+      lastSeenAt: demoIso(online ? (2 + (i % 30)) : (220 + i * 7)),
+      online,
+      deviceTrustScore: 96 - (i % 19),
+      riskScore: i % 11 === 0 ? 74 : 18 + (i % 32),
+    };
+  });
+  const apps = appDefs.map(([name, publisher, latestVersion, oldestVersion, critical], i) => {
+    const deviceCount = 44 + ((i * 17) % 52);
+    const outdatedDeviceCount = i % 4 === 0 ? 28 - i : 6 + ((i * 5) % 19);
+    return { name, publisher, latestVersion, latest: latestVersion, oldestVersion, oldest: oldestVersion, deviceCount, outdatedDeviceCount, outdated: outdatedDeviceCount, critical };
+  });
+  const tasks = Array.from({ length: 72 }, (_, i) => {
+    const app = apps[i % apps.length];
+    const status = ['completed', 'completed', 'completed', 'dispatched', 'pending', 'failed', 'rejected', 'cancelled'][i % 8];
+    return {
+      id: `task-${String(i + 1).padStart(5, '0')}`,
+      type: i % 10 === 0 ? 'refresh_inventory' : 'update_app',
+      appName: app.name,
+      deviceId: devices[i % devices.length].id,
+      nodeId: nodeIds[i % nodeIds.length],
+      status,
+      fromVersion: app.oldestVersion,
+      targetVersion: app.latestVersion,
+      createdAt: demoIso(8 + i * 11),
+      completedAt: ['completed', 'failed', 'rejected', 'cancelled'].includes(status) ? demoIso(2 + i * 10) : null,
+      output: status === 'failed' ? 'Installer exited with code 1603 after signature verification succeeded.' : status === 'completed' ? 'Package installed and inventory refreshed.' : '',
+    };
+  });
+  const alarms = [
+    ['critical', 'Chrome CVE exposure remains on 28 production endpoints', devices[3].id, 12],
+    ['critical', 'Backend node node-lab-1 entered quarantine after trust drop', null, 35],
+    ['warning', 'High package queue lag in Frankfurt Edge', devices[14].id, 48],
+    ['warning', 'Linux repo metadata stale on Munich DC cache', devices[20].id, 76],
+    ['info', 'New unmanaged device discovered from enrollment token', devices[55].id, 130],
+    ['warning', 'Repeated install failures for OpenJDK Runtime', devices[42].id, 155],
+    ['critical', 'Unsigned package upload rejected by policy', null, 190],
+    ['warning', 'Offline executive laptop missed maintenance window', devices[8].id, 260],
+  ].map(([severity, message, deviceId, age], i) => ({ id: `alarm-${i + 1}`, severity, message, deviceId, createdAt: demoIso(age) }));
+  const packages = appDefs.flatMap(([name, publisher, latestVersion], i) => ([
+    {
+      id: `pkg-win-${i + 1}`,
+      name,
+      publisher,
+      version: latestVersion,
+      type: i % 3 === 0 ? 'msi' : 'winget',
+      platform: 'windows',
+      architecture: 'x64',
+      signatureStatus: i % 5 === 0 ? 'unknown' : 'valid',
+      catalogSource: i % 4 === 0 ? 'custom' : 'central',
+      catalogCategory: i % 2 ? 'Productivity' : 'Security',
+      sha256: `demo-sha256-${i + 1}`,
+      createdAt: demoIso(400 + i * 55),
+    },
+    i % 3 === 0 ? {
+      id: `pkg-linux-${i + 1}`,
+      name,
+      publisher,
+      version: latestVersion,
+      type: 'apt',
+      platform: 'linux',
+      architecture: 'amd64',
+      signatureStatus: 'valid',
+      catalogSource: 'central',
+      catalogCategory: 'Linux',
+      sha256: `demo-linux-sha256-${i + 1}`,
+      createdAt: demoIso(480 + i * 65),
+    } : null,
+  ])).filter(Boolean);
+  const nodes = nodeIds.map((id, i) => ({
+    id,
+    name: id.replace(/-/g, ' '),
+    publicUrl: `https://${id}.demo.1patch.local`,
+    region: ['eu-central', 'eu-west', 'us-east', 'lab'][i],
+    site: sites[i],
+    status: i === 3 ? 'online' : 'online',
+    version: `0.1.${12 - i}`,
+    capabilities: ['inventory', 'package-cache', 'signed-execution', i % 2 ? 'linux' : 'windows'],
+    healthState: i === 3 ? 'degraded' : 'healthy',
+    maintenanceState: i === 2 ? 'draining' : 'active',
+    quarantineState: i === 3 ? 'quarantined' : 'clear',
+    quarantineReason: i === 3 ? 'trust score below tenant threshold' : '',
+    lastSeenAt: demoIso(3 + i * 8),
+    health: {
+      memoryPressurePercent: [44, 62, 78, 91][i],
+      diskFreeBytes: [420e9, 220e9, 84e9, 900e6][i],
+      clockSkewMs: i === 3 ? 9200 : 600,
+      queueLag: ['low', 'low', 'medium', 'high'][i],
+      components: [
+        { name: 'agent', status: i === 3 ? 'degraded' : 'healthy' },
+        { name: 'cache', status: i === 2 ? 'degraded' : 'healthy' },
+        { name: 'verifier', status: i === 3 ? 'unhealthy' : 'healthy' },
+      ],
+    },
+    trust: {
+      id: `trust-${id}`,
+      trustScore: [96, 89, 74, 42][i],
+      previousTrustScore: [95, 91, 80, 68][i],
+      scoreDelta: [1, -2, -6, -26][i],
+      healthState: i === 3 ? 'degraded' : 'healthy',
+      certValid: i !== 3,
+      latencyMs: [38, 64, 142, 680][i],
+      queueLag: ['low', 'low', 'medium', 'high'][i],
+      reasons: i === 3 ? ['package verifier unhealthy', 'high queue lag', 'clock skew detected'] : ['signed health report accepted'],
+      securityFindings: i === 3 ? [{ severity: 'high', category: 'health', message: 'Package verifier component unhealthy' }] : [],
+    },
+  }));
+  const audit = Array.from({ length: 48 }, (_, i) => ({
+    id: `audit-${i + 1}`,
+    createdAt: demoIso(5 + i * 17),
+    actor: ['admin@1patch.demo', 'sre@1patch.demo', 'node-eu-central-1', 'policy-engine'][i % 4],
+    action: ['task.queued', 'package.signed', 'rule.evaluated', 'device.enrolled', 'alarm.created', 'auth.mfa.verified'][i % 6],
+    target: [devices[i % devices.length].id, apps[i % apps.length].name, nodeIds[i % nodeIds.length]][i % 3],
+  }));
+  const rules = [
+    ['Critical browser CVE rollout', true, 'inventory_changed'],
+    ['Quarantine low-trust node', true, 'node_trust_changed'],
+    ['Refresh stale Linux inventory', true, 'schedule'],
+    ['Notify SIEM on failed update burst', true, 'task_failed'],
+    ['Executive laptop maintenance window', false, 'schedule'],
+  ].map(([name, enabled, eventType], i) => ({
+    id: `rule-${i + 1}`,
+    name,
+    enabled,
+    description: `Demo automation rule ${i + 1}`,
+    trigger: { type: 'event', eventType },
+    conditionGroup: { combinator: 'AND', conditions: [{ field: 'severity', operator: 'gte', value: i === 0 ? 'critical' : 'warning' }] },
+    actions: [{ type: i % 2 ? 'notify' : 'create_task', target: i % 2 ? 'siem' : 'outdated_devices' }],
+  }));
+  const compliantApps = apps.reduce((sum, app) => sum + app.deviceCount - app.outdatedDeviceCount, 0);
+  const outdatedApps = apps.reduce((sum, app) => sum + app.outdatedDeviceCount, 0);
+  return { devices, apps, tasks, alarms, packages, nodes, audit, rules, summary: {
+    managedDevices: devices.length,
+    onlineDevices: devices.filter(d => d.online).length,
+    coverage: 87,
+    compliantApps,
+    outdatedApps,
+    criticalAlarms: alarms.filter(a => a.severity === 'critical').length,
+    activeRules: rules.filter(r => r.enabled).length,
+  }};
+}
+
+const DEMO_DATA = DEMO_MODE ? makeDemoData() : null;
+const demoResolve = (value) => Promise.resolve(JSON.parse(JSON.stringify(value)));
+const demoSession = {
+  accessToken: 'demo-token',
+  user: {
+    email: 'admin@1patch.demo',
+    permissions: ['auth:manage', 'users:manage', 'roles:manage', 'tasks:manage', 'packages:manage'],
+  },
+  authMethod: 'demo',
+};
+const DEMO_API = DEMO_MODE ? {
+  session: () => demoSession,
+  login: () => demoResolve(demoSession),
+  verifyMfa: () => demoResolve(demoSession),
+  ssoProviders: () => demoResolve([]),
+  ssoInitiate: () => demoResolve({ authorizationUrl: '/ui/demo' }),
+  ssoComplete: () => demoResolve(demoSession),
+  logout: () => {},
+  summary: () => demoResolve(DEMO_DATA.summary),
+  coverageHistory: (days = 30) => demoResolve(Array.from({ length: days }, (_, i) => ({ date: demoIso((days - i) * 1440), value: 74 + Math.round(i * 0.46) + (i % 5 === 0 ? -2 : i % 7 === 0 ? 1 : 0) }))),
+  devices: () => demoResolve(DEMO_DATA.devices),
+  device: (id) => {
+    const device = DEMO_DATA.devices.find(d => d.id === id) || DEMO_DATA.devices[0];
+    const installedApps = DEMO_DATA.apps.slice(0, 10).map((app, i) => ({ ...app, version: i % 3 === 0 ? app.oldestVersion : app.latestVersion, latestVersion: app.latestVersion, packageId: `pkg-win-${i + 1}` }));
+    const tasks = DEMO_DATA.tasks.filter(t => t.deviceId === device.id).slice(0, 8);
+    return demoResolve({ device, installedApps, tasks });
+  },
+  deviceGroups: () => demoResolve([]),
+  createDevice: (body) => demoResolve({ id: 'demo-created-device', ...body }),
+  createDeviceEnrollment: (body) => demoResolve({ id: 'demo-enrollment', count: body?.maxUses || 1, oneLineJson: JSON.stringify({ Demo: true, TenantId: body?.tenantId || 'default' }), config: { Demo: true, TenantId: body?.tenantId || 'default' } }),
+  apps: () => demoResolve(DEMO_DATA.apps),
+  packages: () => demoResolve(DEMO_DATA.packages),
+  packageCatalog: () => demoResolve(DEMO_DATA.packages.slice(0, 12)),
+  createPackage: (body) => demoResolve({ id: 'demo-created-package', createdAt: new Date().toISOString(), signatureStatus: 'valid', ...body }),
+  deployPackageAll: (id) => demoResolve({ tasks: DEMO_DATA.tasks.slice(0, 7).map(t => ({ ...t, packageArtifactId: id, status: 'pending' })) }),
+  rules: () => demoResolve(DEMO_DATA.rules),
+  createRule: (body) => demoResolve({ id: 'demo-created-rule', ...body }),
+  updateRule: (id, body) => demoResolve({ id, ...body }),
+  toggleRule: (id, enabled) => demoResolve({ id, enabled }),
+  testRule: () => demoResolve({ matched: 18, actions: ['create_task', 'notify'] }),
+  triggerRule: () => demoResolve([{ id: 'demo-triggered-task', status: 'pending' }]),
+  ruleTemplates: () => demoResolve([]),
+  createRuleDraftFromTemplate: (_id, body) => demoResolve({ name: 'Demo rule draft', ...body }),
+  importRuleTemplateConfig: (body) => demoResolve({ name: 'Imported demo rule', ...body }),
+  ruleAudit: () => demoResolve(DEMO_DATA.audit.slice(0, 10)),
+  tasks: () => demoResolve(DEMO_DATA.tasks),
+  cancelTask: (id) => demoResolve({ id, status: 'cancelled' }),
+  nodes: () => demoResolve(DEMO_DATA.nodes),
+  nodeTrustCenter: () => demoResolve(DEMO_DATA.nodes),
+  nodeTrustDetail: (id) => demoResolve(DEMO_DATA.nodes.find(n => n.id === id) || DEMO_DATA.nodes[0]),
+  clearNodeQuarantine: (id) => demoResolve({ id, quarantineState: 'clear' }),
+  createNodeEnrollment: (body) => demoResolve({ id: 'demo-node-enrollment', token: 'demo-node-token', ...body }),
+  deleteNode: (id) => demoResolve({ id, deleted: true }),
+  alarms: () => demoResolve(DEMO_DATA.alarms),
+  resolveAlarm: (id) => demoResolve({ id, resolved: true }),
+  resolveAllAlarms: () => demoResolve({ resolved: DEMO_DATA.alarms.length }),
+  audit: (limit = 100) => demoResolve(DEMO_DATA.audit.slice(0, limit)),
+  siemConfig: (tenantId = 'default') => demoResolve({ tenantId, config: { enabled: true, webhook: { enabled: true, url: 'https://siem.demo/ingest' }, syslog: { enabled: true, host: 'syslog.demo', port: 514 }, sentinel: { enabled: false } } }),
+  saveSiemConfig: (_tenantId, body) => demoResolve({ saved: true, config: body }),
+  testSiem: () => demoResolve({ ok: true, message: 'Demo SIEM event accepted' }),
+  verifySiem: () => demoResolve({ ok: true, findings: [] }),
+  siemQueueStatus: () => demoResolve({ pending: 42, failed: 1, deliveredLastHour: 1284 }),
+  securityPosture: () => demoResolve({ score: 91, findings: [], checks: [] }),
+  fixSecurityPosture: () => demoResolve({ fixed: 0 }),
+  tenantPolicy: () => demoResolve({ requireApproval: true, maxConcurrentTasks: 250, allowedPackageSources: ['central', 'custom'] }),
+  saveTenantPolicy: (_tenantId, body) => demoResolve(body),
+  adminUsers: () => demoResolve([{ id: 'usr-1', email: 'admin@1patch.demo', roleId: 'role-admin', mfaEnabled: true, disabled: false }, { id: 'usr-2', email: 'sre@1patch.demo', roleId: 'role-operator', mfaEnabled: true, disabled: false }]),
+  adminRbac: () => demoResolve({ roles: [{ id: 'role-admin', name: 'Administrator', permissions: demoSession.user.permissions }, { id: 'role-operator', name: 'Operator', permissions: ['tasks:manage', 'packages:read'] }], permissions: demoSession.user.permissions }),
+  adminCreateUser: (body) => demoResolve({ id: 'demo-user', ...body }),
+  adminUpdateUser: (id, body) => demoResolve({ id, ...body }),
+  adminDeleteUser: (id) => demoResolve({ id, deleted: true }),
+  adminCreateRole: (body) => demoResolve({ id: 'demo-role', ...body }),
+  adminUpdateRole: (id, body) => demoResolve({ id, ...body }),
+  adminDeleteRole: (id) => demoResolve({ id, deleted: true }),
+  ssoProvidersAdmin: () => demoResolve([]),
+  ssoCreateProvider: (body) => demoResolve({ id: 'demo-sso', ...body }),
+  ssoUpdateProvider: (id, body) => demoResolve({ id, ...body }),
+  ssoDeleteProvider: (id) => demoResolve({ id, deleted: true }),
+  retirementPolicies: () => demoResolve([{ id: 'retire-1', name: 'Retire inactive endpoints', description: 'Flag devices inactive for 90 days.', enabled: true, priority: 20, conditionCombinator: 'AND', conditions: [{ type: 'inactive_days', days: 90 }], actions: [{ type: 'tag_device', tag: 'retired' }], lastEvaluatedAt: demoIso(300), matchCount: 7 }]),
+  createRetirementPolicy: (body) => demoResolve({ id: 'demo-retirement', ...body }),
+  updateRetirementPolicy: (id, body) => demoResolve({ id, ...body }),
+  deleteRetirementPolicy: (id) => demoResolve({ id, deleted: true }),
+  evaluateRetirementPolicy: () => demoResolve({ matchCount: 7, totalDevices: DEMO_DATA.devices.length, matchedDevices: DEMO_DATA.devices.slice(0, 7) }),
+  refreshInventory: (id) => demoResolve({ id, queued: true }),
+  updateAllOutdated: (id) => demoResolve({ tasks: DEMO_DATA.tasks.slice(0, 5).map(t => ({ ...t, deviceId: id, status: 'pending' })) }),
+  updateAllForApp: (name) => demoResolve(DEMO_DATA.tasks.slice(0, 12).map(t => ({ ...t, appName: name, status: 'pending' }))),
+  updateDeviceForApp: (name, body) => demoResolve({ id: 'demo-device-task', appName: name, ...body, status: 'pending' }),
+} : null;
+
+const LIVE_API = {
   session,
   /**
    * Handles the login operation.
@@ -269,6 +540,9 @@ window.PatchAPI = {
   adminUpdateUser:   (id,b)  => api(`/admin/users/${encodeURIComponent(id)}`, { method:'PATCH', body: JSON.stringify(b) }),
   adminDeleteUser:   (id)    => api(`/admin/users/${encodeURIComponent(id)}`, { method:'DELETE' }),
   adminRbac:         ()      => api('/admin/rbac'),
+  adminCreateRole:   (b)     => api('/admin/roles', { method:'POST', body: JSON.stringify(b) }),
+  adminUpdateRole:   (id,b)  => api(`/admin/roles/${encodeURIComponent(id)}`, { method:'PATCH', body: JSON.stringify(b) }),
+  adminDeleteRole:   (id)    => api(`/admin/roles/${encodeURIComponent(id)}`, { method:'DELETE' }),
   /**
    * Handles the siem config operation.
    *
@@ -316,6 +590,7 @@ window.PatchAPI = {
    *
    * @param b b supplied to the function.
    */
+  packageCatalog:    ()      => api('/packages/catalog'),
   createPackage:     (b)     => api('/packages',                                 { method:'POST', body: JSON.stringify(b) }),
   /**
    * Handles the deploy package all operation.
@@ -415,4 +690,11 @@ window.PatchAPI = {
    */
   resolveAlarm:      (id)    => api(`/alarms/${id}/resolve`,                     { method:'POST', body: '{}' }),
   resolveAllAlarms:   ()      => api('/alarms/resolve-all',                        { method:'POST', body: '{}' }),
+  retirementPolicies:       (t='default') => api(`/devices/retirement-policies?tenantId=${encodeURIComponent(t)}`),
+  createRetirementPolicy:   (b)     => api('/devices/retirement-policies',         { method:'POST', body: JSON.stringify(b) }),
+  updateRetirementPolicy:   (id, b) => api(`/devices/retirement-policies/${encodeURIComponent(id)}`, { method:'PATCH', body: JSON.stringify(b) }),
+  deleteRetirementPolicy:   (id)    => api(`/devices/retirement-policies/${encodeURIComponent(id)}`, { method:'DELETE' }),
+  evaluateRetirementPolicy: (id)    => api(`/devices/retirement-policies/${encodeURIComponent(id)}/evaluate`, { method:'POST', body: '{}' }),
 };
+
+window.PatchAPI = DEMO_MODE ? DEMO_API : LIVE_API;

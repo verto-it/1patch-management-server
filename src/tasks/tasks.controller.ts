@@ -100,6 +100,7 @@ export class TasksController {
       packageScope?: UpdateTask['packageScope'];
       productCode?: string;
       sourceUrl?: string;
+      managementSourceUrl?: string;
       sha256?: string;
       installArgs?: string;
     },
@@ -124,6 +125,7 @@ export class TasksController {
         packageScope: body.packageScope,
         productCode: body.productCode,
         sourceUrl: body.sourceUrl,
+        managementSourceUrl: body.managementSourceUrl,
         sha256: body.sha256,
         installArgs: body.installArgs,
       },

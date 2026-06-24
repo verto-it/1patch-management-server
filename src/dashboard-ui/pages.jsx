@@ -944,64 +944,449 @@ function AppsPage({ globalSearch = "" }) {
 }
 
 // ---------- Packages ----------
-/**
- * Renders the packages page UI.
- *
- * @param props Component props supplied by the caller.
- * @returns The result produced by the operation.
- */
 function PackagesPage({ globalSearch = "" }) {
   const pkgs = useResource(() => PatchAPI.packages());
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [selected, setSelected] = useState(null);
   const [notice, setNotice] = useState(null);
   useLiveResource(pkgs, 10_000);
-  /**
-   * Handles the deploy operation.
-   *
-   * @param id Identifier used to locate the target record.
-   */
-  const deploy = async (id) => {
-    try {
-      const result = await PatchAPI.deployPackageAll(id);
-      const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
-      const skipped = result?.skippedDeviceCount ?? 0;
-      setNotice(`${count} deployment task${count === 1 ? "" : "s"} queued${skipped ? `; ${skipped} device${skipped === 1 ? "" : "s"} skipped by platform` : ""}.`);
-      setTimeout(() => setNotice(null), 5000);
-    } finally {
-      pkgs.reload();
-    }
+
+  const allRows = pkgs.data || [];
+  const centralCount = allRows.filter(p => p.catalogSource === "central").length;
+  const customCount = allRows.filter(p => p.catalogSource !== "central").length;
+
+  const rows = allRows.filter(p =>
+    textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256, p.packageId, p.catalogCategory])
+  );
+
+  const handleDeployed = (msg) => {
+    setNotice(msg);
+    setSelected(null);
+    pkgs.reload();
+    setTimeout(() => setNotice(null), 5000);
   };
-  const rows = (pkgs.data || []).filter(p => textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256]));
+
   return (
     <div className="page">
       <div className="page-head">
-        <div><h2>Package library</h2><p>Signed artifacts deployed to backend nodes · MSI / winget / Chocolatey / Scoop / apt</p></div>
-        <button className="btn primary"><span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add package</button>
+        <div><h2>Package library</h2><p>{customCount} custom packages · {centralCount} available in catalog</p></div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="btn" onClick={() => setWizardOpen(true)}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.plus}</span>Add custom
+          </button>
+          <button className="btn primary" onClick={() => setStoreOpen(true)}>
+            <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.packages}</span>Browse catalog
+          </button>
+        </div>
       </div>
+      <div className="stats">
+        <Stat label="Packages" value={pkgs.loading ? "—" : allRows.length} sub="In your library"/>
+        <Stat label="Windows" value={pkgs.loading ? "—" : allRows.filter(p => p.platform === "windows").length}/>
+        <Stat label="Linux" value={pkgs.loading ? "—" : allRows.filter(p => p.platform === "linux").length}/>
+        <Stat label="Custom" value={pkgs.loading ? "—" : customCount} sub="Uploads &amp; vendor URLs"/>
+      </div>
+      {notice && <div className="toast-inline" style={{ marginBottom:12 }}>{notice}</div>}
       <div className="card">
-        {notice && <div className="toast-inline" style={{ margin:16 }}>{notice}</div>}
         {pkgs.error && <div style={{ padding:16 }}><ErrorAlert error={pkgs.error} onRetry={pkgs.reload}/></div>}
         <table className="tbl">
-          <thead><tr><th>Name</th><th>Version</th><th>Type</th><th>Platform</th><th>SHA-256</th><th>Signature</th><th>Created</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Version</th><th>Type</th><th>Platform</th><th>Signature</th><th>Added</th></tr></thead>
           <tbody>
-            {pkgs.loading && <SkeletonRows n={5} cols={8}/>}
-            {!pkgs.loading && rows.length === 0 && <tr><td colSpan={8} style={{ padding:24, color:"var(--text-3)" }}>No packages uploaded.</td></tr>}
+            {pkgs.loading && <SkeletonRows n={5} cols={6}/>}
+            {!pkgs.loading && rows.length === 0 && (
+              <tr><td colSpan={6} style={{ padding:32, color:"var(--text-3)", textAlign:"center" }}>
+                No packages in your library yet — use <strong>Add custom</strong> for MSI/EXE/APT or <strong>Browse catalog</strong> to add winget packages.
+              </td></tr>
+            )}
             {!pkgs.loading && rows.map(p => (
-              <tr key={p.id || p.sha256}>
-                <td><div><strong style={{ fontWeight:500 }}>{p.name}</strong><div className="muted" style={{ fontSize:12 }}>{p.publisher}</div></div></td>
+              <tr key={p.id || p.sha256} onClick={() => setSelected(p)} style={{ cursor:"pointer" }}>
+                <td>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <div className="pkg-avatar">{(p.name || "?")[0].toUpperCase()}</div>
+                    <div>
+                      <strong style={{ fontWeight:500 }}>{p.name}</strong>
+                      <div className="muted" style={{ fontSize:12 }}>{p.publisher}{p.catalogCategory ? ` · ${p.catalogCategory}` : ""}</div>
+                    </div>
+                  </div>
+                </td>
                 <td className="mono">{p.version}</td>
                 <td><span className="pill">{p.type}</span></td>
-                <td className="muted">{p.platform}{p.architecture ? " · " + p.architecture : ""}</td>
-                <td className="mono muted" title={p.sha256}>{p.sha256 ? `${p.sha256.slice(0,12)}…` : "—"}</td>
+                <td className="muted">{p.platform}{p.architecture && p.architecture !== "any" ? " · " + p.architecture : ""}</td>
                 <td><StatusPill status={p.signatureStatus}/></td>
                 <td className="muted">{fmtAgo(p.createdAt)}</td>
-                <td><button className="btn sm" onClick={() => deploy(p.id)}>Deploy</button></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {selected && <PackageDetailPanel pkg={selected} onClose={() => setSelected(null)} onDeployed={handleDeployed}/>}
+      {wizardOpen && <PackageWizard onClose={() => setWizardOpen(false)} onCreated={(pkg) => { setWizardOpen(false); setNotice(`Package ${pkg.name} added.`); pkgs.reload(); setTimeout(() => setNotice(null), 5000); }}/>}
+      {storeOpen && <PackageStore onClose={() => setStoreOpen(false)} onDeployed={(msg) => { setStoreOpen(false); setNotice(msg); pkgs.reload(); setTimeout(() => setNotice(null), 5000); }}/>}
     </div>
   );
+}
+
+function PackageWizard({ onClose, onCreated }) {
+  const [step, setStep] = useState(0);
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    type: "winget",
+    platform: "windows",
+    architecture: "any",
+    name: "",
+    publisher: "",
+    version: "latest",
+    packageId: "",
+    packageScope: "system",
+    sourceUrl: "",
+    sha256: "",
+    installArgs: "",
+    signatureStatus: "unknown",
+    catalogCategory: "Custom",
+  });
+  const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+  const chooseType = (type) => {
+    const platform = ["apt","snap","flatpak"].includes(type) ? "linux" : "windows";
+    setForm(prev => ({
+      ...prev,
+      type,
+      platform,
+      packageScope: type === "scoop" ? "global" : "system",
+      installArgs: type === "msi" ? "/qn /norestart" : type === "exe" ? "/quiet /norestart" : "",
+      version: prev.version || "latest",
+    }));
+    setStep(1);
+  };
+  const managerType = ["winget","chocolatey","scoop","apt","snap","flatpak"].includes(form.type);
+  const downloadableType = ["msi","exe"].includes(form.type);
+  const canContinue = step === 0 || (form.name.trim() && form.publisher.trim() && form.version.trim() && (!managerType || form.packageId.trim()) && (!downloadableType || file || (form.sourceUrl.trim() && form.sha256.trim())));
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      const payload = {
+        ...form,
+        packageManager: form.type,
+        applicability: { appName: form.name, manufacturer: form.publisher },
+      };
+      if (file) {
+        payload.fileName = file.name;
+        payload.fileBase64 = await readFileBase64(file);
+      }
+      if (!payload.installArgs && form.type === "msi") payload.installArgs = "/qn /norestart";
+      if (!payload.installArgs && form.type === "exe") payload.installArgs = "/quiet /norestart";
+      const created = await PatchAPI.createPackage(payload);
+      onCreated?.(created);
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const steps = ["Type", "Details", "Review"];
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box package-wizard" onClick={e => e.stopPropagation()}>
+        <div className="wizard-top">
+          <div><h3>Add package</h3><p>Custom artifacts are stored by management, cached by backend nodes, and executed only through signed tasks.</p></div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">{Icon.close}</button>
+        </div>
+        <div className="sso-wizard-steps package-wizard-steps">
+          {steps.map((label, i) => (
+            <React.Fragment key={label}>
+              <div className={"sso-wizard-step-dot " + (step === i ? "active" : step > i ? "done" : "")}>
+                <span className="sso-wizard-dot-num">{step > i ? Icon.check : i + 1}</span>
+                <span className="sso-wizard-dot-label">{label}</span>
+              </div>
+              {i < steps.length - 1 && <div className={"sso-wizard-connector " + (step > i ? "filled" : "")}/>}
+            </React.Fragment>
+          ))}
+        </div>
+        {step === 0 && (
+          <div className="package-type-grid">
+            {[
+              ["winget","winget",Icon.windows,"Windows package manager"],
+              ["msi","MSI",Icon.packages,"Uploaded or vendor-hosted installer"],
+              ["exe","EXE",Icon.play,"Installer with safe silent parameters"],
+              ["apt","APT",Icon.linux,"Ubuntu/Debian repo package"],
+              ["snap","Snap",Icon.linux,"Linux Snap package"],
+              ["flatpak","Flatpak",Icon.linux,"Linux desktop package"],
+              ["chocolatey","Chocolatey",Icon.packages,"Chocolatey managed package"],
+              ["scoop","Scoop",Icon.download,"Scoop managed package"],
+            ].map(([id, label, icon, desc]) => (
+              <button key={id} className={"package-type-card " + (form.type === id ? "selected" : "")} onClick={() => chooseType(id)}>
+                <span>{icon}</span><strong>{label}</strong><em>{desc}</em>
+              </button>
+            ))}
+          </div>
+        )}
+        {step === 1 && (
+          <div className="package-wizard-body">
+            <div className="form-grid">
+              <label className="field"><span>Name</span><input value={form.name} onChange={e => set("name", e.target.value)} placeholder="Google Chrome"/></label>
+              <label className="field"><span>Publisher</span><input value={form.publisher} onChange={e => set("publisher", e.target.value)} placeholder="Google"/></label>
+              <label className="field"><span>Version</span><input value={form.version} onChange={e => set("version", e.target.value)} placeholder="latest"/></label>
+              <label className="field"><span>Architecture</span><select value={form.architecture} onChange={e => set("architecture", e.target.value)}><option value="any">Any</option><option value="x64">x64</option><option value="x86">x86</option><option value="arm64">arm64</option></select></label>
+            </div>
+            {managerType && (
+              <div className="form-grid" style={{ marginTop:14 }}>
+                <label className="field"><span>Package ID</span><input value={form.packageId} onChange={e => set("packageId", e.target.value)} placeholder={form.type === "flatpak" ? "org.example.App" : ["apt","snap"].includes(form.type) ? "nginx" : "Google.Chrome"}/></label>
+                <label className="field"><span>Scope</span><select value={form.packageScope} onChange={e => set("packageScope", e.target.value)}><option value="system">System</option><option value="global">Global</option><option value="user">User</option></select></label>
+              </div>
+            )}
+            {downloadableType && (
+              <div className="package-source-box">
+                <label className="field"><span>Upload installer</span><input type="file" accept={form.type === "msi" ? ".msi" : ".exe"} onChange={e => setFile(e.target.files?.[0] || null)}/></label>
+                <div className="sub">or use a vendor URL with a pinned SHA-256</div>
+                <div className="form-grid">
+                  <label className="field"><span>Source URL</span><input value={form.sourceUrl} onChange={e => set("sourceUrl", e.target.value)} placeholder="https://vendor.example/app.msi"/></label>
+                  <label className="field"><span>SHA-256</span><input value={form.sha256} onChange={e => set("sha256", e.target.value)} placeholder="64 hex characters"/></label>
+                </div>
+                <label className="field" style={{ marginTop:14 }}><span>Install parameters</span><input value={form.installArgs} onChange={e => set("installArgs", e.target.value)} placeholder={form.type === "exe" ? "/quiet /norestart" : "/qn /norestart"}/></label>
+              </div>
+            )}
+          </div>
+        )}
+        {step === 2 && (
+          <div className="package-review">
+            <div><span>Name</span><strong>{form.name}</strong></div>
+            <div><span>Type</span><strong>{form.type} · {form.platform}</strong></div>
+            <div><span>Source</span><strong>{managerType ? form.packageId : file ? file.name : form.sourceUrl}</strong></div>
+            <div><span>Execution</span><strong>{downloadableType ? "Backend-node cache proxy" : "Native package manager"}</strong></div>
+          </div>
+        )}
+        {error && <div className="banner error">{error}</div>}
+        <div className="modal-actions">
+          <button className="btn ghost" onClick={step === 0 ? onClose : () => setStep(step - 1)} disabled={busy}>{step === 0 ? "Cancel" : "Back"}</button>
+          {step < 2
+            ? <button className="btn primary" disabled={!canContinue} onClick={() => setStep(step + 1)}>Next</button>
+            : <button className="btn primary" disabled={busy || !canContinue} onClick={save}>{busy ? "Saving..." : "Create package"}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PackageDetailPanel({ pkg, onClose, onDeployed }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const deploy = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await PatchAPI.deployPackageAll(pkg.id);
+      const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
+      const skipped = result?.skippedDeviceCount ?? 0;
+      onDeployed(`${count} deployment task${count === 1 ? "" : "s"} queued${skipped ? `; ${skipped} skipped` : ""}.`);
+    } catch (err) {
+      setError(err?.message || String(err));
+      setBusy(false);
+    }
+  };
+
+  const rows = [
+    ["Version", pkg.version],
+    ["Type", pkg.type],
+    ["Platform", pkg.platform + (pkg.architecture && pkg.architecture !== "any" ? " · " + pkg.architecture : "")],
+    ["Category", pkg.catalogCategory || "—"],
+    ["Source", pkg.catalogSource === "central" ? "Central catalog" : "Custom"],
+    ["Signature", pkg.signatureStatus],
+    pkg.packageId ? ["Package ID", pkg.packageId] : null,
+    pkg.sha256 ? ["SHA-256", pkg.sha256.slice(0, 16) + "…"] : null,
+    pkg.sourceUrl ? ["Source URL", pkg.sourceUrl] : null,
+    ["Added", fmtAgo(pkg.createdAt)],
+  ].filter(Boolean);
+
+  return (
+    <div className="detail-panel-overlay" onClick={onClose}>
+      <div className="detail-panel" onClick={e => e.stopPropagation()}>
+        <div className="detail-panel-head">
+          <div style={{ display:"flex", alignItems:"center", gap:12, minWidth:0 }}>
+            <div className="pkg-avatar lg">{(pkg.name || "?")[0].toUpperCase()}</div>
+            <div style={{ minWidth:0 }}>
+              <h3 style={{ margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{pkg.name}</h3>
+              <div className="muted" style={{ fontSize:13 }}>{pkg.publisher}</div>
+            </div>
+          </div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">{Icon.close}</button>
+        </div>
+        <div className="detail-panel-body">
+          <div className="pkg-detail-grid">
+            {rows.map(([label, value]) => (
+              <div key={label} className="pkg-detail-row">
+                <span className="pkg-detail-label">{label}</span>
+                <span className="pkg-detail-value">{value}</span>
+              </div>
+            ))}
+          </div>
+          {pkg.installArgs && (
+            <div style={{ marginTop:16 }}>
+              <div className="pkg-detail-label" style={{ marginBottom:6 }}>Install args</div>
+              <code style={{ display:"block", background:"var(--bg-sub)", border:"1px solid var(--line)", borderRadius:"var(--r-sm)", padding:"8px 10px", fontSize:12, overflowX:"auto" }}>{pkg.installArgs}</code>
+            </div>
+          )}
+          {error && <div className="banner error" style={{ marginTop:16 }}>{error}</div>}
+        </div>
+        <div className="detail-panel-foot">
+          <button className="btn primary" style={{ flex:1 }} onClick={deploy} disabled={busy}>
+            {busy ? "Deploying…" : "Deploy to all matching devices"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PackageStore({ onClose, onDeployed }) {
+  const catalogRes = useResource(() => PatchAPI.packageCatalog());
+  const [platform, setPlatform] = useState("all");
+  const [manager, setManager] = useState("all");
+  const [category, setCategory] = useState("All");
+  const [search, setSearch] = useState("");
+  const [deploying, setDeploying] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const catalog = catalogRes.data || [];
+  const platforms = ["all", ...Array.from(new Set(catalog.map(p => p.platform).filter(Boolean))).sort()];
+  const managers = ["all", ...Array.from(new Set(catalog.filter(p => platform === "all" || p.platform === platform).map(p => p.packageManager).filter(Boolean))).sort()];
+  const scopedCatalog = catalog.filter(p =>
+    (platform === "all" || p.platform === platform) &&
+    (manager === "all" || p.packageManager === manager)
+  );
+  const categories = ["All", ...Array.from(new Set(scopedCatalog.map(p => p.category).filter(Boolean))).sort()];
+  const catCount = (cat) => cat === "All" ? scopedCatalog.length : scopedCatalog.filter(p => p.category === cat).length;
+
+  const filtered = scopedCatalog.filter(p => {
+    if (category !== "All" && p.category !== category) return false;
+    if (search) return textMatches(search, [p.name, p.publisher, p.packageId, p.category, p.platform, p.packageManager]);
+    return true;
+  });
+
+  const deploy = async (entry) => {
+    setDeploying(`${entry.platform}:${entry.packageManager}:${entry.packageId}`);
+    try {
+      const artifact = await PatchAPI.createPackage({
+        name: entry.name,
+        publisher: entry.publisher,
+        version: "latest",
+        type: entry.packageManager,
+        platform: entry.platform,
+        architecture: "any",
+        packageId: entry.packageId,
+        packageScope: "system",
+        catalogCategory: entry.category,
+        installArgs: "",
+        signatureStatus: "unknown",
+      });
+      const result = await PatchAPI.deployPackageAll(artifact.id);
+      const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
+      onDeployed?.(`${entry.name} added to library and ${count} deployment task${count === 1 ? "" : "s"} queued.`);
+    } catch (err) {
+      setNotice(`Error: ${err?.message || String(err)}`);
+    } finally {
+      setDeploying(null);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="pkg-store-modal" onClick={e => e.stopPropagation()}>
+        <div className="pkg-store-header">
+          <div>
+            <h3 style={{ margin:"0 0 2px" }}>Package Catalog</h3>
+            <p style={{ margin:0, fontSize:13, color:"var(--text-3)" }}>{catalog.length} packages · {categories.length - 1} categories · Windows and Linux</p>
+          </div>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <input
+              className="pkg-store-search"
+              placeholder="Search packages…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              autoFocus
+            />
+            <button className="icon-btn" onClick={onClose} aria-label="Close">{Icon.close}</button>
+          </div>
+        </div>
+        {notice && <div className="toast-inline" style={{ margin:"8px 20px 0" }}>{notice}</div>}
+        <div className="pkg-store-layout">
+          <nav className="pkg-store-sidebar">
+            <div className="pkg-store-filter-block">
+              <span>Platform</span>
+              {platforms.map(value => (
+                <button
+                  key={value}
+                  className={"pkg-store-filter-btn " + (platform === value ? "active" : "")}
+                  onClick={() => { setPlatform(value); setManager("all"); setCategory("All"); }}
+                >
+                  {value === "all" ? "All platforms" : value}
+                </button>
+              ))}
+            </div>
+            <div className="pkg-store-filter-block">
+              <span>Manager</span>
+              {managers.map(value => (
+                <button
+                  key={value}
+                  className={"pkg-store-filter-btn " + (manager === value ? "active" : "")}
+                  onClick={() => { setManager(value); setCategory("All"); }}
+                >
+                  {value === "all" ? "All managers" : value}
+                </button>
+              ))}
+            </div>
+            {categories.map(cat => (
+              <button
+                key={cat}
+                className={"pkg-store-cat-btn " + (category === cat ? "active" : "")}
+                onClick={() => setCategory(cat)}
+              >
+                <span>{cat}</span>
+                <span className="pkg-store-cat-count">{catCount(cat)}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="pkg-store-content">
+            {catalogRes.loading && <div style={{ padding:"48px 0", color:"var(--text-3)", textAlign:"center" }}>Loading catalog…</div>}
+            {!catalogRes.loading && filtered.length === 0 && (
+              <div style={{ padding:"48px 0", color:"var(--text-3)", textAlign:"center" }}>No packages match your search.</div>
+            )}
+            <div className="pkg-catalog-grid">
+              {filtered.map(p => (
+                <div key={`${p.platform}:${p.packageManager}:${p.packageId}`} className="pkg-catalog-card">
+                  <div className="pkg-catalog-card-top">
+                    <div className="pkg-avatar">{(p.name || "?")[0].toUpperCase()}</div>
+                    <span className="pill ok">{p.packageManager}</span>
+                  </div>
+                  <div className="pkg-catalog-card-name">{p.name}</div>
+                  <div className="pkg-catalog-card-pub">{p.publisher}</div>
+                  <div className="pkg-catalog-card-meta">{p.platform} · {p.category}</div>
+                  <div className="pkg-catalog-card-foot">
+                    <button
+                      className="btn sm primary"
+                      onClick={() => deploy(p)}
+                      disabled={deploying === `${p.platform}:${p.packageManager}:${p.packageId}`}
+                    >
+                      {deploying === `${p.platform}:${p.packageManager}:${p.packageId}` ? "…" : "Deploy"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+    reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
 }
 
 // ---------- Rules ----------
@@ -3311,6 +3696,17 @@ const SSO_ROLE_OPTIONS = [
   { value: 'admin',         label: 'Admin' },
 ];
 
+function roleLabel(role, rbac) {
+  return (rbac?.roleDefinitions || []).find(r => r.id === role)?.name || role;
+}
+
+function roleOptionsFromRbac(rbac) {
+  const definitions = rbac?.roleDefinitions || [];
+  return definitions.length
+    ? definitions.map(role => ({ value: role.id, label: role.name || role.id }))
+    : SSO_ROLE_OPTIONS;
+}
+
 const SSO_SETUP_GUIDE = {
   microsoft: {
     portalUrl:   'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
@@ -3834,7 +4230,7 @@ function SsoCredsStep({ type, name, setName, clientId, setClientId, clientSecret
 
 // ── Step 4: Access control ────────────────────────────────────────────────
 
-function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefaultRole,
+function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefaultRole, roleOptions = SSO_ROLE_OPTIONS,
   autoProvision, setAutoProvision, enabled, setEnabled, onSubmit, onBack, saving, saveError }) {
   return (
     <div className="sso-wizard-body">
@@ -3863,7 +4259,7 @@ function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefa
           <label className="field">
             <span>Default role for auto-provisioned users</span>
             <select value={defaultRole} onChange={e => setDefaultRole(e.target.value)}>
-              {SSO_ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {roleOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
         )}
@@ -3894,7 +4290,7 @@ function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefa
 
 // ── Full add-provider wizard ──────────────────────────────────────────────
 
-function SsoWizard({ onSave, onCancel, saving, saveError }) {
+function SsoWizard({ onSave, onCancel, saving, saveError, roleOptions = SSO_ROLE_OPTIONS }) {
   const [step,          setStep]          = useState(1);
   const [type,          setType]          = useState('microsoft');
   const [name,          setName]          = useState('');
@@ -3947,6 +4343,7 @@ function SsoWizard({ onSave, onCancel, saving, saveError }) {
         <SsoAccessStep
           allowedDomains={allowedDomains} setAllowedDomains={setAllowedDomains}
           defaultRole={defaultRole} setDefaultRole={setDefaultRole}
+          roleOptions={roleOptions}
           autoProvision={autoProvision} setAutoProvision={setAutoProvision}
           enabled={enabled} setEnabled={setEnabled}
           onSubmit={submit} onBack={() => setStep(3)}
@@ -3958,7 +4355,7 @@ function SsoWizard({ onSave, onCancel, saving, saveError }) {
 
 // ── Edit form (compact, for existing providers) ───────────────────────────
 
-function SsoEditForm({ initial, onSave, onCancel, saving, saveError }) {
+function SsoEditForm({ initial, onSave, onCancel, saving, saveError, roleOptions = SSO_ROLE_OPTIONS }) {
   const [name,          setName]          = useState(initial?.name          ?? '');
   const [clientId,      setClientId]      = useState(initial?.clientId      ?? '');
   const [clientSecret,  setClientSecret]  = useState('');
@@ -4046,7 +4443,7 @@ function SsoEditForm({ initial, onSave, onCancel, saving, saveError }) {
           <label className="field">
             <span>Default role for auto-provisioned users</span>
             <select value={defaultRole} onChange={e => setDefaultRole(e.target.value)}>
-              {SSO_ROLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {roleOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
         )}
@@ -4127,6 +4524,7 @@ function SsoProviderCard({ provider, onEdit, onDelete, onToggle }) {
 
 function SsoSettingsPage() {
   const { data: providers, loading, error, reload } = useResource(() => PatchAPI.ssoProvidersAdmin());
+  const rbac = useResource(() => PatchAPI.adminRbac());
   const [mode,     setMode]     = useState('list');  // 'list' | 'add' | 'edit'
   const [editing,  setEditing]  = useState(null);
   const [deleting, setDeleting] = useState(null);
@@ -4163,6 +4561,8 @@ function SsoSettingsPage() {
       .catch(() => {});
   };
 
+  const roleOptions = roleOptionsFromRbac(rbac.data);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -4179,7 +4579,7 @@ function SsoSettingsPage() {
 
       {mode === 'add' && (
         <div className="card sso-wizard-card">
-          <SsoWizard onSave={handleSave} onCancel={closeForm} saving={saving} saveError={saveError}/>
+          <SsoWizard onSave={handleSave} onCancel={closeForm} saving={saving} saveError={saveError} roleOptions={roleOptions}/>
         </div>
       )}
 
@@ -4191,6 +4591,7 @@ function SsoSettingsPage() {
             onCancel={closeForm}
             saving={saving}
             saveError={saveError}
+            roleOptions={roleOptions}
           />
         </div>
       )}
@@ -4331,6 +4732,10 @@ function AccessSettings() {
   const [resetPassword, setResetPassword] = useState('');
   const [deletingUser, setDeletingUser] = useState(null);
   const roles = rbac.data?.roles || ['viewer'];
+  useEffect(() => {
+    if (!roles.length || form.roles.some(role => roles.includes(role))) return;
+    setForm(prev => ({ ...prev, roles: [roles.includes('viewer') ? 'viewer' : roles[0]] }));
+  }, [roles.join('|')]);
   const toggleRole = (role) => setForm(prev => ({ ...prev, roles: prev.roles.includes(role) ? prev.roles.filter(r => r !== role) : [...prev.roles, role] }));
   const create = (e) => {
     e.preventDefault();
@@ -4376,7 +4781,7 @@ function AccessSettings() {
               <label className="field"><span>Email</span><input type="email" required value={form.email} onChange={e => setForm(prev => ({ ...prev, email:e.target.value }))}/></label>
               <label className="field"><span>Temporary password</span><input type="password" required minLength="12" value={form.password} onChange={e => setForm(prev => ({ ...prev, password:e.target.value }))}/></label>
             </div>
-            <div className="checkbox-group">{roles.map(role => <label className="checkbox-label" key={role}><input type="checkbox" checked={form.roles.includes(role)} onChange={() => toggleRole(role)}/>{role}</label>)}</div>
+            <div className="checkbox-group">{roles.map(role => <label className="checkbox-label" key={role}><input type="checkbox" checked={form.roles.includes(role)} onChange={() => toggleRole(role)}/>{roleLabel(role, rbac.data)}</label>)}</div>
             {error && <div className="banner error">{error}</div>}
             <div style={{ display:'flex', justifyContent:'space-between' }}><button type="button" className="btn ghost" onClick={() => setCreating(false)}>Cancel</button><button className="btn primary">Create user</button></div>
           </form>
@@ -4395,7 +4800,7 @@ function AccessSettings() {
                   <td>{roles.map(role => <label className="checkbox-label" key={role} style={{ marginRight:8 }}><input type="checkbox" checked={(user.roles || []).includes(role)} onChange={e => {
                     const next = e.target.checked ? [...user.roles, role] : user.roles.filter(r => r !== role);
                     updateUser(user, { roles: next });
-                  }}/>{role}</label>)}</td>
+                  }}/>{roleLabel(role, rbac.data)}</label>)}</td>
                   <td className="mono muted">{(user.permissions || []).join(', ')}</td>
                   <td>{user.mfaEnabled ? <span className="pill ok">Enabled</span> : <span className="pill">Off</span>}</td>
                   <td>{user.disabled ? <span className="pill crit">Disabled</span> : <span className="pill ok">Active</span>}</td>
@@ -4445,48 +4850,554 @@ function AccessSettings() {
 
 function PermissionSettings() {
   const rbac = useResource(() => PatchAPI.adminRbac());
+  const [mode, setMode] = useState('list');
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [form, setForm] = useState({ id:'', name:'', description:'', permissions:[] });
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const roleDefinitions = rbac.data?.roleDefinitions || [];
+  const permissions = rbac.data?.permissions || [];
+
+  const openCreate = () => {
+    setNotice('');
+    setEditing(null);
+    setForm({ id:'', name:'', description:'', permissions:['apps:read'] });
+    setMode('form');
+  };
+  const openEdit = (role) => {
+    setNotice('');
+    setEditing(role);
+    setForm({
+      id: role.id,
+      name: role.name || role.id,
+      description: role.description || '',
+      permissions: [...(role.permissions || [])],
+    });
+    setMode('form');
+  };
+  const closeForm = () => {
+    setMode('list');
+    setEditing(null);
+    setNotice('');
+  };
+  const togglePermission = (permission) => setForm(prev => ({
+    ...prev,
+    permissions: prev.permissions.includes(permission)
+      ? prev.permissions.filter(p => p !== permission)
+      : [...prev.permissions, permission].sort(),
+  }));
+  const submitRole = (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setNotice('');
+    const dto = {
+      id: form.id,
+      name: form.name,
+      description: form.description,
+      permissions: form.permissions,
+    };
+    const action = editing
+      ? PatchAPI.adminUpdateRole(editing.id, dto)
+      : PatchAPI.adminCreateRole(dto);
+    action
+      .then(() => { closeForm(); rbac.reload(); })
+      .catch(err => setNotice(err.message || 'Role save failed'))
+      .finally(() => setSaving(false));
+  };
+  const confirmDeleteRole = () => {
+    if (!deleting) return;
+    setSaving(true);
+    setNotice('');
+    PatchAPI.adminDeleteRole(deleting.id)
+      .then(() => { setDeleting(null); rbac.reload(); })
+      .catch(err => setNotice(err.message || 'Delete failed'))
+      .finally(() => setSaving(false));
+  };
+
   return (
     <div>
       <div className="page-head">
-        <div><h2>Permissions</h2><p>Role matrix and effective permission catalog</p></div>
+        <div><h2>Permissions</h2><p>Create roles and assign access across the management server</p></div>
+        {mode === 'list' && <button className="btn primary" onClick={openCreate}>{Icon.plus} New role</button>}
       </div>
       {rbac.error && <ErrorAlert error={rbac.error} onRetry={rbac.reload}/>}
+      {notice && <div className="banner error">{notice}</div>}
+
+      {mode === 'form' && (
+        <div className="card" style={{ marginBottom:16 }}>
+          <div className="card-head">
+            <div>
+              <h3>{editing ? `Edit ${editing.name || editing.id}` : 'Create role'}</h3>
+              <div className="sub">{editing?.builtIn ? 'Built-in role' : 'Custom role'}</div>
+            </div>
+          </div>
+          <form className="card-body" onSubmit={submitRole} style={{ display:'flex', flexDirection:'column', gap:14 }}>
+            <div className="form-grid">
+              <label className="field">
+                <span>Role ID</span>
+                <input required disabled={Boolean(editing)} value={form.id} onChange={e => setForm(prev => ({ ...prev, id:e.target.value }))} placeholder="regional_operator"/>
+                <span className="field-sub">Lowercase letters, numbers, underscores, colons, or hyphens.</span>
+              </label>
+              <label className="field">
+                <span>Display name</span>
+                <input required value={form.name} onChange={e => setForm(prev => ({ ...prev, name:e.target.value }))} placeholder="Regional Operator"/>
+              </label>
+            </div>
+            <label className="field">
+              <span>Description</span>
+              <input value={form.description} onChange={e => setForm(prev => ({ ...prev, description:e.target.value }))} placeholder="What this role is used for"/>
+            </label>
+            <div>
+              <strong>Permissions</strong>
+              <div className="checkbox-group" style={{ marginTop:8 }}>
+                {permissions.map(permission => (
+                  <label className="checkbox-label" key={permission}>
+                    <input type="checkbox" checked={form.permissions.includes(permission)} onChange={() => togglePermission(permission)}/>
+                    <span className="mono">{permission}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between' }}>
+              <button type="button" className="btn ghost" onClick={closeForm} disabled={saving}>Cancel</button>
+              <button className="btn primary" disabled={saving}>{saving ? 'Saving...' : 'Save role'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <div className="card">
-        <div className="card-head"><h3>Role permissions</h3><div className="sub">{(rbac.data?.permissions || []).length} permissions</div></div>
+        <div className="card-head"><h3>Roles</h3><div className="sub">{roleDefinitions.length || (rbac.data?.roles || []).length} roles · {permissions.length} permissions</div></div>
         <div className="card-body">
           {rbac.loading && <Skeleton h={140}/>}
-          {!rbac.loading && Object.entries(rbac.data?.matrix || {}).map(([role, permissions]) => (
-            <div key={role} style={{ marginBottom:14 }}>
-              <strong>{role}</strong>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:6 }}>{permissions.map(p => <span className="pill" key={p}>{p}</span>)}</div>
+          {!rbac.loading && roleDefinitions.length === 0 && <div className="empty-state">No roles configured.</div>}
+          {!rbac.loading && roleDefinitions.map(role => (
+            <div key={role.id} style={{ border:'1px solid var(--line)', borderRadius:8, padding:14, marginBottom:12 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                    <strong>{role.name || role.id}</strong>
+                    <span className="pill">{role.id}</span>
+                    {role.builtIn && <span className="pill accent">Built-in</span>}
+                  </div>
+                  {role.description && <div className="muted" style={{ fontSize:12, marginTop:4 }}>{role.description}</div>}
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button className="btn sm ghost" onClick={() => openEdit(role)}>Edit</button>
+                  <button className="btn sm ghost danger" onClick={() => setDeleting(role)} disabled={role.id === 'owner'}>Delete</button>
+                </div>
+              </div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:10 }}>
+                {(role.permissions || []).map(p => <span className="pill" key={p}>{p}</span>)}
+                {(role.permissions || []).length === 0 && <span className="muted">No permissions assigned</span>}
+              </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {deleting && (
+        <div className="modal-overlay" onClick={() => setDeleting(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Delete role?</h3>
+            <p>This removes <strong>{deleting.name || deleting.id}</strong>. Users and SSO providers must be moved off this role first.</p>
+            {notice && <div className="banner error">{notice}</div>}
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setDeleting(null)} disabled={saving}>Cancel</button>
+              <button className="btn danger" onClick={confirmDeleteRole} disabled={saving}>
+                {saving ? <span className="search-spinner"/> : null} Delete role
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Device Retirement Policies ──────────────────────────────────────────────
+
+const CRITERION_LABELS = {
+  inactive_days:      'Inactive for N days',
+  os_pattern:         'OS name contains',
+  trust_score_below:  'Trust score below',
+  risk_score_above:   'Risk score above',
+  has_tag:            'Has tag',
+  missing_tag:        'Missing tag',
+  in_group:           'In group',
+  os_family:          'OS family',
+};
+
+const ACTION_LABELS = {
+  tag_device:    'Apply tag to device',
+  create_alarm:  'Create alarm',
+  notify:        'Send notification',
+};
+
+function RetirementCriterionRow({ criterion, onChange, onRemove }) {
+  const set = (key, value) => onChange({ ...criterion, [key]: value });
+  return (
+    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', background:'var(--bg-2)', borderRadius:6, padding:'8px 10px' }}>
+      <select value={criterion.type} onChange={e => onChange({ type: e.target.value })} style={{ flexShrink:0 }}>
+        {Object.entries(CRITERION_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      {criterion.type === 'inactive_days' && (
+        <input type="number" min="1" placeholder="days" value={criterion.days ?? ''} onChange={e => set('days', Number(e.target.value))} style={{ width:80 }}/>
+      )}
+      {criterion.type === 'os_pattern' && (
+        <input placeholder="e.g. Windows 7" value={criterion.pattern ?? ''} onChange={e => set('pattern', e.target.value)} style={{ flex:1 }}/>
+      )}
+      {(criterion.type === 'trust_score_below' || criterion.type === 'risk_score_above') && (
+        <input type="number" min="0" max="100" placeholder="0–100" value={criterion.score ?? ''} onChange={e => set('score', Number(e.target.value))} style={{ width:80 }}/>
+      )}
+      {(criterion.type === 'has_tag' || criterion.type === 'missing_tag') && (
+        <input placeholder="tag name" value={criterion.tag ?? ''} onChange={e => set('tag', e.target.value)} style={{ flex:1 }}/>
+      )}
+      {criterion.type === 'in_group' && (
+        <input placeholder="group name" value={criterion.group ?? ''} onChange={e => set('group', e.target.value)} style={{ flex:1 }}/>
+      )}
+      {criterion.type === 'os_family' && (
+        <select value={criterion.os ?? 'windows'} onChange={e => set('os', e.target.value)}>
+          <option value="windows">Windows</option>
+          <option value="linux">Linux</option>
+        </select>
+      )}
+      <button className="btn sm ghost danger" onClick={onRemove} style={{ marginLeft:'auto' }}>Remove</button>
+    </div>
+  );
+}
+
+function RetirementActionRow({ action, onChange, onRemove }) {
+  const set = (key, value) => onChange({ ...action, [key]: value });
+  return (
+    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', background:'var(--bg-2)', borderRadius:6, padding:'8px 10px' }}>
+      <select value={action.type} onChange={e => onChange({ type: e.target.value })} style={{ flexShrink:0 }}>
+        {Object.entries(ACTION_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      {action.type === 'tag_device' && (
+        <input placeholder="tag to apply" value={action.tag ?? ''} onChange={e => set('tag', e.target.value)} style={{ flex:1 }}/>
+      )}
+      {action.type === 'create_alarm' && (
+        <>
+          <select value={action.severity ?? 'warning'} onChange={e => set('severity', e.target.value)}>
+            <option value="info">Info</option>
+            <option value="warning">Warning</option>
+            <option value="critical">Critical</option>
+          </select>
+          <input placeholder="alarm message" value={action.message ?? ''} onChange={e => set('message', e.target.value)} style={{ flex:1 }}/>
+        </>
+      )}
+      {action.type === 'notify' && (
+        <>
+          <select value={action.channel ?? 'siem'} onChange={e => set('channel', e.target.value)}>
+            <option value="siem">SIEM</option>
+            <option value="webhook">Webhook</option>
+            <option value="email">Email</option>
+          </select>
+          <input placeholder="optional message" value={action.message ?? ''} onChange={e => set('message', e.target.value)} style={{ flex:1 }}/>
+        </>
+      )}
+      <button className="btn sm ghost danger" onClick={onRemove} style={{ marginLeft:'auto' }}>Remove</button>
+    </div>
+  );
+}
+
+const BLANK_POLICY = {
+  name: '', description: '', enabled: true,
+  conditionCombinator: 'AND', priority: 10,
+  conditions: [{ type: 'inactive_days', days: 90 }],
+  actions: [{ type: 'tag_device', tag: 'retired' }],
+};
+
+function RetirementPolicyForm({ initial, onSave, onCancel, saving, saveError }) {
+  const [form, setForm] = useState(initial ? { ...initial } : { ...BLANK_POLICY });
+  const setField = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+
+  const addCondition = () => setForm(prev => ({ ...prev, conditions: [...prev.conditions, { type: 'inactive_days', days: 90 }] }));
+  const updateCondition = (i, val) => setForm(prev => ({ ...prev, conditions: prev.conditions.map((c, idx) => idx === i ? val : c) }));
+  const removeCondition = (i) => setForm(prev => ({ ...prev, conditions: prev.conditions.filter((_, idx) => idx !== i) }));
+
+  const addAction = () => setForm(prev => ({ ...prev, actions: [...prev.actions, { type: 'tag_device', tag: 'retired' }] }));
+  const updateAction = (i, val) => setForm(prev => ({ ...prev, actions: prev.actions.map((a, idx) => idx === i ? val : a) }));
+  const removeAction = (i) => setForm(prev => ({ ...prev, actions: prev.actions.filter((_, idx) => idx !== i) }));
+
+  const submit = (e) => { e.preventDefault(); onSave(form); };
+
+  return (
+    <form className="card-body" onSubmit={submit} style={{ display:'flex', flexDirection:'column', gap:16 }}>
+      <div className="form-grid">
+        <label className="field"><span>Policy name</span>
+          <input required value={form.name} onChange={e => setField('name', e.target.value)} placeholder="e.g. Retire inactive Windows 7 devices"/>
+        </label>
+        <label className="field"><span>Priority</span>
+          <input type="number" min="1" value={form.priority} onChange={e => setField('priority', Number(e.target.value))}/>
+        </label>
+      </div>
+      <label className="field"><span>Description <em className="field-hint">optional</em></span>
+        <input value={form.description} onChange={e => setField('description', e.target.value)} placeholder="What does this policy retire and why?"/>
+      </label>
+      <div className="checkbox-group">
+        <label className="checkbox-label">
+          <input type="checkbox" checked={form.enabled} onChange={e => setField('enabled', e.target.checked)}/> Enabled
+        </label>
+      </div>
+
+      <div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+          <strong>Conditions</strong>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <span className="muted" style={{ fontSize:12 }}>Match</span>
+            <select value={form.conditionCombinator} onChange={e => setField('conditionCombinator', e.target.value)} style={{ width:'auto' }}>
+              <option value="AND">ALL (AND)</option>
+              <option value="OR">ANY (OR)</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {form.conditions.map((c, i) => (
+            <RetirementCriterionRow key={i} criterion={c} onChange={val => updateCondition(i, val)} onRemove={() => removeCondition(i)}/>
+          ))}
+        </div>
+        <button type="button" className="btn sm ghost" style={{ marginTop:8 }} onClick={addCondition}>+ Add condition</button>
+      </div>
+
+      <div>
+        <div style={{ marginBottom:8 }}><strong>Actions</strong> <span className="muted" style={{ fontSize:12 }}>executed when a device matches</span></div>
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {form.actions.map((a, i) => (
+            <RetirementActionRow key={i} action={a} onChange={val => updateAction(i, val)} onRemove={() => removeAction(i)}/>
+          ))}
+        </div>
+        <button type="button" className="btn sm ghost" style={{ marginTop:8 }} onClick={addAction}>+ Add action</button>
+      </div>
+
+      {saveError && <div className="banner error">{saveError}</div>}
+      <div style={{ display:'flex', justifyContent:'space-between' }}>
+        <button type="button" className="btn ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn primary" disabled={saving}>{saving ? 'Saving…' : (initial ? 'Update policy' : 'Create policy')}</button>
+      </div>
+    </form>
+  );
+}
+
+function RetirementPolicyCard({ policy, onEdit, onDelete, onEvaluate, evaluating }) {
+  const conditionSummary = policy.conditions.map(c => {
+    switch (c.type) {
+      case 'inactive_days':     return `Inactive > ${c.days}d`;
+      case 'os_pattern':        return `OS contains "${c.pattern}"`;
+      case 'trust_score_below': return `Trust < ${c.score}`;
+      case 'risk_score_above':  return `Risk > ${c.score}`;
+      case 'has_tag':           return `Tag: ${c.tag}`;
+      case 'missing_tag':       return `No tag: ${c.tag}`;
+      case 'in_group':          return `Group: ${c.group}`;
+      case 'os_family':         return `OS: ${c.os}`;
+      default:                  return c.type;
+    }
+  }).join(` ${policy.conditionCombinator} `);
+
+  return (
+    <div style={{ border:'1px solid var(--border)', borderRadius:8, padding:14, display:'flex', flexDirection:'column', gap:10 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:8 }}>
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <strong>{policy.name}</strong>
+            <span className={'pill ' + (policy.enabled ? 'ok' : '')}>{policy.enabled ? 'Enabled' : 'Disabled'}</span>
+            <span className="pill">Priority {policy.priority}</span>
+          </div>
+          {policy.description && <div className="muted" style={{ fontSize:12, marginTop:2 }}>{policy.description}</div>}
+        </div>
+        <div style={{ display:'flex', gap:6 }}>
+          <button className="btn sm ghost" onClick={() => onEvaluate(policy)} disabled={evaluating}>
+            {evaluating ? <span className="search-spinner"/> : null} Evaluate
+          </button>
+          <button className="btn sm ghost" onClick={() => onEdit(policy)}>Edit</button>
+          <button className="btn sm ghost danger" onClick={() => onDelete(policy)}>Delete</button>
+        </div>
+      </div>
+      <div style={{ fontSize:12 }}>
+        <span className="muted">Conditions: </span><span className="mono">{conditionSummary}</span>
+      </div>
+      <div style={{ fontSize:12 }}>
+        <span className="muted">Actions: </span>
+        {policy.actions.map((a, i) => (
+          <span key={i} className="pill" style={{ marginRight:4 }}>
+            {a.type === 'tag_device' ? `tag: ${a.tag}` : a.type === 'create_alarm' ? `alarm(${a.severity})` : `notify:${a.channel}`}
+          </span>
+        ))}
+      </div>
+      {policy.lastEvaluatedAt != null && (
+        <div className="muted" style={{ fontSize:11 }}>
+          Last evaluated {fmtAgo(policy.lastEvaluatedAt)} — matched {policy.matchCount ?? 0} device{policy.matchCount !== 1 ? 's' : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RetirementEvalModal({ result, onClose }) {
+  if (!result) return null;
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" style={{ maxWidth:560, width:'95%' }} onClick={e => e.stopPropagation()}>
+        <h3>Evaluation results</h3>
+        <p className="muted">{result.matchCount} of {result.totalDevices} devices match this policy.</p>
+        {result.matchedDevices.length > 0 ? (
+          <div style={{ maxHeight:280, overflowY:'auto', marginTop:10 }}>
+            <table className="tbl">
+              <thead><tr><th>Hostname</th><th>OS</th><th>Group</th><th>Last seen</th></tr></thead>
+              <tbody>
+                {result.matchedDevices.map(d => (
+                  <tr key={d.id}>
+                    <td><strong>{d.hostname}</strong></td>
+                    <td className="muted">{d.os}</td>
+                    <td>{d.group || '—'}</td>
+                    <td className="muted">{fmtAgo(d.lastSeenAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state" style={{ padding:20 }}>No devices currently match this policy.</div>
+        )}
+        <div className="modal-actions" style={{ marginTop:12 }}>
+          <button className="btn primary" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>
   );
 }
 
-function AdminSettingsPage({ initialTab = 'policy', onAdminTabChange }) {
-  const [tab, setTab] = useState(initialTab);
-  useEffect(() => setTab(initialTab), [initialTab]);
-  const tabs = [['policy','Policy'], ['users','Users'], ['permissions','Permissions'], ['siem','SIEM'], ['sso','SSO'], ['posture','Posture']];
-  const switchTab = (id) => {
-    setTab(id);
-    onAdminTabChange?.(id);
+function RetirementPoliciesPage() {
+  const [tenantId] = useState('default');
+  const { data: policies, loading, error, reload } = useResource(() => PatchAPI.retirementPolicies(tenantId), [tenantId]);
+  const [mode, setMode] = useState('list'); // 'list' | 'add' | 'edit'
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [evaluating, setEvaluating] = useState(null);
+  const [evalResult, setEvalResult] = useState(null);
+
+  const openAdd  = () => { setSaveError(''); setMode('add'); };
+  const openEdit = (p) => { setSaveError(''); setEditing(p); setMode('edit'); };
+  const closeForm = () => { setMode('list'); setEditing(null); setSaveError(''); };
+
+  const handleSave = (dto) => {
+    setSaving(true); setSaveError('');
+    const action = mode === 'edit'
+      ? PatchAPI.updateRetirementPolicy(editing.id, dto)
+      : PatchAPI.createRetirementPolicy({ ...dto, tenantId });
+    action
+      .then(() => { closeForm(); reload(); })
+      .catch(err => setSaveError(err.message || 'Save failed'))
+      .finally(() => setSaving(false));
   };
+
+  const handleDelete = () => {
+    setSaving(true);
+    PatchAPI.deleteRetirementPolicy(deleting.id)
+      .then(() => { setDeleting(null); reload(); })
+      .catch(err => setSaveError(err.message || 'Delete failed'))
+      .finally(() => setSaving(false));
+  };
+
+  const handleEvaluate = (policy) => {
+    setEvaluating(policy.id);
+    PatchAPI.evaluateRetirementPolicy(policy.id)
+      .then(result => { setEvalResult(result); reload(); })
+      .catch(err => alert(err.message || 'Evaluation failed'))
+      .finally(() => setEvaluating(null));
+  };
+
+  const list = Array.isArray(policies) ? policies : [];
+
+  return (
+    <div>
+      <div className="page-head">
+        <div>
+          <h2>Device retirement policies</h2>
+          <p>Define rules to identify and flag devices for retirement based on inactivity, OS, trust score, and other parameters.</p>
+        </div>
+        {mode === 'list' && <button className="btn primary" onClick={openAdd}>{Icon.plus} New policy</button>}
+      </div>
+
+      {(mode === 'add' || mode === 'edit') && (
+        <div className="card" style={{ marginBottom:16 }}>
+          <div className="card-head"><h3>{mode === 'edit' ? 'Edit policy' : 'New policy'}</h3></div>
+          <RetirementPolicyForm
+            initial={mode === 'edit' ? editing : null}
+            onSave={handleSave}
+            onCancel={closeForm}
+            saving={saving}
+            saveError={saveError}
+          />
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-head">
+          <h3>Policies</h3>
+          <div className="sub">{list.length} configured</div>
+        </div>
+        {loading && <div className="empty-state"><span className="search-spinner"/> Loading…</div>}
+        {error   && <div style={{ padding:12 }}><ErrorAlert error={error} onRetry={reload}/></div>}
+        {!loading && !error && list.length === 0 && (
+          <div className="empty-state">
+            <div style={{ color:'var(--text-3)', marginBottom:6 }}>{Icon.shield}</div>
+            <p>No retirement policies configured.</p>
+            <p className="sub">Create a policy to automatically identify devices that should be retired.</p>
+            {mode === 'list' && <button className="btn primary" style={{ marginTop:12 }} onClick={openAdd}>{Icon.plus} Create first policy</button>}
+          </div>
+        )}
+        {!loading && !error && list.length > 0 && (
+          <div style={{ display:'flex', flexDirection:'column', gap:10, padding:'12px 16px' }}>
+            {list.map(p => (
+              <RetirementPolicyCard
+                key={p.id}
+                policy={p}
+                onEdit={openEdit}
+                onDelete={p => setDeleting(p)}
+                onEvaluate={handleEvaluate}
+                evaluating={evaluating === p.id}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {deleting && (
+        <div className="modal-overlay" onClick={() => setDeleting(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Delete retirement policy?</h3>
+            <p>This permanently removes <strong>{deleting.name}</strong>. Devices already tagged by this policy will retain their tags.</p>
+            {saveError && <div className="banner error">{saveError}</div>}
+            <div className="modal-actions">
+              <button className="btn ghost" onClick={() => setDeleting(null)} disabled={saving}>Cancel</button>
+              <button className="btn danger" onClick={handleDelete} disabled={saving}>
+                {saving ? <span className="search-spinner"/> : null} Delete policy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <RetirementEvalModal result={evalResult} onClose={() => setEvalResult(null)}/>
+    </div>
+  );
+}
+
+function AdminSettingsPage({ initialTab = 'policy' }) {
   return (
     <div className="page">
-      <div className="page-head">
-        <div><h2>Admin settings</h2><p>Security policy, users, permissions, SIEM, SSO, and posture</p></div>
-      </div>
-      <div className="filterbar">{tabs.map(([id, label]) => <button key={id} className={"chip " + (tab === id ? "active" : "")} onClick={() => switchTab(id)}>{label}</button>)}</div>
-      {tab === 'policy' && <TenantPolicySettings/>}
-      {tab === 'users' && <AccessSettings/>}
-      {tab === 'permissions' && <PermissionSettings/>}
-      {tab === 'siem' && <SiemPage/>}
-      {tab === 'sso' && <SsoSettingsPage/>}
-      {tab === 'posture' && <SecurityPosturePage/>}
+      {initialTab === 'policy'      && <TenantPolicySettings/>}
+      {initialTab === 'users'       && <AccessSettings/>}
+      {initialTab === 'permissions' && <PermissionSettings/>}
+      {initialTab === 'siem'        && <SiemPage/>}
+      {initialTab === 'sso'         && <SsoSettingsPage/>}
+      {initialTab === 'posture'     && <SecurityPosturePage/>}
+      {initialTab === 'retirement'  && <RetirementPoliciesPage/>}
     </div>
   );
 }

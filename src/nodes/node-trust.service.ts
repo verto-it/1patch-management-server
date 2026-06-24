@@ -110,7 +110,7 @@ export class NodeTrustService {
     }
 
     if (next < QUARANTINE_TRUST_THRESHOLD) {
-      this.quarantine(node.id, 'trust_score_low', `Trust score ${next} fell below ${QUARANTINE_TRUST_THRESHOLD}`);
+      this.quarantine(node.id, 'trust_score_low', trustThresholdReason(next, reasons, securityFindings));
     }
 
     void this.store.persist();
@@ -132,7 +132,15 @@ export class NodeTrustService {
 
   quarantine(nodeId: string, trigger: 'invalid_signature' | 'replay_attempt' | 'trust_score_low' | 'repeated_failures' | 'integrity_mismatch' | 'certificate_issue' | 'manual', reason: string) {
     const node = this.store.backendNodes.find((candidate) => candidate.id === nodeId);
-    if (!node || node.quarantineState === 'quarantined') return;
+    if (!node) return;
+    if (node.quarantineState === 'quarantined') {
+      if (trigger === 'trust_score_low' && node.quarantineReason !== reason) {
+        node.quarantineReason = reason;
+        const activeEvent = this.store.nodeQuarantineEvents.find((event) => event.nodeId === nodeId && !event.resolvedAt);
+        if (activeEvent) activeEvent.reason = reason;
+      }
+      return;
+    }
     node.quarantineState = 'quarantined';
     node.healthState = 'quarantined';
     node.status = 'offline';
@@ -251,8 +259,10 @@ function applyIpReputationFindings(
   const ipHost = host.replace(/^\[|\]$/g, '');
   const ipKind = isIP(ipHost);
   const port = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
-  const isLocalName = host === 'localhost' || host.endsWith('.local');
+  const isLocalName = host === 'localhost' || host.endsWith('.local') || host.endsWith('.localhost');
+  const isInternalName = !ipKind && (isLocalName || !host.includes('.') || host.endsWith('.internal'));
   const isPrivateOrReserved = ipKind > 0 && isPrivateOrReservedIp(ipHost);
+  const isPublicRoutable = !isPrivateOrReserved && !isInternalName;
   const reputationHost = ipKind > 0 ? ipHost : host;
   const denylisted = envSet('NODE_PUBLIC_IP_REPUTATION_DENYLIST').has(reputationHost);
   const warnlisted = envSet('NODE_PUBLIC_IP_REPUTATION_WARNLIST').has(reputationHost);
@@ -294,7 +304,7 @@ function applyIpReputationFindings(
     penalize(8);
   }
 
-  if (parsed.protocol === 'http:' && !isPrivateOrReserved && !isLocalName) {
+  if (parsed.protocol === 'http:' && isPublicRoutable) {
     findings.push({
       code: 'NODE_PUBLIC_URL_NO_TLS',
       severity: 'high',
@@ -306,7 +316,7 @@ function applyIpReputationFindings(
     penalize(12);
   }
 
-  if (!isPrivateOrReserved && !isLocalName && ![80, 443, 4200, 4201].includes(port)) {
+  if (isPublicRoutable && ![80, 443, 4200, 4201].includes(port)) {
     findings.push({
       code: 'NODE_PUBLIC_URL_UNUSUAL_PORT',
       severity: 'low',
@@ -317,6 +327,22 @@ function applyIpReputationFindings(
     reasons.push(`unusual public node port ${port}`);
     penalize(3);
   }
+}
+
+function trustThresholdReason(
+  trustScore: number,
+  reasons: string[],
+  findings: NodeSecurityFinding[],
+) {
+  const factors = [
+    ...reasons.filter((reason) => reason !== 'signed health report accepted'),
+    ...findings.map((finding) => finding.message),
+  ];
+  const uniqueFactors = [...new Set(factors)].slice(0, 4);
+  if (uniqueFactors.length === 0) {
+    return `Trust score ${trustScore} fell below ${QUARANTINE_TRUST_THRESHOLD}; no scoring factors were recorded`;
+  }
+  return `Trust score ${trustScore} fell below ${QUARANTINE_TRUST_THRESHOLD} after: ${uniqueFactors.join('; ')}`;
 }
 
 function envSet(name: string) {

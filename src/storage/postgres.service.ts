@@ -1,16 +1,17 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
 import {
   Alarm, AuditEvent, BackendNode, ClientEnrollment, Device, InstalledApp,
-  CacheArtifactAttestation, CrossNodeProbeReport, FileReputationReport,
+  CacheArtifactAttestation, CrossNodeProbeReport, DeviceRetirementPolicy, FileReputationReport,
   KillSwitchState, NodeChallengeNonce, NodeHealthReport, NodeQuarantineEvent, NodeRoutingPolicy,
   NodeTrustSnapshot, NodeUpdateCampaign, NodeVersionAttestation, PackageArtifact,
-  PatchRule, RouteDecision, RuleTemplate, SiemEvent, TaskLedgerEntry, TenantPolicy,
+  PatchRule, RoleDefinition, RouteDecision, RuleTemplate, SiemEvent, TaskLedgerEntry, TenantPolicy,
   UpdateTask, User,
 } from '../types';
 
 export interface StoreSnapshot {
   users: User[];
+  roleDefinitions?: RoleDefinition[];
   backendNodes: BackendNode[];
   clientEnrollments: ClientEnrollment[];
   devices: Device[];
@@ -35,6 +36,7 @@ export interface StoreSnapshot {
   nodeQuarantineEvents?: NodeQuarantineEvent[];
   nodeUpdateCampaigns?: NodeUpdateCampaign[];
   nodeVersionAttestations?: NodeVersionAttestation[];
+  deviceRetirementPolicies?: DeviceRetirementPolicy[];
 }
 
 @Injectable()
@@ -118,11 +120,12 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     if (!this.pool) return undefined;
     try {
       const [
-        users, nodes, clientEnrollments, devices, apps, packages, rules, tasks, alarms, audit, ledger, killSwitch, tenantPolicies,
+        users, roleDefinitions, nodes, clientEnrollments, devices, apps, packages, rules, tasks, alarms, audit, ledger, killSwitch, tenantPolicies,
         routingPolicies, challengeNonces, healthReports, trustHistory, routeDecisions, probeReports, cacheAttestations,
         fileReputationReports, quarantineEvents, updateCampaigns, versionAttestations,
       ] = await Promise.all([
         this.pool.query('select * from users order by created_at asc'),
+        this.pool.query('select * from role_definitions order by created_at asc'),
         this.pool.query('select * from backend_nodes order by name asc'),
         this.pool.query('select * from client_enrollments order by created_at desc'),
         this.pool.query('select * from devices order by hostname asc'),
@@ -150,6 +153,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       this.lastError = undefined;
       return {
         users: users.rows.map(rowToUser),
+        roleDefinitions: roleDefinitions.rows.map(rowToRoleDefinition),
         backendNodes: nodes.rows.map(rowToNode),
         clientEnrollments: clientEnrollments.rows.map(rowToClientEnrollment),
         devices: devices.rows.map(rowToDevice),
@@ -234,6 +238,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       await client.query('delete from devices');
       await client.query('delete from client_enrollments');
       await client.query('delete from backend_nodes');
+      await client.query('delete from role_definitions');
       await client.query('delete from users');
 
       for (const user of snapshot.users) {
@@ -241,6 +246,13 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
           `insert into users (id, email, password_hash, roles, disabled, mfa_enabled, mfa_secret, recovery_code_hashes, failed_attempts, locked_until, last_login_at, last_login_country, oauth_links)
            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
           [user.id, user.email, user.passwordHash, user.roles, user.disabled === true, user.mfaEnabled, user.mfaSecret, user.recoveryCodeHashes, user.failedAttempts, user.lockedUntil, user.lastLoginAt, user.lastLoginCountry, JSON.stringify(user.oauthLinks)],
+        );
+      }
+      for (const role of snapshot.roleDefinitions ?? []) {
+        await client.query(
+          `insert into role_definitions (id, name, description, permissions, built_in, created_at, updated_at)
+           values ($1,$2,$3,$4,$5,$6,$7)`,
+          [role.id, role.name, role.description, role.permissions, role.builtIn, role.createdAt ?? new Date().toISOString(), role.updatedAt ?? new Date().toISOString()],
         );
       }
       for (const node of snapshot.backendNodes) {
@@ -292,8 +304,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       }
       for (const artifact of snapshot.packages) {
         await client.query(
-          `insert into package_artifacts (id, name, publisher, version, architecture, platform, type, package_id, package_manager, package_scope, file_name, storage_path, source_url, sha256, signature_status, file_reputation, cache_attestations, install_args, uninstall_args, applicability, created_at)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          `insert into package_artifacts (id, name, publisher, version, architecture, platform, type, package_id, package_manager, package_scope, file_name, storage_path, source_url, sha256, signature_status, file_reputation, cache_attestations, install_args, uninstall_args, applicability, catalog_source, catalog_category, created_at)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
           [
             artifact.id,
             artifact.name,
@@ -315,6 +327,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
             artifact.installArgs,
             artifact.uninstallArgs,
             JSON.stringify(artifact.applicability ?? {}),
+            artifact.catalogSource,
+            artifact.catalogCategory,
             artifact.createdAt,
           ],
         );
@@ -328,8 +342,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       }
       for (const task of snapshot.tasks) {
         await client.query(
-          `insert into update_tasks (id, node_id, device_id, app_name, package_artifact_id, package_id, package_manager, package_scope, product_code, source_url, sha256, required_capabilities, routing_policy_id, install_args, target_version, type, status, created_at, dispatched_at, completed_at, output)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          `insert into update_tasks (id, node_id, device_id, app_name, package_artifact_id, package_id, package_manager, package_scope, product_code, source_url, management_source_url, sha256, required_capabilities, routing_policy_id, install_args, target_version, type, status, created_at, dispatched_at, completed_at, output)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
           [
             task.id,
             task.nodeId,
@@ -341,6 +355,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
             task.packageScope,
             task.productCode,
             task.sourceUrl,
+            task.managementSourceUrl,
             task.sha256,
             JSON.stringify(task.requiredCapabilities ?? []),
             task.routingPolicyId,
@@ -460,6 +475,15 @@ create table if not exists users (
   created_at timestamptz not null default now()
 );
 alter table users add column if not exists disabled boolean not null default false;
+create table if not exists role_definitions (
+  id text primary key,
+  name text not null,
+  description text,
+  permissions text[] not null,
+  built_in boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 create table if not exists backend_nodes (
   id text primary key,
   name text not null,
@@ -679,6 +703,8 @@ create table if not exists package_artifacts (
   install_args text not null,
   uninstall_args text,
   applicability jsonb not null default '{}',
+  catalog_source text,
+  catalog_category text,
   created_at timestamptz not null default now()
 );
 alter table package_artifacts add column if not exists package_manager text;
@@ -686,6 +712,8 @@ alter table package_artifacts add column if not exists package_scope text;
 alter table package_artifacts alter column sha256 drop not null;
 alter table package_artifacts add column if not exists file_reputation jsonb;
 alter table package_artifacts add column if not exists cache_attestations jsonb not null default '[]';
+alter table package_artifacts add column if not exists catalog_source text;
+alter table package_artifacts add column if not exists catalog_category text;
 create index if not exists package_artifacts_name_version_idx on package_artifacts(name, version);
 create table if not exists patch_rules (
   id text primary key,
@@ -709,6 +737,7 @@ create table if not exists update_tasks (
   package_scope text,
   product_code text,
   source_url text,
+  management_source_url text,
   sha256 text,
   install_args text,
   target_version text not null,
@@ -723,6 +752,7 @@ alter table update_tasks add column if not exists package_manager text;
 alter table update_tasks add column if not exists package_scope text;
 alter table update_tasks add column if not exists required_capabilities jsonb not null default '[]';
 alter table update_tasks add column if not exists routing_policy_id text;
+alter table update_tasks add column if not exists management_source_url text;
 create index if not exists update_tasks_node_status_idx on update_tasks(node_id, status);
 create index if not exists update_tasks_device_idx on update_tasks(device_id);
 create table if not exists alarms (
@@ -766,6 +796,18 @@ function rowToUser(row: Record<string, any>): User {
     lastLoginAt: toIso(row.last_login_at),
     lastLoginCountry: row.last_login_country,
     oauthLinks: row.oauth_links ?? [],
+  };
+}
+
+function rowToRoleDefinition(row: Record<string, any>): RoleDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    permissions: row.permissions ?? [],
+    builtIn: row.built_in === true,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
   };
 }
 
@@ -924,6 +966,7 @@ function rowToPackage(row: Record<string, any>): PackageArtifact {
     fileName: row.file_name,
     storagePath: row.storage_path,
     sourceUrl: row.source_url,
+    managementSourceUrl: row.management_source_url,
     sha256: row.sha256,
     signatureStatus: row.signature_status,
     fileReputation: row.file_reputation ?? undefined,
@@ -931,6 +974,8 @@ function rowToPackage(row: Record<string, any>): PackageArtifact {
     installArgs: row.install_args,
     uninstallArgs: row.uninstall_args,
     applicability: row.applicability ?? {},
+    catalogSource: row.catalog_source,
+    catalogCategory: row.catalog_category,
     createdAt: toIso(row.created_at) ?? new Date().toISOString(),
   };
 }
@@ -953,6 +998,7 @@ function rowToTask(row: Record<string, any>): UpdateTask {
     packageScope: row.package_scope,
     productCode: row.product_code,
     sourceUrl: row.source_url,
+    managementSourceUrl: row.management_source_url,
     sha256: row.sha256,
     requiredCapabilities: row.required_capabilities ?? [],
     routingPolicyId: row.routing_policy_id,
@@ -1082,6 +1128,7 @@ function toIso(value: unknown) {
 export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {
   return {
     users: uniqueById(snapshot.users),
+    roleDefinitions: uniqueById(snapshot.roleDefinitions ?? []),
     backendNodes: uniqueById(snapshot.backendNodes),
     clientEnrollments: uniqueById(snapshot.clientEnrollments ?? []),
     devices: uniqueById(snapshot.devices),
@@ -1135,3 +1182,5 @@ function uniqueBy<T>(items: T[], id: (item: T) => string): T[] {
     return true;
   });
 }
+
+

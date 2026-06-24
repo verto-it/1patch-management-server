@@ -5,6 +5,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { BrowserNavigationFilter } from './browser-navigation.filter';
 
 /**
  * Handles the print banner operation.
@@ -97,6 +98,7 @@ async function bootstrap() {
   }
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalFilters(new BrowserNavigationFilter());
 
   if (process.env.NODE_ENV !== 'production') {
     const config = new DocumentBuilder()

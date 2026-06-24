@@ -634,5 +634,8 @@ export class SsoService {
     if (p.type === 'okta'    && !p.domain)       throw new BadRequestException('Okta provider requires domain');
     if (p.type === 'oidc'    && !p.discoveryUrl) throw new BadRequestException('Generic OIDC requires discoveryUrl');
     if (p.type === 'microsoft' && !p.tenantId)   throw new BadRequestException('Microsoft provider requires tenantId');
+    if (p.defaultRole && !this.rbac.hasRole(p.defaultRole)) {
+      throw new BadRequestException('Default role does not exist');
+    }
   }
 }

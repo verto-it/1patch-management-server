@@ -9,7 +9,7 @@ import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { RbacGuard } from '../security/rbac.guard';
 import { RequirePermission } from '../security/require-permission.decorator';
 import { MemoryStore } from '../storage/memory.store';
-import { Permission, Role, User } from '../types';
+import { Permission, Role, RoleDefinition, User } from '../types';
 
 @ApiTags('admin')
 @UseGuards(JwtAuthGuard, RbacGuard)
@@ -81,14 +81,40 @@ export class AdminController {
     return { deleted: true };
   }
 
-  @RequirePermission('users:manage')
+  @RequirePermission('auth:manage', 'users:manage', 'roles:manage')
   @Get('/rbac')
-  rbacInfo(): { roles: Role[]; permissions: Permission[]; matrix: Record<Role, Permission[]> } {
+  rbacInfo(): { roles: Role[]; roleDefinitions: RoleDefinition[]; permissions: Permission[]; matrix: Record<Role, Permission[]> } {
     return {
       roles: this.rbac.allRoles(),
+      roleDefinitions: this.rbac.roleDefinitions(),
       permissions: this.rbac.allPermissions(),
       matrix: this.rbac.roleMatrix(),
     };
+  }
+
+  @RequirePermission('roles:manage')
+  @Post('/roles')
+  async createRole(@Body() body: { id?: string; name?: string; description?: string; permissions?: Permission[] }, @CurrentUser() actor: User) {
+    const role = await this.rbac.createRole(body);
+    this.audit.record(actor.id, 'admin.role.created', role.id, { name: role.name, permissions: role.permissions });
+    return role;
+  }
+
+  @RequirePermission('roles:manage')
+  @Patch('/roles/:id')
+  async updateRole(@Param('id') id: string, @Body() body: { name?: string; description?: string; permissions?: Permission[] }, @CurrentUser() actor: User) {
+    const before = this.rbac.roleDefinitions().find((role) => role.id === id);
+    const role = await this.rbac.updateRole(id, body);
+    this.audit.record(actor.id, 'admin.role.updated', role.id, { before, after: role });
+    return role;
+  }
+
+  @RequirePermission('roles:manage')
+  @Delete('/roles/:id')
+  async deleteRole(@Param('id') id: string, @CurrentUser() actor: User) {
+    const role = await this.rbac.deleteRole(id);
+    this.audit.record(actor.id, 'admin.role.deleted', role.id, { name: role.name, builtIn: role.builtIn });
+    return { deleted: true };
   }
 
   private requireUser(id: string) {

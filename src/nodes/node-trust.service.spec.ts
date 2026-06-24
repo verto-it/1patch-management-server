@@ -120,4 +120,53 @@ describe('NodeTrustService', () => {
     expect(snapshot?.securityFindings?.map((finding) => finding.code)).toContain('NODE_PUBLIC_IP_REPUTATION_DENYLISTED');
     expect(snapshot?.reasons).toContain('public IP reputation denylisted');
   });
+
+  it('does not penalize Docker lab hostnames as public plain HTTP endpoints', () => {
+    const { service } = createService(node({
+      trustScore: 80,
+      publicUrl: 'http://backend-node-1:4200',
+    }));
+
+    const snapshot = service.applyHealthReport(report({ publicUrl: 'http://backend-node-1:4200' }));
+
+    expect(snapshot?.trustScore).toBe(82);
+    expect(snapshot?.securityFindings?.map((finding) => finding.code)).not.toContain('NODE_PUBLIC_URL_NO_TLS');
+    expect(snapshot?.reasons).toEqual(['signed health report accepted']);
+  });
+
+  it('stores the scoring factors in the quarantine reason when trust falls below the threshold', () => {
+    const { service, store } = createService(node({ trustScore: 32 }));
+
+    service.applyHealthReport(report({
+      scannerHealthy: false,
+      cacheHealthy: false,
+      packageVerifierHealthy: false,
+    }));
+
+    expect(store.backendNodes[0].quarantineState).toBe('quarantined');
+    expect(store.backendNodes[0].quarantineReason).toContain('Trust score 0 fell below 30 after:');
+    expect(store.backendNodes[0].quarantineReason).toContain('scanner unhealthy');
+    expect(store.backendNodes[0].quarantineReason).toContain('package verifier unhealthy');
+  });
+
+  it('refreshes a generic low-score reason for nodes that are already quarantined', () => {
+    const { service, store } = createService(node({
+      healthState: 'quarantined',
+      quarantineState: 'quarantined',
+      quarantineReason: 'Trust score 0 fell below 30',
+      trustScore: 20,
+    }));
+    (store.nodeQuarantineEvents as any[]).push({
+      id: 'event-1',
+      nodeId: 'node-1',
+      trigger: 'trust_score_low',
+      reason: 'Trust score 0 fell below 30',
+      createdAt: new Date().toISOString(),
+    });
+
+    service.applyHealthReport(report({ scannerHealthy: false }));
+
+    expect(store.backendNodes[0].quarantineReason).toContain('after: scanner unhealthy');
+    expect((store.nodeQuarantineEvents as any[])[0].reason).toBe(store.backendNodes[0].quarantineReason);
+  });
 });

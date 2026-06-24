@@ -14,6 +14,16 @@ create table if not exists users (
   created_at timestamptz not null default now()
 );
 
+create table if not exists role_definitions (
+  id text primary key,
+  name text not null,
+  description text,
+  permissions text[] not null,
+  built_in boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists backend_nodes (
   id text primary key,
   name text not null,

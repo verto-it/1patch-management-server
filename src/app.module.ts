@@ -15,6 +15,7 @@ import { DashboardController } from './dashboard.controller';
 import { DashboardHistoryController } from './dashboard-history.controller';
 import { DashboardUiController } from './dashboard-ui.controller';
 import { DevicesController } from './devices.controller';
+import { DeviceRetirementController } from './device-retirement.controller';
 import { NodesController } from './nodes/nodes.controller';
 import { NodeEnterpriseController } from './nodes/node-enterprise.controller';
 import { NodeCryptoService } from './nodes/node-crypto.service';
@@ -23,6 +24,7 @@ import { NodeRoutingService } from './nodes/node-routing.service';
 import { NodeTrustService } from './nodes/node-trust.service';
 import { NodesService } from './nodes/nodes.service';
 import { PackagesController } from './packages.controller';
+import { PackageCatalogService } from './package-catalog.service';
 import { RbacService } from './rbac/rbac.service';
 import { RulesController } from './rules/rules.controller';
 import { RulesService } from './rules/rules.service';
@@ -68,7 +70,7 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
   ],
   controllers: [
     AppController, AuthController, AdminController, NodesController, NodeEnterpriseController, AgentController,
-    AppsController, RulesController, RuleTemplatesController, DevicesController, DashboardController,
+    AppsController, RulesController, RuleTemplatesController, DevicesController, DeviceRetirementController, DashboardController,
     DashboardHistoryController, AlarmsController, AuditController, SiemController, SecurityPostureController,
     DashboardUiController, TasksController, SetupController, PackagesController,
     SsoController,
@@ -93,6 +95,7 @@ import { SecurityPostureService } from './security-posture/security-posture.serv
     SecurityPostureService,
     RulesService,
     RuleTemplatesService,
+    PackageCatalogService,
     MfaChallengeService,
     SsoService,
   ],

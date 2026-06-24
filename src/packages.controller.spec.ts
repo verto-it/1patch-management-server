@@ -24,13 +24,13 @@ function makeController() {
   const nodes = { availableNode: jest.fn(() => ({ id: 'node-1' })) };
   const authorization = { autoSignTask: jest.fn((task) => task) };
   return {
-    controller: new PackagesController(store, audit as any, nodes as any, authorization as any),
+    controller: new PackagesController(store, audit as any, nodes as any, authorization as any, {} as any),
     store,
     authorization,
   };
 }
 
-describe('PackagesController Linux apt support', () => {
+describe('PackagesController Linux package support', () => {
   it('creates repo-managed apt artifacts as linux packages only', async () => {
     const { controller } = makeController();
 
@@ -49,6 +49,36 @@ describe('PackagesController Linux apt support', () => {
       installArgs: '',
       sourceUrl: undefined,
       sha256: undefined,
+    }));
+  });
+
+  it('creates repo-managed snap and flatpak artifacts as linux packages', async () => {
+    const { controller } = makeController();
+
+    await expect(controller.create({
+      name: 'Code',
+      publisher: 'Snap',
+      version: 'latest',
+      type: 'snap',
+      packageId: 'code',
+    }, user)).resolves.toEqual(expect.objectContaining({
+      platform: 'linux',
+      type: 'snap',
+      packageManager: 'snap',
+      packageId: 'code',
+    }));
+
+    await expect(controller.create({
+      name: 'VLC',
+      publisher: 'VideoLAN',
+      version: 'latest',
+      type: 'flatpak',
+      packageId: 'org.videolan.VLC',
+    }, user)).resolves.toEqual(expect.objectContaining({
+      platform: 'linux',
+      type: 'flatpak',
+      packageManager: 'flatpak',
+      packageId: 'org.videolan.VLC',
     }));
   });
 

@@ -850,6 +850,7 @@ Object.assign(window, {
 
 // AGPL-3.0-only — 1Patch management UI API client
 const SESSION_KEY = '1patch-session';
+const DEMO_MODE = /^\/ui\/demo(?:\/|$)/.test(window.location.pathname) || new URLSearchParams(window.location.search).has('demo');
 /**
  * Handles the session operation.
  * @returns The result produced by the operation.
@@ -953,9 +954,11 @@ async function api(path, init) {
         err.code = 'AUTH_REQUIRED';
         throw err;
     }
-    if (!r.ok)
-        throw new Error(`${r.status} ${r.statusText} — ${path}`);
     const ct = r.headers.get('content-type') || '';
+    if (!r.ok) {
+        const body = ct.includes('application/json') ? await r.json().catch(() => ({})) : await r.text().catch(() => '');
+        throw new Error(body?.message || body?.error || body || `${r.status} ${r.statusText} — ${path}`);
+    }
     return ct.includes('application/json') ? r.json() : r.text();
 }
 // SSO helpers
@@ -984,7 +987,271 @@ async function ssoComplete(handoffToken) {
         throw new Error(body.message || 'SSO completion failed');
     return storeSession(body);
 }
-window.PatchAPI = {
+function demoIso(minutesAgo) {
+    return new Date(Date.now() - minutesAgo * 60000).toISOString();
+}
+function makeDemoData() {
+    const sites = ['Berlin HQ', 'Munich DC', 'Frankfurt Edge', 'Hamburg Office', 'Remote EMEA', 'US East'];
+    const groups = ['Finance', 'Engineering', 'Operations', 'Executive', 'Retail', 'Build Farm'];
+    const nodeIds = ['node-eu-central-1', 'node-eu-west-1', 'node-us-east-1', 'node-lab-1'];
+    const appDefs = [
+        ['Google Chrome', 'Google', '125.0.6422.142', '124.0.6367.207', true],
+        ['Microsoft Edge', 'Microsoft', '125.0.2535.92', '124.0.2478.109', false],
+        ['Mozilla Firefox ESR', 'Mozilla', '115.12.0', '115.9.1', true],
+        ['7-Zip', 'Igor Pavlov', '24.06', '23.01', false],
+        ['Notepad++', 'Notepad++ Team', '8.6.8', '8.5.7', false],
+        ['Git', 'Git SCM', '2.45.2', '2.43.0', false],
+        ['OpenJDK Runtime', 'Eclipse Adoptium', '21.0.3', '17.0.10', true],
+        ['Microsoft Teams', 'Microsoft', '24124.2312.2911', '24060.2623.2790', false],
+        ['Zoom Workplace', 'Zoom', '6.0.11', '5.17.11', true],
+        ['Docker Desktop', 'Docker', '4.31.0', '4.27.1', false],
+        ['Visual Studio Code', 'Microsoft', '1.90.0', '1.88.1', false],
+        ['LibreOffice', 'The Document Foundation', '24.2.4', '7.6.7', false],
+    ];
+    const devices = Array.from({ length: 96 }, (_, i) => {
+        const n = i + 1;
+        const linux = i % 5 === 0 || i % 13 === 0;
+        const online = i % 9 !== 0;
+        return {
+            id: `dev-${String(n).padStart(4, '0')}`,
+            hostname: `${linux ? 'lin' : 'win'}-${sites[i % sites.length].toLowerCase().replace(/[^a-z]+/g, '-')}-${String(n).padStart(3, '0')}`,
+            os: linux ? (i % 2 ? 'Ubuntu 22.04.4 LTS' : 'Debian GNU/Linux 12') : (i % 3 ? 'Microsoft Windows 10.0.22631' : 'Microsoft Windows 10.0.26100'),
+            platform: linux ? 'linux' : 'windows',
+            site: sites[i % sites.length],
+            group: groups[i % groups.length],
+            tags: [i % 4 === 0 ? 'production' : 'standard', i % 7 === 0 ? 'browser-critical' : 'auto-update'],
+            preferredNodeId: nodeIds[i % nodeIds.length],
+            installedAppCount: 18 + (i % 31),
+            pendingTaskCount: i % 8 === 0 ? 3 : i % 6 === 0 ? 1 : 0,
+            lastSeenAt: demoIso(online ? (2 + (i % 30)) : (220 + i * 7)),
+            online,
+            deviceTrustScore: 96 - (i % 19),
+            riskScore: i % 11 === 0 ? 74 : 18 + (i % 32),
+        };
+    });
+    const apps = appDefs.map(([name, publisher, latestVersion, oldestVersion, critical], i) => {
+        const deviceCount = 44 + ((i * 17) % 52);
+        const outdatedDeviceCount = i % 4 === 0 ? 28 - i : 6 + ((i * 5) % 19);
+        return { name, publisher, latestVersion, latest: latestVersion, oldestVersion, oldest: oldestVersion, deviceCount, outdatedDeviceCount, outdated: outdatedDeviceCount, critical };
+    });
+    const tasks = Array.from({ length: 72 }, (_, i) => {
+        const app = apps[i % apps.length];
+        const status = ['completed', 'completed', 'completed', 'dispatched', 'pending', 'failed', 'rejected', 'cancelled'][i % 8];
+        return {
+            id: `task-${String(i + 1).padStart(5, '0')}`,
+            type: i % 10 === 0 ? 'refresh_inventory' : 'update_app',
+            appName: app.name,
+            deviceId: devices[i % devices.length].id,
+            nodeId: nodeIds[i % nodeIds.length],
+            status,
+            fromVersion: app.oldestVersion,
+            targetVersion: app.latestVersion,
+            createdAt: demoIso(8 + i * 11),
+            completedAt: ['completed', 'failed', 'rejected', 'cancelled'].includes(status) ? demoIso(2 + i * 10) : null,
+            output: status === 'failed' ? 'Installer exited with code 1603 after signature verification succeeded.' : status === 'completed' ? 'Package installed and inventory refreshed.' : '',
+        };
+    });
+    const alarms = [
+        ['critical', 'Chrome CVE exposure remains on 28 production endpoints', devices[3].id, 12],
+        ['critical', 'Backend node node-lab-1 entered quarantine after trust drop', null, 35],
+        ['warning', 'High package queue lag in Frankfurt Edge', devices[14].id, 48],
+        ['warning', 'Linux repo metadata stale on Munich DC cache', devices[20].id, 76],
+        ['info', 'New unmanaged device discovered from enrollment token', devices[55].id, 130],
+        ['warning', 'Repeated install failures for OpenJDK Runtime', devices[42].id, 155],
+        ['critical', 'Unsigned package upload rejected by policy', null, 190],
+        ['warning', 'Offline executive laptop missed maintenance window', devices[8].id, 260],
+    ].map(([severity, message, deviceId, age], i) => ({ id: `alarm-${i + 1}`, severity, message, deviceId, createdAt: demoIso(age) }));
+    const packages = appDefs.flatMap(([name, publisher, latestVersion], i) => ([
+        {
+            id: `pkg-win-${i + 1}`,
+            name,
+            publisher,
+            version: latestVersion,
+            type: i % 3 === 0 ? 'msi' : 'winget',
+            platform: 'windows',
+            architecture: 'x64',
+            signatureStatus: i % 5 === 0 ? 'unknown' : 'valid',
+            catalogSource: i % 4 === 0 ? 'custom' : 'central',
+            catalogCategory: i % 2 ? 'Productivity' : 'Security',
+            sha256: `demo-sha256-${i + 1}`,
+            createdAt: demoIso(400 + i * 55),
+        },
+        i % 3 === 0 ? {
+            id: `pkg-linux-${i + 1}`,
+            name,
+            publisher,
+            version: latestVersion,
+            type: 'apt',
+            platform: 'linux',
+            architecture: 'amd64',
+            signatureStatus: 'valid',
+            catalogSource: 'central',
+            catalogCategory: 'Linux',
+            sha256: `demo-linux-sha256-${i + 1}`,
+            createdAt: demoIso(480 + i * 65),
+        } : null,
+    ])).filter(Boolean);
+    const nodes = nodeIds.map((id, i) => ({
+        id,
+        name: id.replace(/-/g, ' '),
+        publicUrl: `https://${id}.demo.1patch.local`,
+        region: ['eu-central', 'eu-west', 'us-east', 'lab'][i],
+        site: sites[i],
+        status: i === 3 ? 'online' : 'online',
+        version: `0.1.${12 - i}`,
+        capabilities: ['inventory', 'package-cache', 'signed-execution', i % 2 ? 'linux' : 'windows'],
+        healthState: i === 3 ? 'degraded' : 'healthy',
+        maintenanceState: i === 2 ? 'draining' : 'active',
+        quarantineState: i === 3 ? 'quarantined' : 'clear',
+        quarantineReason: i === 3 ? 'trust score below tenant threshold' : '',
+        lastSeenAt: demoIso(3 + i * 8),
+        health: {
+            memoryPressurePercent: [44, 62, 78, 91][i],
+            diskFreeBytes: [420e9, 220e9, 84e9, 900e6][i],
+            clockSkewMs: i === 3 ? 9200 : 600,
+            queueLag: ['low', 'low', 'medium', 'high'][i],
+            components: [
+                { name: 'agent', status: i === 3 ? 'degraded' : 'healthy' },
+                { name: 'cache', status: i === 2 ? 'degraded' : 'healthy' },
+                { name: 'verifier', status: i === 3 ? 'unhealthy' : 'healthy' },
+            ],
+        },
+        trust: {
+            id: `trust-${id}`,
+            trustScore: [96, 89, 74, 42][i],
+            previousTrustScore: [95, 91, 80, 68][i],
+            scoreDelta: [1, -2, -6, -26][i],
+            healthState: i === 3 ? 'degraded' : 'healthy',
+            certValid: i !== 3,
+            latencyMs: [38, 64, 142, 680][i],
+            queueLag: ['low', 'low', 'medium', 'high'][i],
+            reasons: i === 3 ? ['package verifier unhealthy', 'high queue lag', 'clock skew detected'] : ['signed health report accepted'],
+            securityFindings: i === 3 ? [{ severity: 'high', category: 'health', message: 'Package verifier component unhealthy' }] : [],
+        },
+    }));
+    const audit = Array.from({ length: 48 }, (_, i) => ({
+        id: `audit-${i + 1}`,
+        createdAt: demoIso(5 + i * 17),
+        actor: ['admin@1patch.demo', 'sre@1patch.demo', 'node-eu-central-1', 'policy-engine'][i % 4],
+        action: ['task.queued', 'package.signed', 'rule.evaluated', 'device.enrolled', 'alarm.created', 'auth.mfa.verified'][i % 6],
+        target: [devices[i % devices.length].id, apps[i % apps.length].name, nodeIds[i % nodeIds.length]][i % 3],
+    }));
+    const rules = [
+        ['Critical browser CVE rollout', true, 'inventory_changed'],
+        ['Quarantine low-trust node', true, 'node_trust_changed'],
+        ['Refresh stale Linux inventory', true, 'schedule'],
+        ['Notify SIEM on failed update burst', true, 'task_failed'],
+        ['Executive laptop maintenance window', false, 'schedule'],
+    ].map(([name, enabled, eventType], i) => ({
+        id: `rule-${i + 1}`,
+        name,
+        enabled,
+        description: `Demo automation rule ${i + 1}`,
+        trigger: { type: 'event', eventType },
+        conditionGroup: { combinator: 'AND', conditions: [{ field: 'severity', operator: 'gte', value: i === 0 ? 'critical' : 'warning' }] },
+        actions: [{ type: i % 2 ? 'notify' : 'create_task', target: i % 2 ? 'siem' : 'outdated_devices' }],
+    }));
+    const compliantApps = apps.reduce((sum, app) => sum + app.deviceCount - app.outdatedDeviceCount, 0);
+    const outdatedApps = apps.reduce((sum, app) => sum + app.outdatedDeviceCount, 0);
+    return { devices, apps, tasks, alarms, packages, nodes, audit, rules, summary: {
+            managedDevices: devices.length,
+            onlineDevices: devices.filter(d => d.online).length,
+            coverage: 87,
+            compliantApps,
+            outdatedApps,
+            criticalAlarms: alarms.filter(a => a.severity === 'critical').length,
+            activeRules: rules.filter(r => r.enabled).length,
+        } };
+}
+const DEMO_DATA = DEMO_MODE ? makeDemoData() : null;
+const demoResolve = (value) => Promise.resolve(JSON.parse(JSON.stringify(value)));
+const demoSession = {
+    accessToken: 'demo-token',
+    user: {
+        email: 'admin@1patch.demo',
+        permissions: ['auth:manage', 'users:manage', 'roles:manage', 'tasks:manage', 'packages:manage'],
+    },
+    authMethod: 'demo',
+};
+const DEMO_API = DEMO_MODE ? {
+    session: () => demoSession,
+    login: () => demoResolve(demoSession),
+    verifyMfa: () => demoResolve(demoSession),
+    ssoProviders: () => demoResolve([]),
+    ssoInitiate: () => demoResolve({ authorizationUrl: '/ui/demo' }),
+    ssoComplete: () => demoResolve(demoSession),
+    logout: () => { },
+    summary: () => demoResolve(DEMO_DATA.summary),
+    coverageHistory: (days = 30) => demoResolve(Array.from({ length: days }, (_, i) => ({ date: demoIso((days - i) * 1440), value: 74 + Math.round(i * 0.46) + (i % 5 === 0 ? -2 : i % 7 === 0 ? 1 : 0) }))),
+    devices: () => demoResolve(DEMO_DATA.devices),
+    device: (id) => {
+        const device = DEMO_DATA.devices.find(d => d.id === id) || DEMO_DATA.devices[0];
+        const installedApps = DEMO_DATA.apps.slice(0, 10).map((app, i) => ({ ...app, version: i % 3 === 0 ? app.oldestVersion : app.latestVersion, latestVersion: app.latestVersion, packageId: `pkg-win-${i + 1}` }));
+        const tasks = DEMO_DATA.tasks.filter(t => t.deviceId === device.id).slice(0, 8);
+        return demoResolve({ device, installedApps, tasks });
+    },
+    deviceGroups: () => demoResolve([]),
+    createDevice: (body) => demoResolve({ id: 'demo-created-device', ...body }),
+    createDeviceEnrollment: (body) => demoResolve({ id: 'demo-enrollment', count: body?.maxUses || 1, oneLineJson: JSON.stringify({ Demo: true, TenantId: body?.tenantId || 'default' }), config: { Demo: true, TenantId: body?.tenantId || 'default' } }),
+    apps: () => demoResolve(DEMO_DATA.apps),
+    packages: () => demoResolve(DEMO_DATA.packages),
+    packageCatalog: () => demoResolve(DEMO_DATA.packages.slice(0, 12)),
+    createPackage: (body) => demoResolve({ id: 'demo-created-package', createdAt: new Date().toISOString(), signatureStatus: 'valid', ...body }),
+    deployPackageAll: (id) => demoResolve({ tasks: DEMO_DATA.tasks.slice(0, 7).map(t => ({ ...t, packageArtifactId: id, status: 'pending' })) }),
+    rules: () => demoResolve(DEMO_DATA.rules),
+    createRule: (body) => demoResolve({ id: 'demo-created-rule', ...body }),
+    updateRule: (id, body) => demoResolve({ id, ...body }),
+    toggleRule: (id, enabled) => demoResolve({ id, enabled }),
+    testRule: () => demoResolve({ matched: 18, actions: ['create_task', 'notify'] }),
+    triggerRule: () => demoResolve([{ id: 'demo-triggered-task', status: 'pending' }]),
+    ruleTemplates: () => demoResolve([]),
+    createRuleDraftFromTemplate: (_id, body) => demoResolve({ name: 'Demo rule draft', ...body }),
+    importRuleTemplateConfig: (body) => demoResolve({ name: 'Imported demo rule', ...body }),
+    ruleAudit: () => demoResolve(DEMO_DATA.audit.slice(0, 10)),
+    tasks: () => demoResolve(DEMO_DATA.tasks),
+    cancelTask: (id) => demoResolve({ id, status: 'cancelled' }),
+    nodes: () => demoResolve(DEMO_DATA.nodes),
+    nodeTrustCenter: () => demoResolve(DEMO_DATA.nodes),
+    nodeTrustDetail: (id) => demoResolve(DEMO_DATA.nodes.find(n => n.id === id) || DEMO_DATA.nodes[0]),
+    clearNodeQuarantine: (id) => demoResolve({ id, quarantineState: 'clear' }),
+    createNodeEnrollment: (body) => demoResolve({ id: 'demo-node-enrollment', token: 'demo-node-token', ...body }),
+    deleteNode: (id) => demoResolve({ id, deleted: true }),
+    alarms: () => demoResolve(DEMO_DATA.alarms),
+    resolveAlarm: (id) => demoResolve({ id, resolved: true }),
+    resolveAllAlarms: () => demoResolve({ resolved: DEMO_DATA.alarms.length }),
+    audit: (limit = 100) => demoResolve(DEMO_DATA.audit.slice(0, limit)),
+    siemConfig: (tenantId = 'default') => demoResolve({ tenantId, config: { enabled: true, webhook: { enabled: true, url: 'https://siem.demo/ingest' }, syslog: { enabled: true, host: 'syslog.demo', port: 514 }, sentinel: { enabled: false } } }),
+    saveSiemConfig: (_tenantId, body) => demoResolve({ saved: true, config: body }),
+    testSiem: () => demoResolve({ ok: true, message: 'Demo SIEM event accepted' }),
+    verifySiem: () => demoResolve({ ok: true, findings: [] }),
+    siemQueueStatus: () => demoResolve({ pending: 42, failed: 1, deliveredLastHour: 1284 }),
+    securityPosture: () => demoResolve({ score: 91, findings: [], checks: [] }),
+    fixSecurityPosture: () => demoResolve({ fixed: 0 }),
+    tenantPolicy: () => demoResolve({ requireApproval: true, maxConcurrentTasks: 250, allowedPackageSources: ['central', 'custom'] }),
+    saveTenantPolicy: (_tenantId, body) => demoResolve(body),
+    adminUsers: () => demoResolve([{ id: 'usr-1', email: 'admin@1patch.demo', roleId: 'role-admin', mfaEnabled: true, disabled: false }, { id: 'usr-2', email: 'sre@1patch.demo', roleId: 'role-operator', mfaEnabled: true, disabled: false }]),
+    adminRbac: () => demoResolve({ roles: [{ id: 'role-admin', name: 'Administrator', permissions: demoSession.user.permissions }, { id: 'role-operator', name: 'Operator', permissions: ['tasks:manage', 'packages:read'] }], permissions: demoSession.user.permissions }),
+    adminCreateUser: (body) => demoResolve({ id: 'demo-user', ...body }),
+    adminUpdateUser: (id, body) => demoResolve({ id, ...body }),
+    adminDeleteUser: (id) => demoResolve({ id, deleted: true }),
+    adminCreateRole: (body) => demoResolve({ id: 'demo-role', ...body }),
+    adminUpdateRole: (id, body) => demoResolve({ id, ...body }),
+    adminDeleteRole: (id) => demoResolve({ id, deleted: true }),
+    ssoProvidersAdmin: () => demoResolve([]),
+    ssoCreateProvider: (body) => demoResolve({ id: 'demo-sso', ...body }),
+    ssoUpdateProvider: (id, body) => demoResolve({ id, ...body }),
+    ssoDeleteProvider: (id) => demoResolve({ id, deleted: true }),
+    retirementPolicies: () => demoResolve([{ id: 'retire-1', name: 'Retire inactive endpoints', description: 'Flag devices inactive for 90 days.', enabled: true, priority: 20, conditionCombinator: 'AND', conditions: [{ type: 'inactive_days', days: 90 }], actions: [{ type: 'tag_device', tag: 'retired' }], lastEvaluatedAt: demoIso(300), matchCount: 7 }]),
+    createRetirementPolicy: (body) => demoResolve({ id: 'demo-retirement', ...body }),
+    updateRetirementPolicy: (id, body) => demoResolve({ id, ...body }),
+    deleteRetirementPolicy: (id) => demoResolve({ id, deleted: true }),
+    evaluateRetirementPolicy: () => demoResolve({ matchCount: 7, totalDevices: DEMO_DATA.devices.length, matchedDevices: DEMO_DATA.devices.slice(0, 7) }),
+    refreshInventory: (id) => demoResolve({ id, queued: true }),
+    updateAllOutdated: (id) => demoResolve({ tasks: DEMO_DATA.tasks.slice(0, 5).map(t => ({ ...t, deviceId: id, status: 'pending' })) }),
+    updateAllForApp: (name) => demoResolve(DEMO_DATA.tasks.slice(0, 12).map(t => ({ ...t, appName: name, status: 'pending' }))),
+    updateDeviceForApp: (name, body) => demoResolve({ id: 'demo-device-task', appName: name, ...body, status: 'pending' }),
+} : null;
+const LIVE_API = {
     session,
     /**
      * Handles the login operation.
@@ -1123,6 +1390,9 @@ window.PatchAPI = {
     adminUpdateUser: (id, b) => api(`/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(b) }),
     adminDeleteUser: (id) => api(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     adminRbac: () => api('/admin/rbac'),
+    adminCreateRole: (b) => api('/admin/roles', { method: 'POST', body: JSON.stringify(b) }),
+    adminUpdateRole: (id, b) => api(`/admin/roles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(b) }),
+    adminDeleteRole: (id) => api(`/admin/roles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /**
      * Handles the siem config operation.
      *
@@ -1170,6 +1440,7 @@ window.PatchAPI = {
      *
      * @param b b supplied to the function.
      */
+    packageCatalog: () => api('/packages/catalog'),
     createPackage: (b) => api('/packages', { method: 'POST', body: JSON.stringify(b) }),
     /**
      * Handles the deploy package all operation.
@@ -1269,7 +1540,13 @@ window.PatchAPI = {
      */
     resolveAlarm: (id) => api(`/alarms/${id}/resolve`, { method: 'POST', body: '{}' }),
     resolveAllAlarms: () => api('/alarms/resolve-all', { method: 'POST', body: '{}' }),
+    retirementPolicies: (t = 'default') => api(`/devices/retirement-policies?tenantId=${encodeURIComponent(t)}`),
+    createRetirementPolicy: (b) => api('/devices/retirement-policies', { method: 'POST', body: JSON.stringify(b) }),
+    updateRetirementPolicy: (id, b) => api(`/devices/retirement-policies/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(b) }),
+    deleteRetirementPolicy: (id) => api(`/devices/retirement-policies/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    evaluateRetirementPolicy: (id) => api(`/devices/retirement-policies/${encodeURIComponent(id)}/evaluate`, { method: 'POST', body: '{}' }),
 };
+window.PatchAPI = DEMO_MODE ? DEMO_API : LIVE_API;
 
 
 // Shared SVG icons + small primitives
@@ -2459,44 +2736,46 @@ function AppsPage({ globalSearch = "" }) {
                         })))))));
 }
 // ---------- Packages ----------
-/**
- * Renders the packages page UI.
- *
- * @param props Component props supplied by the caller.
- * @returns The result produced by the operation.
- */
 function PackagesPage({ globalSearch = "" }) {
     const pkgs = useResource(() => PatchAPI.packages());
+    const [storeOpen, setStoreOpen] = useState(false);
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [selected, setSelected] = useState(null);
     const [notice, setNotice] = useState(null);
     useLiveResource(pkgs, 10000);
-    /**
-     * Handles the deploy operation.
-     *
-     * @param id Identifier used to locate the target record.
-     */
-    const deploy = async (id) => {
-        try {
-            const result = await PatchAPI.deployPackageAll(id);
-            const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
-            const skipped = result?.skippedDeviceCount ?? 0;
-            setNotice(`${count} deployment task${count === 1 ? "" : "s"} queued${skipped ? `; ${skipped} device${skipped === 1 ? "" : "s"} skipped by platform` : ""}.`);
-            setTimeout(() => setNotice(null), 5000);
-        }
-        finally {
-            pkgs.reload();
-        }
+    const allRows = pkgs.data || [];
+    const centralCount = allRows.filter(p => p.catalogSource === "central").length;
+    const customCount = allRows.filter(p => p.catalogSource !== "central").length;
+    const rows = allRows.filter(p => textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256, p.packageId, p.catalogCategory]));
+    const handleDeployed = (msg) => {
+        setNotice(msg);
+        setSelected(null);
+        pkgs.reload();
+        setTimeout(() => setNotice(null), 5000);
     };
-    const rows = (pkgs.data || []).filter(p => textMatches(globalSearch, [p.name, p.publisher, p.version, p.type, p.platform, p.architecture, p.sha256]));
     return (React.createElement("div", { className: "page" },
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
                 React.createElement("h2", null, "Package library"),
-                React.createElement("p", null, "Signed artifacts deployed to backend nodes \u00B7 MSI / winget / Chocolatey / Scoop / apt")),
-            React.createElement("button", { className: "btn primary" },
-                React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.plus),
-                "Add package")),
+                React.createElement("p", null,
+                    customCount,
+                    " custom packages \u00B7 ",
+                    centralCount,
+                    " available in catalog")),
+            React.createElement("div", { style: { display: "flex", gap: 8 } },
+                React.createElement("button", { className: "btn", onClick: () => setWizardOpen(true) },
+                    React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.plus),
+                    "Add custom"),
+                React.createElement("button", { className: "btn primary", onClick: () => setStoreOpen(true) },
+                    React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.packages),
+                    "Browse catalog"))),
+        React.createElement("div", { className: "stats" },
+            React.createElement(Stat, { label: "Packages", value: pkgs.loading ? "—" : allRows.length, sub: "In your library" }),
+            React.createElement(Stat, { label: "Windows", value: pkgs.loading ? "—" : allRows.filter(p => p.platform === "windows").length }),
+            React.createElement(Stat, { label: "Linux", value: pkgs.loading ? "—" : allRows.filter(p => p.platform === "linux").length }),
+            React.createElement(Stat, { label: "Custom", value: pkgs.loading ? "—" : customCount, sub: "Uploads & vendor URLs" })),
+        notice && React.createElement("div", { className: "toast-inline", style: { marginBottom: 12 } }, notice),
         React.createElement("div", { className: "card" },
-            notice && React.createElement("div", { className: "toast-inline", style: { margin: 16 } }, notice),
             pkgs.error && React.createElement("div", { style: { padding: 16 } },
                 React.createElement(ErrorAlert, { error: pkgs.error, onRetry: pkgs.reload })),
             React.createElement("table", { className: "tbl" },
@@ -2506,31 +2785,340 @@ function PackagesPage({ globalSearch = "" }) {
                         React.createElement("th", null, "Version"),
                         React.createElement("th", null, "Type"),
                         React.createElement("th", null, "Platform"),
-                        React.createElement("th", null, "SHA-256"),
                         React.createElement("th", null, "Signature"),
-                        React.createElement("th", null, "Created"),
-                        React.createElement("th", null))),
+                        React.createElement("th", null, "Added"))),
                 React.createElement("tbody", null,
-                    pkgs.loading && React.createElement(SkeletonRows, { n: 5, cols: 8 }),
-                    !pkgs.loading && rows.length === 0 && React.createElement("tr", null,
-                        React.createElement("td", { colSpan: 8, style: { padding: 24, color: "var(--text-3)" } }, "No packages uploaded.")),
-                    !pkgs.loading && rows.map(p => (React.createElement("tr", { key: p.id || p.sha256 },
+                    pkgs.loading && React.createElement(SkeletonRows, { n: 5, cols: 6 }),
+                    !pkgs.loading && rows.length === 0 && (React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 6, style: { padding: 32, color: "var(--text-3)", textAlign: "center" } },
+                            "No packages in your library yet \u2014 use ",
+                            React.createElement("strong", null, "Add custom"),
+                            " for MSI/EXE/APT or ",
+                            React.createElement("strong", null, "Browse catalog"),
+                            " to add winget packages."))),
+                    !pkgs.loading && rows.map(p => (React.createElement("tr", { key: p.id || p.sha256, onClick: () => setSelected(p), style: { cursor: "pointer" } },
                         React.createElement("td", null,
-                            React.createElement("div", null,
-                                React.createElement("strong", { style: { fontWeight: 500 } }, p.name),
-                                React.createElement("div", { className: "muted", style: { fontSize: 12 } }, p.publisher))),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                                React.createElement("div", { className: "pkg-avatar" }, (p.name || "?")[0].toUpperCase()),
+                                React.createElement("div", null,
+                                    React.createElement("strong", { style: { fontWeight: 500 } }, p.name),
+                                    React.createElement("div", { className: "muted", style: { fontSize: 12 } },
+                                        p.publisher,
+                                        p.catalogCategory ? ` · ${p.catalogCategory}` : "")))),
                         React.createElement("td", { className: "mono" }, p.version),
                         React.createElement("td", null,
                             React.createElement("span", { className: "pill" }, p.type)),
                         React.createElement("td", { className: "muted" },
                             p.platform,
-                            p.architecture ? " · " + p.architecture : ""),
-                        React.createElement("td", { className: "mono muted", title: p.sha256 }, p.sha256 ? `${p.sha256.slice(0, 12)}…` : "—"),
+                            p.architecture && p.architecture !== "any" ? " · " + p.architecture : ""),
                         React.createElement("td", null,
                             React.createElement(StatusPill, { status: p.signatureStatus })),
-                        React.createElement("td", { className: "muted" }, fmtAgo(p.createdAt)),
-                        React.createElement("td", null,
-                            React.createElement("button", { className: "btn sm", onClick: () => deploy(p.id) }, "Deploy"))))))))));
+                        React.createElement("td", { className: "muted" }, fmtAgo(p.createdAt)))))))),
+        selected && React.createElement(PackageDetailPanel, { pkg: selected, onClose: () => setSelected(null), onDeployed: handleDeployed }),
+        wizardOpen && React.createElement(PackageWizard, { onClose: () => setWizardOpen(false), onCreated: (pkg) => { setWizardOpen(false); setNotice(`Package ${pkg.name} added.`); pkgs.reload(); setTimeout(() => setNotice(null), 5000); } }),
+        storeOpen && React.createElement(PackageStore, { onClose: () => setStoreOpen(false), onDeployed: (msg) => { setStoreOpen(false); setNotice(msg); pkgs.reload(); setTimeout(() => setNotice(null), 5000); } })));
+}
+function PackageWizard({ onClose, onCreated }) {
+    const [step, setStep] = useState(0);
+    const [file, setFile] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [form, setForm] = useState({
+        type: "winget",
+        platform: "windows",
+        architecture: "any",
+        name: "",
+        publisher: "",
+        version: "latest",
+        packageId: "",
+        packageScope: "system",
+        sourceUrl: "",
+        sha256: "",
+        installArgs: "",
+        signatureStatus: "unknown",
+        catalogCategory: "Custom",
+    });
+    const set = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+    const chooseType = (type) => {
+        const platform = ["apt", "snap", "flatpak"].includes(type) ? "linux" : "windows";
+        setForm(prev => ({
+            ...prev,
+            type,
+            platform,
+            packageScope: type === "scoop" ? "global" : "system",
+            installArgs: type === "msi" ? "/qn /norestart" : type === "exe" ? "/quiet /norestart" : "",
+            version: prev.version || "latest",
+        }));
+        setStep(1);
+    };
+    const managerType = ["winget", "chocolatey", "scoop", "apt", "snap", "flatpak"].includes(form.type);
+    const downloadableType = ["msi", "exe"].includes(form.type);
+    const canContinue = step === 0 || (form.name.trim() && form.publisher.trim() && form.version.trim() && (!managerType || form.packageId.trim()) && (!downloadableType || file || (form.sourceUrl.trim() && form.sha256.trim())));
+    const save = async () => {
+        setBusy(true);
+        setError("");
+        try {
+            const payload = {
+                ...form,
+                packageManager: form.type,
+                applicability: { appName: form.name, manufacturer: form.publisher },
+            };
+            if (file) {
+                payload.fileName = file.name;
+                payload.fileBase64 = await readFileBase64(file);
+            }
+            if (!payload.installArgs && form.type === "msi")
+                payload.installArgs = "/qn /norestart";
+            if (!payload.installArgs && form.type === "exe")
+                payload.installArgs = "/quiet /norestart";
+            const created = await PatchAPI.createPackage(payload);
+            onCreated?.(created);
+        }
+        catch (err) {
+            setError(err?.message || String(err));
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const steps = ["Type", "Details", "Review"];
+    return (React.createElement("div", { className: "modal-overlay", onClick: onClose },
+        React.createElement("div", { className: "modal-box package-wizard", onClick: e => e.stopPropagation() },
+            React.createElement("div", { className: "wizard-top" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, "Add package"),
+                    React.createElement("p", null, "Custom artifacts are stored by management, cached by backend nodes, and executed only through signed tasks.")),
+                React.createElement("button", { className: "icon-btn", onClick: onClose, "aria-label": "Close" }, Icon.close)),
+            React.createElement("div", { className: "sso-wizard-steps package-wizard-steps" }, steps.map((label, i) => (React.createElement(React.Fragment, { key: label },
+                React.createElement("div", { className: "sso-wizard-step-dot " + (step === i ? "active" : step > i ? "done" : "") },
+                    React.createElement("span", { className: "sso-wizard-dot-num" }, step > i ? Icon.check : i + 1),
+                    React.createElement("span", { className: "sso-wizard-dot-label" }, label)),
+                i < steps.length - 1 && React.createElement("div", { className: "sso-wizard-connector " + (step > i ? "filled" : "") }))))),
+            step === 0 && (React.createElement("div", { className: "package-type-grid" }, [
+                ["winget", "winget", Icon.windows, "Windows package manager"],
+                ["msi", "MSI", Icon.packages, "Uploaded or vendor-hosted installer"],
+                ["exe", "EXE", Icon.play, "Installer with safe silent parameters"],
+                ["apt", "APT", Icon.linux, "Ubuntu/Debian repo package"],
+                ["snap", "Snap", Icon.linux, "Linux Snap package"],
+                ["flatpak", "Flatpak", Icon.linux, "Linux desktop package"],
+                ["chocolatey", "Chocolatey", Icon.packages, "Chocolatey managed package"],
+                ["scoop", "Scoop", Icon.download, "Scoop managed package"],
+            ].map(([id, label, icon, desc]) => (React.createElement("button", { key: id, className: "package-type-card " + (form.type === id ? "selected" : ""), onClick: () => chooseType(id) },
+                React.createElement("span", null, icon),
+                React.createElement("strong", null, label),
+                React.createElement("em", null, desc)))))),
+            step === 1 && (React.createElement("div", { className: "package-wizard-body" },
+                React.createElement("div", { className: "form-grid" },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Name"),
+                        React.createElement("input", { value: form.name, onChange: e => set("name", e.target.value), placeholder: "Google Chrome" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Publisher"),
+                        React.createElement("input", { value: form.publisher, onChange: e => set("publisher", e.target.value), placeholder: "Google" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Version"),
+                        React.createElement("input", { value: form.version, onChange: e => set("version", e.target.value), placeholder: "latest" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Architecture"),
+                        React.createElement("select", { value: form.architecture, onChange: e => set("architecture", e.target.value) },
+                            React.createElement("option", { value: "any" }, "Any"),
+                            React.createElement("option", { value: "x64" }, "x64"),
+                            React.createElement("option", { value: "x86" }, "x86"),
+                            React.createElement("option", { value: "arm64" }, "arm64")))),
+                managerType && (React.createElement("div", { className: "form-grid", style: { marginTop: 14 } },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Package ID"),
+                        React.createElement("input", { value: form.packageId, onChange: e => set("packageId", e.target.value), placeholder: form.type === "flatpak" ? "org.example.App" : ["apt", "snap"].includes(form.type) ? "nginx" : "Google.Chrome" })),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Scope"),
+                        React.createElement("select", { value: form.packageScope, onChange: e => set("packageScope", e.target.value) },
+                            React.createElement("option", { value: "system" }, "System"),
+                            React.createElement("option", { value: "global" }, "Global"),
+                            React.createElement("option", { value: "user" }, "User"))))),
+                downloadableType && (React.createElement("div", { className: "package-source-box" },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Upload installer"),
+                        React.createElement("input", { type: "file", accept: form.type === "msi" ? ".msi" : ".exe", onChange: e => setFile(e.target.files?.[0] || null) })),
+                    React.createElement("div", { className: "sub" }, "or use a vendor URL with a pinned SHA-256"),
+                    React.createElement("div", { className: "form-grid" },
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "Source URL"),
+                            React.createElement("input", { value: form.sourceUrl, onChange: e => set("sourceUrl", e.target.value), placeholder: "https://vendor.example/app.msi" })),
+                        React.createElement("label", { className: "field" },
+                            React.createElement("span", null, "SHA-256"),
+                            React.createElement("input", { value: form.sha256, onChange: e => set("sha256", e.target.value), placeholder: "64 hex characters" }))),
+                    React.createElement("label", { className: "field", style: { marginTop: 14 } },
+                        React.createElement("span", null, "Install parameters"),
+                        React.createElement("input", { value: form.installArgs, onChange: e => set("installArgs", e.target.value), placeholder: form.type === "exe" ? "/quiet /norestart" : "/qn /norestart" })))))),
+            step === 2 && (React.createElement("div", { className: "package-review" },
+                React.createElement("div", null,
+                    React.createElement("span", null, "Name"),
+                    React.createElement("strong", null, form.name)),
+                React.createElement("div", null,
+                    React.createElement("span", null, "Type"),
+                    React.createElement("strong", null,
+                        form.type,
+                        " \u00B7 ",
+                        form.platform)),
+                React.createElement("div", null,
+                    React.createElement("span", null, "Source"),
+                    React.createElement("strong", null, managerType ? form.packageId : file ? file.name : form.sourceUrl)),
+                React.createElement("div", null,
+                    React.createElement("span", null, "Execution"),
+                    React.createElement("strong", null, downloadableType ? "Backend-node cache proxy" : "Native package manager")))),
+            error && React.createElement("div", { className: "banner error" }, error),
+            React.createElement("div", { className: "modal-actions" },
+                React.createElement("button", { className: "btn ghost", onClick: step === 0 ? onClose : () => setStep(step - 1), disabled: busy }, step === 0 ? "Cancel" : "Back"),
+                step < 2
+                    ? React.createElement("button", { className: "btn primary", disabled: !canContinue, onClick: () => setStep(step + 1) }, "Next")
+                    : React.createElement("button", { className: "btn primary", disabled: busy || !canContinue, onClick: save }, busy ? "Saving..." : "Create package")))));
+}
+function PackageDetailPanel({ pkg, onClose, onDeployed }) {
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const deploy = async () => {
+        setBusy(true);
+        setError("");
+        try {
+            const result = await PatchAPI.deployPackageAll(pkg.id);
+            const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
+            const skipped = result?.skippedDeviceCount ?? 0;
+            onDeployed(`${count} deployment task${count === 1 ? "" : "s"} queued${skipped ? `; ${skipped} skipped` : ""}.`);
+        }
+        catch (err) {
+            setError(err?.message || String(err));
+            setBusy(false);
+        }
+    };
+    const rows = [
+        ["Version", pkg.version],
+        ["Type", pkg.type],
+        ["Platform", pkg.platform + (pkg.architecture && pkg.architecture !== "any" ? " · " + pkg.architecture : "")],
+        ["Category", pkg.catalogCategory || "—"],
+        ["Source", pkg.catalogSource === "central" ? "Central catalog" : "Custom"],
+        ["Signature", pkg.signatureStatus],
+        pkg.packageId ? ["Package ID", pkg.packageId] : null,
+        pkg.sha256 ? ["SHA-256", pkg.sha256.slice(0, 16) + "…"] : null,
+        pkg.sourceUrl ? ["Source URL", pkg.sourceUrl] : null,
+        ["Added", fmtAgo(pkg.createdAt)],
+    ].filter(Boolean);
+    return (React.createElement("div", { className: "detail-panel-overlay", onClick: onClose },
+        React.createElement("div", { className: "detail-panel", onClick: e => e.stopPropagation() },
+            React.createElement("div", { className: "detail-panel-head" },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, minWidth: 0 } },
+                    React.createElement("div", { className: "pkg-avatar lg" }, (pkg.name || "?")[0].toUpperCase()),
+                    React.createElement("div", { style: { minWidth: 0 } },
+                        React.createElement("h3", { style: { margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, pkg.name),
+                        React.createElement("div", { className: "muted", style: { fontSize: 13 } }, pkg.publisher))),
+                React.createElement("button", { className: "icon-btn", onClick: onClose, "aria-label": "Close" }, Icon.close)),
+            React.createElement("div", { className: "detail-panel-body" },
+                React.createElement("div", { className: "pkg-detail-grid" }, rows.map(([label, value]) => (React.createElement("div", { key: label, className: "pkg-detail-row" },
+                    React.createElement("span", { className: "pkg-detail-label" }, label),
+                    React.createElement("span", { className: "pkg-detail-value" }, value))))),
+                pkg.installArgs && (React.createElement("div", { style: { marginTop: 16 } },
+                    React.createElement("div", { className: "pkg-detail-label", style: { marginBottom: 6 } }, "Install args"),
+                    React.createElement("code", { style: { display: "block", background: "var(--bg-sub)", border: "1px solid var(--line)", borderRadius: "var(--r-sm)", padding: "8px 10px", fontSize: 12, overflowX: "auto" } }, pkg.installArgs))),
+                error && React.createElement("div", { className: "banner error", style: { marginTop: 16 } }, error)),
+            React.createElement("div", { className: "detail-panel-foot" },
+                React.createElement("button", { className: "btn primary", style: { flex: 1 }, onClick: deploy, disabled: busy }, busy ? "Deploying…" : "Deploy to all matching devices")))));
+}
+function PackageStore({ onClose, onDeployed }) {
+    const catalogRes = useResource(() => PatchAPI.packageCatalog());
+    const [platform, setPlatform] = useState("all");
+    const [manager, setManager] = useState("all");
+    const [category, setCategory] = useState("All");
+    const [search, setSearch] = useState("");
+    const [deploying, setDeploying] = useState(null);
+    const [notice, setNotice] = useState(null);
+    const catalog = catalogRes.data || [];
+    const platforms = ["all", ...Array.from(new Set(catalog.map(p => p.platform).filter(Boolean))).sort()];
+    const managers = ["all", ...Array.from(new Set(catalog.filter(p => platform === "all" || p.platform === platform).map(p => p.packageManager).filter(Boolean))).sort()];
+    const scopedCatalog = catalog.filter(p => (platform === "all" || p.platform === platform) &&
+        (manager === "all" || p.packageManager === manager));
+    const categories = ["All", ...Array.from(new Set(scopedCatalog.map(p => p.category).filter(Boolean))).sort()];
+    const catCount = (cat) => cat === "All" ? scopedCatalog.length : scopedCatalog.filter(p => p.category === cat).length;
+    const filtered = scopedCatalog.filter(p => {
+        if (category !== "All" && p.category !== category)
+            return false;
+        if (search)
+            return textMatches(search, [p.name, p.publisher, p.packageId, p.category, p.platform, p.packageManager]);
+        return true;
+    });
+    const deploy = async (entry) => {
+        setDeploying(`${entry.platform}:${entry.packageManager}:${entry.packageId}`);
+        try {
+            const artifact = await PatchAPI.createPackage({
+                name: entry.name,
+                publisher: entry.publisher,
+                version: "latest",
+                type: entry.packageManager,
+                platform: entry.platform,
+                architecture: "any",
+                packageId: entry.packageId,
+                packageScope: "system",
+                catalogCategory: entry.category,
+                installArgs: "",
+                signatureStatus: "unknown",
+            });
+            const result = await PatchAPI.deployPackageAll(artifact.id);
+            const count = result?.tasks?.length ?? (Array.isArray(result) ? result.length : 0);
+            onDeployed?.(`${entry.name} added to library and ${count} deployment task${count === 1 ? "" : "s"} queued.`);
+        }
+        catch (err) {
+            setNotice(`Error: ${err?.message || String(err)}`);
+        }
+        finally {
+            setDeploying(null);
+        }
+    };
+    return (React.createElement("div", { className: "modal-overlay", onClick: onClose },
+        React.createElement("div", { className: "pkg-store-modal", onClick: e => e.stopPropagation() },
+            React.createElement("div", { className: "pkg-store-header" },
+                React.createElement("div", null,
+                    React.createElement("h3", { style: { margin: "0 0 2px" } }, "Package Catalog"),
+                    React.createElement("p", { style: { margin: 0, fontSize: 13, color: "var(--text-3)" } },
+                        catalog.length,
+                        " packages \u00B7 ",
+                        categories.length - 1,
+                        " categories \u00B7 Windows and Linux")),
+                React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                    React.createElement("input", { className: "pkg-store-search", placeholder: "Search packages\u2026", value: search, onChange: e => setSearch(e.target.value), autoFocus: true }),
+                    React.createElement("button", { className: "icon-btn", onClick: onClose, "aria-label": "Close" }, Icon.close))),
+            notice && React.createElement("div", { className: "toast-inline", style: { margin: "8px 20px 0" } }, notice),
+            React.createElement("div", { className: "pkg-store-layout" },
+                React.createElement("nav", { className: "pkg-store-sidebar" },
+                    React.createElement("div", { className: "pkg-store-filter-block" },
+                        React.createElement("span", null, "Platform"),
+                        platforms.map(value => (React.createElement("button", { key: value, className: "pkg-store-filter-btn " + (platform === value ? "active" : ""), onClick: () => { setPlatform(value); setManager("all"); setCategory("All"); } }, value === "all" ? "All platforms" : value)))),
+                    React.createElement("div", { className: "pkg-store-filter-block" },
+                        React.createElement("span", null, "Manager"),
+                        managers.map(value => (React.createElement("button", { key: value, className: "pkg-store-filter-btn " + (manager === value ? "active" : ""), onClick: () => { setManager(value); setCategory("All"); } }, value === "all" ? "All managers" : value)))),
+                    categories.map(cat => (React.createElement("button", { key: cat, className: "pkg-store-cat-btn " + (category === cat ? "active" : ""), onClick: () => setCategory(cat) },
+                        React.createElement("span", null, cat),
+                        React.createElement("span", { className: "pkg-store-cat-count" }, catCount(cat)))))),
+                React.createElement("div", { className: "pkg-store-content" },
+                    catalogRes.loading && React.createElement("div", { style: { padding: "48px 0", color: "var(--text-3)", textAlign: "center" } }, "Loading catalog\u2026"),
+                    !catalogRes.loading && filtered.length === 0 && (React.createElement("div", { style: { padding: "48px 0", color: "var(--text-3)", textAlign: "center" } }, "No packages match your search.")),
+                    React.createElement("div", { className: "pkg-catalog-grid" }, filtered.map(p => (React.createElement("div", { key: `${p.platform}:${p.packageManager}:${p.packageId}`, className: "pkg-catalog-card" },
+                        React.createElement("div", { className: "pkg-catalog-card-top" },
+                            React.createElement("div", { className: "pkg-avatar" }, (p.name || "?")[0].toUpperCase()),
+                            React.createElement("span", { className: "pill ok" }, p.packageManager)),
+                        React.createElement("div", { className: "pkg-catalog-card-name" }, p.name),
+                        React.createElement("div", { className: "pkg-catalog-card-pub" }, p.publisher),
+                        React.createElement("div", { className: "pkg-catalog-card-meta" },
+                            p.platform,
+                            " \u00B7 ",
+                            p.category),
+                        React.createElement("div", { className: "pkg-catalog-card-foot" },
+                            React.createElement("button", { className: "btn sm primary", onClick: () => deploy(p), disabled: deploying === `${p.platform}:${p.packageManager}:${p.packageId}` }, deploying === `${p.platform}:${p.packageManager}:${p.packageId}` ? "…" : "Deploy")))))))))));
+}
+function readFileBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+        reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+        reader.readAsDataURL(file);
+    });
 }
 // ---------- Rules ----------
 /**
@@ -4635,6 +5223,15 @@ const SSO_ROLE_OPTIONS = [
     { value: 'patch_manager', label: 'Patch Manager' },
     { value: 'admin', label: 'Admin' },
 ];
+function roleLabel(role, rbac) {
+    return (rbac?.roleDefinitions || []).find(r => r.id === role)?.name || role;
+}
+function roleOptionsFromRbac(rbac) {
+    const definitions = rbac?.roleDefinitions || [];
+    return definitions.length
+        ? definitions.map(role => ({ value: role.id, label: role.name || role.id }))
+        : SSO_ROLE_OPTIONS;
+}
 const SSO_SETUP_GUIDE = {
     microsoft: {
         portalUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
@@ -5059,7 +5656,7 @@ function SsoCredsStep({ type, name, setName, clientId, setClientId, clientSecret
                 React.createElement("span", { className: "btn-icon" }, Icon.arrowR)))));
 }
 // ── Step 4: Access control ────────────────────────────────────────────────
-function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefaultRole, autoProvision, setAutoProvision, enabled, setEnabled, onSubmit, onBack, saving, saveError }) {
+function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefaultRole, roleOptions = SSO_ROLE_OPTIONS, autoProvision, setAutoProvision, enabled, setEnabled, onSubmit, onBack, saving, saveError }) {
     return (React.createElement("div", { className: "sso-wizard-body" },
         React.createElement("div", { className: "sso-wizard-header" },
             React.createElement("h3", null, "Access control"),
@@ -5076,7 +5673,7 @@ function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefa
                 React.createElement(ToggleSwitch, { checked: autoProvision, onChange: e => setAutoProvision(e.target.checked), label: "Auto-provision" })),
             autoProvision && (React.createElement("label", { className: "field" },
                 React.createElement("span", null, "Default role for auto-provisioned users"),
-                React.createElement("select", { value: defaultRole, onChange: e => setDefaultRole(e.target.value) }, SSO_ROLE_OPTIONS.map(o => React.createElement("option", { key: o.value, value: o.value }, o.label))))),
+                React.createElement("select", { value: defaultRole, onChange: e => setDefaultRole(e.target.value) }, roleOptions.map(o => React.createElement("option", { key: o.value, value: o.value }, o.label))))),
             React.createElement("div", { className: "sso-toggle-card" },
                 React.createElement("div", null,
                     React.createElement("strong", null, "Enable provider"),
@@ -5092,7 +5689,7 @@ function SsoAccessStep({ allowedDomains, setAllowedDomains, defaultRole, setDefa
                 "Add provider"))));
 }
 // ── Full add-provider wizard ──────────────────────────────────────────────
-function SsoWizard({ onSave, onCancel, saving, saveError }) {
+function SsoWizard({ onSave, onCancel, saving, saveError, roleOptions = SSO_ROLE_OPTIONS }) {
     const [step, setStep] = useState(1);
     const [type, setType] = useState('microsoft');
     const [name, setName] = useState('');
@@ -5124,10 +5721,10 @@ function SsoWizard({ onSave, onCancel, saving, saveError }) {
         step === 1 && (React.createElement(SsoTypeStep, { type: type, setType: setType, onNext: () => setStep(2), onCancel: onCancel })),
         step === 2 && (React.createElement(SsoSetupStep, { type: type, callbackUrl: callbackUrl, onNext: () => setStep(3), onBack: () => setStep(1) })),
         step === 3 && (React.createElement(SsoCredsStep, { type: type, name: name, setName: setName, clientId: clientId, setClientId: setClientId, clientSecret: clientSecret, setClientSecret: setClientSecret, tenantId: tenantId, setTenantId: setTenantId, domain: domain, setDomain: setDomain, discoveryUrl: discoveryUrl, setDiscoveryUrl: setDiscoveryUrl, onNext: () => setStep(4), onBack: () => setStep(2) })),
-        step === 4 && (React.createElement(SsoAccessStep, { allowedDomains: allowedDomains, setAllowedDomains: setAllowedDomains, defaultRole: defaultRole, setDefaultRole: setDefaultRole, autoProvision: autoProvision, setAutoProvision: setAutoProvision, enabled: enabled, setEnabled: setEnabled, onSubmit: submit, onBack: () => setStep(3), saving: saving, saveError: saveError }))));
+        step === 4 && (React.createElement(SsoAccessStep, { allowedDomains: allowedDomains, setAllowedDomains: setAllowedDomains, defaultRole: defaultRole, setDefaultRole: setDefaultRole, roleOptions: roleOptions, autoProvision: autoProvision, setAutoProvision: setAutoProvision, enabled: enabled, setEnabled: setEnabled, onSubmit: submit, onBack: () => setStep(3), saving: saving, saveError: saveError }))));
 }
 // ── Edit form (compact, for existing providers) ───────────────────────────
-function SsoEditForm({ initial, onSave, onCancel, saving, saveError }) {
+function SsoEditForm({ initial, onSave, onCancel, saving, saveError, roleOptions = SSO_ROLE_OPTIONS }) {
     const [name, setName] = useState(initial?.name ?? '');
     const [clientId, setClientId] = useState(initial?.clientId ?? '');
     const [clientSecret, setClientSecret] = useState('');
@@ -5193,7 +5790,7 @@ function SsoEditForm({ initial, onSave, onCancel, saving, saveError }) {
                 React.createElement(ToggleSwitch, { checked: autoProvision, onChange: e => setAutoProvision(e.target.checked), label: "Auto-provision" })),
             autoProvision && (React.createElement("label", { className: "field" },
                 React.createElement("span", null, "Default role for auto-provisioned users"),
-                React.createElement("select", { value: defaultRole, onChange: e => setDefaultRole(e.target.value) }, SSO_ROLE_OPTIONS.map(o => React.createElement("option", { key: o.value, value: o.value }, o.label))))),
+                React.createElement("select", { value: defaultRole, onChange: e => setDefaultRole(e.target.value) }, roleOptions.map(o => React.createElement("option", { key: o.value, value: o.value }, o.label))))),
             React.createElement("div", { className: "sso-toggle-card" },
                 React.createElement("div", null,
                     React.createElement("strong", null, "Enable provider"),
@@ -5238,6 +5835,7 @@ function SsoProviderCard({ provider, onEdit, onDelete, onToggle }) {
 // ── Settings page ──────────────────────────────────────────────────────────
 function SsoSettingsPage() {
     const { data: providers, loading, error, reload } = useResource(() => PatchAPI.ssoProvidersAdmin());
+    const rbac = useResource(() => PatchAPI.adminRbac());
     const [mode, setMode] = useState('list'); // 'list' | 'add' | 'edit'
     const [editing, setEditing] = useState(null);
     const [deleting, setDeleting] = useState(null);
@@ -5269,6 +5867,7 @@ function SsoSettingsPage() {
             .then(() => reload())
             .catch(() => { });
     };
+    const roleOptions = roleOptionsFromRbac(rbac.data);
     return (React.createElement("div", { className: "page" },
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
@@ -5278,9 +5877,9 @@ function SsoSettingsPage() {
                 Icon.plus,
                 " Add provider"))),
         mode === 'add' && (React.createElement("div", { className: "card sso-wizard-card" },
-            React.createElement(SsoWizard, { onSave: handleSave, onCancel: closeForm, saving: saving, saveError: saveError }))),
+            React.createElement(SsoWizard, { onSave: handleSave, onCancel: closeForm, saving: saving, saveError: saveError, roleOptions: roleOptions }))),
         mode === 'edit' && (React.createElement("div", { className: "card", style: { marginBottom: 16 } },
-            React.createElement(SsoEditForm, { initial: editing, onSave: handleSave, onCancel: closeForm, saving: saving, saveError: saveError }))),
+            React.createElement(SsoEditForm, { initial: editing, onSave: handleSave, onCancel: closeForm, saving: saving, saveError: saveError, roleOptions: roleOptions }))),
         React.createElement("div", { className: "card" },
             React.createElement("div", { className: "card-head" },
                 React.createElement("h3", null, "Identity Providers"),
@@ -5400,6 +5999,11 @@ function AccessSettings() {
     const [resetPassword, setResetPassword] = useState('');
     const [deletingUser, setDeletingUser] = useState(null);
     const roles = rbac.data?.roles || ['viewer'];
+    useEffect(() => {
+        if (!roles.length || form.roles.some(role => roles.includes(role)))
+            return;
+        setForm(prev => ({ ...prev, roles: [roles.includes('viewer') ? 'viewer' : roles[0]] }));
+    }, [roles.join('|')]);
     const toggleRole = (role) => setForm(prev => ({ ...prev, roles: prev.roles.includes(role) ? prev.roles.filter(r => r !== role) : [...prev.roles, role] }));
     const create = (e) => {
         e.preventDefault();
@@ -5453,7 +6057,7 @@ function AccessSettings() {
                         React.createElement("input", { type: "password", required: true, minLength: "12", value: form.password, onChange: e => setForm(prev => ({ ...prev, password: e.target.value })) }))),
                 React.createElement("div", { className: "checkbox-group" }, roles.map(role => React.createElement("label", { className: "checkbox-label", key: role },
                     React.createElement("input", { type: "checkbox", checked: form.roles.includes(role), onChange: () => toggleRole(role) }),
-                    role))),
+                    roleLabel(role, rbac.data)))),
                 error && React.createElement("div", { className: "banner error" }, error),
                 React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between' } },
                     React.createElement("button", { type: "button", className: "btn ghost", onClick: () => setCreating(false) }, "Cancel"),
@@ -5485,7 +6089,7 @@ function AccessSettings() {
                                         const next = e.target.checked ? [...user.roles, role] : user.roles.filter(r => r !== role);
                                         updateUser(user, { roles: next });
                                     } }),
-                                role))),
+                                roleLabel(role, rbac.data)))),
                             React.createElement("td", { className: "mono muted" }, (user.permissions || []).join(', ')),
                             React.createElement("td", null, user.mfaEnabled ? React.createElement("span", { className: "pill ok" }, "Enabled") : React.createElement("span", { className: "pill" }, "Off")),
                             React.createElement("td", null, user.disabled ? React.createElement("span", { className: "pill crit" }, "Disabled") : React.createElement("span", { className: "pill ok" }, "Active")),
@@ -5520,44 +6124,414 @@ function AccessSettings() {
 }
 function PermissionSettings() {
     const rbac = useResource(() => PatchAPI.adminRbac());
+    const [mode, setMode] = useState('list');
+    const [editing, setEditing] = useState(null);
+    const [deleting, setDeleting] = useState(null);
+    const [form, setForm] = useState({ id: '', name: '', description: '', permissions: [] });
+    const [saving, setSaving] = useState(false);
+    const [notice, setNotice] = useState('');
+    const roleDefinitions = rbac.data?.roleDefinitions || [];
+    const permissions = rbac.data?.permissions || [];
+    const openCreate = () => {
+        setNotice('');
+        setEditing(null);
+        setForm({ id: '', name: '', description: '', permissions: ['apps:read'] });
+        setMode('form');
+    };
+    const openEdit = (role) => {
+        setNotice('');
+        setEditing(role);
+        setForm({
+            id: role.id,
+            name: role.name || role.id,
+            description: role.description || '',
+            permissions: [...(role.permissions || [])],
+        });
+        setMode('form');
+    };
+    const closeForm = () => {
+        setMode('list');
+        setEditing(null);
+        setNotice('');
+    };
+    const togglePermission = (permission) => setForm(prev => ({
+        ...prev,
+        permissions: prev.permissions.includes(permission)
+            ? prev.permissions.filter(p => p !== permission)
+            : [...prev.permissions, permission].sort(),
+    }));
+    const submitRole = (e) => {
+        e.preventDefault();
+        setSaving(true);
+        setNotice('');
+        const dto = {
+            id: form.id,
+            name: form.name,
+            description: form.description,
+            permissions: form.permissions,
+        };
+        const action = editing
+            ? PatchAPI.adminUpdateRole(editing.id, dto)
+            : PatchAPI.adminCreateRole(dto);
+        action
+            .then(() => { closeForm(); rbac.reload(); })
+            .catch(err => setNotice(err.message || 'Role save failed'))
+            .finally(() => setSaving(false));
+    };
+    const confirmDeleteRole = () => {
+        if (!deleting)
+            return;
+        setSaving(true);
+        setNotice('');
+        PatchAPI.adminDeleteRole(deleting.id)
+            .then(() => { setDeleting(null); rbac.reload(); })
+            .catch(err => setNotice(err.message || 'Delete failed'))
+            .finally(() => setSaving(false));
+    };
     return (React.createElement("div", null,
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
                 React.createElement("h2", null, "Permissions"),
-                React.createElement("p", null, "Role matrix and effective permission catalog"))),
+                React.createElement("p", null, "Create roles and assign access across the management server")),
+            mode === 'list' && React.createElement("button", { className: "btn primary", onClick: openCreate },
+                Icon.plus,
+                " New role")),
         rbac.error && React.createElement(ErrorAlert, { error: rbac.error, onRetry: rbac.reload }),
+        notice && React.createElement("div", { className: "banner error" }, notice),
+        mode === 'form' && (React.createElement("div", { className: "card", style: { marginBottom: 16 } },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("div", null,
+                    React.createElement("h3", null, editing ? `Edit ${editing.name || editing.id}` : 'Create role'),
+                    React.createElement("div", { className: "sub" }, editing?.builtIn ? 'Built-in role' : 'Custom role'))),
+            React.createElement("form", { className: "card-body", onSubmit: submitRole, style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+                React.createElement("div", { className: "form-grid" },
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Role ID"),
+                        React.createElement("input", { required: true, disabled: Boolean(editing), value: form.id, onChange: e => setForm(prev => ({ ...prev, id: e.target.value })), placeholder: "regional_operator" }),
+                        React.createElement("span", { className: "field-sub" }, "Lowercase letters, numbers, underscores, colons, or hyphens.")),
+                    React.createElement("label", { className: "field" },
+                        React.createElement("span", null, "Display name"),
+                        React.createElement("input", { required: true, value: form.name, onChange: e => setForm(prev => ({ ...prev, name: e.target.value })), placeholder: "Regional Operator" }))),
+                React.createElement("label", { className: "field" },
+                    React.createElement("span", null, "Description"),
+                    React.createElement("input", { value: form.description, onChange: e => setForm(prev => ({ ...prev, description: e.target.value })), placeholder: "What this role is used for" })),
+                React.createElement("div", null,
+                    React.createElement("strong", null, "Permissions"),
+                    React.createElement("div", { className: "checkbox-group", style: { marginTop: 8 } }, permissions.map(permission => (React.createElement("label", { className: "checkbox-label", key: permission },
+                        React.createElement("input", { type: "checkbox", checked: form.permissions.includes(permission), onChange: () => togglePermission(permission) }),
+                        React.createElement("span", { className: "mono" }, permission)))))),
+                React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between' } },
+                    React.createElement("button", { type: "button", className: "btn ghost", onClick: closeForm, disabled: saving }, "Cancel"),
+                    React.createElement("button", { className: "btn primary", disabled: saving }, saving ? 'Saving...' : 'Save role'))))),
         React.createElement("div", { className: "card" },
             React.createElement("div", { className: "card-head" },
-                React.createElement("h3", null, "Role permissions"),
+                React.createElement("h3", null, "Roles"),
                 React.createElement("div", { className: "sub" },
-                    (rbac.data?.permissions || []).length,
+                    roleDefinitions.length || (rbac.data?.roles || []).length,
+                    " roles \u00B7 ",
+                    permissions.length,
                     " permissions")),
             React.createElement("div", { className: "card-body" },
                 rbac.loading && React.createElement(Skeleton, { h: 140 }),
-                !rbac.loading && Object.entries(rbac.data?.matrix || {}).map(([role, permissions]) => (React.createElement("div", { key: role, style: { marginBottom: 14 } },
-                    React.createElement("strong", null, role),
-                    React.createElement("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 } }, permissions.map(p => React.createElement("span", { className: "pill", key: p }, p))))))))));
+                !rbac.loading && roleDefinitions.length === 0 && React.createElement("div", { className: "empty-state" }, "No roles configured."),
+                !rbac.loading && roleDefinitions.map(role => (React.createElement("div", { key: role.id, style: { border: '1px solid var(--line)', borderRadius: 8, padding: 14, marginBottom: 12 } },
+                    React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' } },
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                                React.createElement("strong", null, role.name || role.id),
+                                React.createElement("span", { className: "pill" }, role.id),
+                                role.builtIn && React.createElement("span", { className: "pill accent" }, "Built-in")),
+                            role.description && React.createElement("div", { className: "muted", style: { fontSize: 12, marginTop: 4 } }, role.description)),
+                        React.createElement("div", { style: { display: 'flex', gap: 6 } },
+                            React.createElement("button", { className: "btn sm ghost", onClick: () => openEdit(role) }, "Edit"),
+                            React.createElement("button", { className: "btn sm ghost danger", onClick: () => setDeleting(role), disabled: role.id === 'owner' }, "Delete"))),
+                    React.createElement("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 } },
+                        (role.permissions || []).map(p => React.createElement("span", { className: "pill", key: p }, p)),
+                        (role.permissions || []).length === 0 && React.createElement("span", { className: "muted" }, "No permissions assigned"))))))),
+        deleting && (React.createElement("div", { className: "modal-overlay", onClick: () => setDeleting(null) },
+            React.createElement("div", { className: "modal-box", onClick: e => e.stopPropagation() },
+                React.createElement("h3", null, "Delete role?"),
+                React.createElement("p", null,
+                    "This removes ",
+                    React.createElement("strong", null, deleting.name || deleting.id),
+                    ". Users and SSO providers must be moved off this role first."),
+                notice && React.createElement("div", { className: "banner error" }, notice),
+                React.createElement("div", { className: "modal-actions" },
+                    React.createElement("button", { className: "btn ghost", onClick: () => setDeleting(null), disabled: saving }, "Cancel"),
+                    React.createElement("button", { className: "btn danger", onClick: confirmDeleteRole, disabled: saving },
+                        saving ? React.createElement("span", { className: "search-spinner" }) : null,
+                        " Delete role")))))));
 }
-function AdminSettingsPage({ initialTab = 'policy', onAdminTabChange }) {
-    const [tab, setTab] = useState(initialTab);
-    useEffect(() => setTab(initialTab), [initialTab]);
-    const tabs = [['policy', 'Policy'], ['users', 'Users'], ['permissions', 'Permissions'], ['siem', 'SIEM'], ['sso', 'SSO'], ['posture', 'Posture']];
-    const switchTab = (id) => {
-        setTab(id);
-        onAdminTabChange?.(id);
+// ── Device Retirement Policies ──────────────────────────────────────────────
+const CRITERION_LABELS = {
+    inactive_days: 'Inactive for N days',
+    os_pattern: 'OS name contains',
+    trust_score_below: 'Trust score below',
+    risk_score_above: 'Risk score above',
+    has_tag: 'Has tag',
+    missing_tag: 'Missing tag',
+    in_group: 'In group',
+    os_family: 'OS family',
+};
+const ACTION_LABELS = {
+    tag_device: 'Apply tag to device',
+    create_alarm: 'Create alarm',
+    notify: 'Send notification',
+};
+function RetirementCriterionRow({ criterion, onChange, onRemove }) {
+    const set = (key, value) => onChange({ ...criterion, [key]: value });
+    return (React.createElement("div", { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', borderRadius: 6, padding: '8px 10px' } },
+        React.createElement("select", { value: criterion.type, onChange: e => onChange({ type: e.target.value }), style: { flexShrink: 0 } }, Object.entries(CRITERION_LABELS).map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+        criterion.type === 'inactive_days' && (React.createElement("input", { type: "number", min: "1", placeholder: "days", value: criterion.days ?? '', onChange: e => set('days', Number(e.target.value)), style: { width: 80 } })),
+        criterion.type === 'os_pattern' && (React.createElement("input", { placeholder: "e.g. Windows 7", value: criterion.pattern ?? '', onChange: e => set('pattern', e.target.value), style: { flex: 1 } })),
+        (criterion.type === 'trust_score_below' || criterion.type === 'risk_score_above') && (React.createElement("input", { type: "number", min: "0", max: "100", placeholder: "0\u2013100", value: criterion.score ?? '', onChange: e => set('score', Number(e.target.value)), style: { width: 80 } })),
+        (criterion.type === 'has_tag' || criterion.type === 'missing_tag') && (React.createElement("input", { placeholder: "tag name", value: criterion.tag ?? '', onChange: e => set('tag', e.target.value), style: { flex: 1 } })),
+        criterion.type === 'in_group' && (React.createElement("input", { placeholder: "group name", value: criterion.group ?? '', onChange: e => set('group', e.target.value), style: { flex: 1 } })),
+        criterion.type === 'os_family' && (React.createElement("select", { value: criterion.os ?? 'windows', onChange: e => set('os', e.target.value) },
+            React.createElement("option", { value: "windows" }, "Windows"),
+            React.createElement("option", { value: "linux" }, "Linux"))),
+        React.createElement("button", { className: "btn sm ghost danger", onClick: onRemove, style: { marginLeft: 'auto' } }, "Remove")));
+}
+function RetirementActionRow({ action, onChange, onRemove }) {
+    const set = (key, value) => onChange({ ...action, [key]: value });
+    return (React.createElement("div", { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', background: 'var(--bg-2)', borderRadius: 6, padding: '8px 10px' } },
+        React.createElement("select", { value: action.type, onChange: e => onChange({ type: e.target.value }), style: { flexShrink: 0 } }, Object.entries(ACTION_LABELS).map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+        action.type === 'tag_device' && (React.createElement("input", { placeholder: "tag to apply", value: action.tag ?? '', onChange: e => set('tag', e.target.value), style: { flex: 1 } })),
+        action.type === 'create_alarm' && (React.createElement(React.Fragment, null,
+            React.createElement("select", { value: action.severity ?? 'warning', onChange: e => set('severity', e.target.value) },
+                React.createElement("option", { value: "info" }, "Info"),
+                React.createElement("option", { value: "warning" }, "Warning"),
+                React.createElement("option", { value: "critical" }, "Critical")),
+            React.createElement("input", { placeholder: "alarm message", value: action.message ?? '', onChange: e => set('message', e.target.value), style: { flex: 1 } }))),
+        action.type === 'notify' && (React.createElement(React.Fragment, null,
+            React.createElement("select", { value: action.channel ?? 'siem', onChange: e => set('channel', e.target.value) },
+                React.createElement("option", { value: "siem" }, "SIEM"),
+                React.createElement("option", { value: "webhook" }, "Webhook"),
+                React.createElement("option", { value: "email" }, "Email")),
+            React.createElement("input", { placeholder: "optional message", value: action.message ?? '', onChange: e => set('message', e.target.value), style: { flex: 1 } }))),
+        React.createElement("button", { className: "btn sm ghost danger", onClick: onRemove, style: { marginLeft: 'auto' } }, "Remove")));
+}
+const BLANK_POLICY = {
+    name: '', description: '', enabled: true,
+    conditionCombinator: 'AND', priority: 10,
+    conditions: [{ type: 'inactive_days', days: 90 }],
+    actions: [{ type: 'tag_device', tag: 'retired' }],
+};
+function RetirementPolicyForm({ initial, onSave, onCancel, saving, saveError }) {
+    const [form, setForm] = useState(initial ? { ...initial } : { ...BLANK_POLICY });
+    const setField = (key, value) => setForm(prev => ({ ...prev, [key]: value }));
+    const addCondition = () => setForm(prev => ({ ...prev, conditions: [...prev.conditions, { type: 'inactive_days', days: 90 }] }));
+    const updateCondition = (i, val) => setForm(prev => ({ ...prev, conditions: prev.conditions.map((c, idx) => idx === i ? val : c) }));
+    const removeCondition = (i) => setForm(prev => ({ ...prev, conditions: prev.conditions.filter((_, idx) => idx !== i) }));
+    const addAction = () => setForm(prev => ({ ...prev, actions: [...prev.actions, { type: 'tag_device', tag: 'retired' }] }));
+    const updateAction = (i, val) => setForm(prev => ({ ...prev, actions: prev.actions.map((a, idx) => idx === i ? val : a) }));
+    const removeAction = (i) => setForm(prev => ({ ...prev, actions: prev.actions.filter((_, idx) => idx !== i) }));
+    const submit = (e) => { e.preventDefault(); onSave(form); };
+    return (React.createElement("form", { className: "card-body", onSubmit: submit, style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+        React.createElement("div", { className: "form-grid" },
+            React.createElement("label", { className: "field" },
+                React.createElement("span", null, "Policy name"),
+                React.createElement("input", { required: true, value: form.name, onChange: e => setField('name', e.target.value), placeholder: "e.g. Retire inactive Windows 7 devices" })),
+            React.createElement("label", { className: "field" },
+                React.createElement("span", null, "Priority"),
+                React.createElement("input", { type: "number", min: "1", value: form.priority, onChange: e => setField('priority', Number(e.target.value)) }))),
+        React.createElement("label", { className: "field" },
+            React.createElement("span", null,
+                "Description ",
+                React.createElement("em", { className: "field-hint" }, "optional")),
+            React.createElement("input", { value: form.description, onChange: e => setField('description', e.target.value), placeholder: "What does this policy retire and why?" })),
+        React.createElement("div", { className: "checkbox-group" },
+            React.createElement("label", { className: "checkbox-label" },
+                React.createElement("input", { type: "checkbox", checked: form.enabled, onChange: e => setField('enabled', e.target.checked) }),
+                " Enabled")),
+        React.createElement("div", null,
+            React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+                React.createElement("strong", null, "Conditions"),
+                React.createElement("div", { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                    React.createElement("span", { className: "muted", style: { fontSize: 12 } }, "Match"),
+                    React.createElement("select", { value: form.conditionCombinator, onChange: e => setField('conditionCombinator', e.target.value), style: { width: 'auto' } },
+                        React.createElement("option", { value: "AND" }, "ALL (AND)"),
+                        React.createElement("option", { value: "OR" }, "ANY (OR)")))),
+            React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, form.conditions.map((c, i) => (React.createElement(RetirementCriterionRow, { key: i, criterion: c, onChange: val => updateCondition(i, val), onRemove: () => removeCondition(i) })))),
+            React.createElement("button", { type: "button", className: "btn sm ghost", style: { marginTop: 8 }, onClick: addCondition }, "+ Add condition")),
+        React.createElement("div", null,
+            React.createElement("div", { style: { marginBottom: 8 } },
+                React.createElement("strong", null, "Actions"),
+                " ",
+                React.createElement("span", { className: "muted", style: { fontSize: 12 } }, "executed when a device matches")),
+            React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, form.actions.map((a, i) => (React.createElement(RetirementActionRow, { key: i, action: a, onChange: val => updateAction(i, val), onRemove: () => removeAction(i) })))),
+            React.createElement("button", { type: "button", className: "btn sm ghost", style: { marginTop: 8 }, onClick: addAction }, "+ Add action")),
+        saveError && React.createElement("div", { className: "banner error" }, saveError),
+        React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between' } },
+            React.createElement("button", { type: "button", className: "btn ghost", onClick: onCancel }, "Cancel"),
+            React.createElement("button", { className: "btn primary", disabled: saving }, saving ? 'Saving…' : (initial ? 'Update policy' : 'Create policy')))));
+}
+function RetirementPolicyCard({ policy, onEdit, onDelete, onEvaluate, evaluating }) {
+    const conditionSummary = policy.conditions.map(c => {
+        switch (c.type) {
+            case 'inactive_days': return `Inactive > ${c.days}d`;
+            case 'os_pattern': return `OS contains "${c.pattern}"`;
+            case 'trust_score_below': return `Trust < ${c.score}`;
+            case 'risk_score_above': return `Risk > ${c.score}`;
+            case 'has_tag': return `Tag: ${c.tag}`;
+            case 'missing_tag': return `No tag: ${c.tag}`;
+            case 'in_group': return `Group: ${c.group}`;
+            case 'os_family': return `OS: ${c.os}`;
+            default: return c.type;
+        }
+    }).join(` ${policy.conditionCombinator} `);
+    return (React.createElement("div", { style: { border: '1px solid var(--border)', borderRadius: 8, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 } },
+        React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 } },
+            React.createElement("div", null,
+                React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                    React.createElement("strong", null, policy.name),
+                    React.createElement("span", { className: 'pill ' + (policy.enabled ? 'ok' : '') }, policy.enabled ? 'Enabled' : 'Disabled'),
+                    React.createElement("span", { className: "pill" },
+                        "Priority ",
+                        policy.priority)),
+                policy.description && React.createElement("div", { className: "muted", style: { fontSize: 12, marginTop: 2 } }, policy.description)),
+            React.createElement("div", { style: { display: 'flex', gap: 6 } },
+                React.createElement("button", { className: "btn sm ghost", onClick: () => onEvaluate(policy), disabled: evaluating },
+                    evaluating ? React.createElement("span", { className: "search-spinner" }) : null,
+                    " Evaluate"),
+                React.createElement("button", { className: "btn sm ghost", onClick: () => onEdit(policy) }, "Edit"),
+                React.createElement("button", { className: "btn sm ghost danger", onClick: () => onDelete(policy) }, "Delete"))),
+        React.createElement("div", { style: { fontSize: 12 } },
+            React.createElement("span", { className: "muted" }, "Conditions: "),
+            React.createElement("span", { className: "mono" }, conditionSummary)),
+        React.createElement("div", { style: { fontSize: 12 } },
+            React.createElement("span", { className: "muted" }, "Actions: "),
+            policy.actions.map((a, i) => (React.createElement("span", { key: i, className: "pill", style: { marginRight: 4 } }, a.type === 'tag_device' ? `tag: ${a.tag}` : a.type === 'create_alarm' ? `alarm(${a.severity})` : `notify:${a.channel}`)))),
+        policy.lastEvaluatedAt != null && (React.createElement("div", { className: "muted", style: { fontSize: 11 } },
+            "Last evaluated ",
+            fmtAgo(policy.lastEvaluatedAt),
+            " \u2014 matched ",
+            policy.matchCount ?? 0,
+            " device",
+            policy.matchCount !== 1 ? 's' : ''))));
+}
+function RetirementEvalModal({ result, onClose }) {
+    if (!result)
+        return null;
+    return (React.createElement("div", { className: "modal-overlay", onClick: onClose },
+        React.createElement("div", { className: "modal-box", style: { maxWidth: 560, width: '95%' }, onClick: e => e.stopPropagation() },
+            React.createElement("h3", null, "Evaluation results"),
+            React.createElement("p", { className: "muted" },
+                result.matchCount,
+                " of ",
+                result.totalDevices,
+                " devices match this policy."),
+            result.matchedDevices.length > 0 ? (React.createElement("div", { style: { maxHeight: 280, overflowY: 'auto', marginTop: 10 } },
+                React.createElement("table", { className: "tbl" },
+                    React.createElement("thead", null,
+                        React.createElement("tr", null,
+                            React.createElement("th", null, "Hostname"),
+                            React.createElement("th", null, "OS"),
+                            React.createElement("th", null, "Group"),
+                            React.createElement("th", null, "Last seen"))),
+                    React.createElement("tbody", null, result.matchedDevices.map(d => (React.createElement("tr", { key: d.id },
+                        React.createElement("td", null,
+                            React.createElement("strong", null, d.hostname)),
+                        React.createElement("td", { className: "muted" }, d.os),
+                        React.createElement("td", null, d.group || '—'),
+                        React.createElement("td", { className: "muted" }, fmtAgo(d.lastSeenAt))))))))) : (React.createElement("div", { className: "empty-state", style: { padding: 20 } }, "No devices currently match this policy.")),
+            React.createElement("div", { className: "modal-actions", style: { marginTop: 12 } },
+                React.createElement("button", { className: "btn primary", onClick: onClose }, "Close")))));
+}
+function RetirementPoliciesPage() {
+    const [tenantId] = useState('default');
+    const { data: policies, loading, error, reload } = useResource(() => PatchAPI.retirementPolicies(tenantId), [tenantId]);
+    const [mode, setMode] = useState('list'); // 'list' | 'add' | 'edit'
+    const [editing, setEditing] = useState(null);
+    const [deleting, setDeleting] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState('');
+    const [evaluating, setEvaluating] = useState(null);
+    const [evalResult, setEvalResult] = useState(null);
+    const openAdd = () => { setSaveError(''); setMode('add'); };
+    const openEdit = (p) => { setSaveError(''); setEditing(p); setMode('edit'); };
+    const closeForm = () => { setMode('list'); setEditing(null); setSaveError(''); };
+    const handleSave = (dto) => {
+        setSaving(true);
+        setSaveError('');
+        const action = mode === 'edit'
+            ? PatchAPI.updateRetirementPolicy(editing.id, dto)
+            : PatchAPI.createRetirementPolicy({ ...dto, tenantId });
+        action
+            .then(() => { closeForm(); reload(); })
+            .catch(err => setSaveError(err.message || 'Save failed'))
+            .finally(() => setSaving(false));
     };
-    return (React.createElement("div", { className: "page" },
+    const handleDelete = () => {
+        setSaving(true);
+        PatchAPI.deleteRetirementPolicy(deleting.id)
+            .then(() => { setDeleting(null); reload(); })
+            .catch(err => setSaveError(err.message || 'Delete failed'))
+            .finally(() => setSaving(false));
+    };
+    const handleEvaluate = (policy) => {
+        setEvaluating(policy.id);
+        PatchAPI.evaluateRetirementPolicy(policy.id)
+            .then(result => { setEvalResult(result); reload(); })
+            .catch(err => alert(err.message || 'Evaluation failed'))
+            .finally(() => setEvaluating(null));
+    };
+    const list = Array.isArray(policies) ? policies : [];
+    return (React.createElement("div", null,
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
-                React.createElement("h2", null, "Admin settings"),
-                React.createElement("p", null, "Security policy, users, permissions, SIEM, SSO, and posture"))),
-        React.createElement("div", { className: "filterbar" }, tabs.map(([id, label]) => React.createElement("button", { key: id, className: "chip " + (tab === id ? "active" : ""), onClick: () => switchTab(id) }, label))),
-        tab === 'policy' && React.createElement(TenantPolicySettings, null),
-        tab === 'users' && React.createElement(AccessSettings, null),
-        tab === 'permissions' && React.createElement(PermissionSettings, null),
-        tab === 'siem' && React.createElement(SiemPage, null),
-        tab === 'sso' && React.createElement(SsoSettingsPage, null),
-        tab === 'posture' && React.createElement(SecurityPosturePage, null)));
+                React.createElement("h2", null, "Device retirement policies"),
+                React.createElement("p", null, "Define rules to identify and flag devices for retirement based on inactivity, OS, trust score, and other parameters.")),
+            mode === 'list' && React.createElement("button", { className: "btn primary", onClick: openAdd },
+                Icon.plus,
+                " New policy")),
+        (mode === 'add' || mode === 'edit') && (React.createElement("div", { className: "card", style: { marginBottom: 16 } },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("h3", null, mode === 'edit' ? 'Edit policy' : 'New policy')),
+            React.createElement(RetirementPolicyForm, { initial: mode === 'edit' ? editing : null, onSave: handleSave, onCancel: closeForm, saving: saving, saveError: saveError }))),
+        React.createElement("div", { className: "card" },
+            React.createElement("div", { className: "card-head" },
+                React.createElement("h3", null, "Policies"),
+                React.createElement("div", { className: "sub" },
+                    list.length,
+                    " configured")),
+            loading && React.createElement("div", { className: "empty-state" },
+                React.createElement("span", { className: "search-spinner" }),
+                " Loading\u2026"),
+            error && React.createElement("div", { style: { padding: 12 } },
+                React.createElement(ErrorAlert, { error: error, onRetry: reload })),
+            !loading && !error && list.length === 0 && (React.createElement("div", { className: "empty-state" },
+                React.createElement("div", { style: { color: 'var(--text-3)', marginBottom: 6 } }, Icon.shield),
+                React.createElement("p", null, "No retirement policies configured."),
+                React.createElement("p", { className: "sub" }, "Create a policy to automatically identify devices that should be retired."),
+                mode === 'list' && React.createElement("button", { className: "btn primary", style: { marginTop: 12 }, onClick: openAdd },
+                    Icon.plus,
+                    " Create first policy"))),
+            !loading && !error && list.length > 0 && (React.createElement("div", { style: { display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 16px' } }, list.map(p => (React.createElement(RetirementPolicyCard, { key: p.id, policy: p, onEdit: openEdit, onDelete: p => setDeleting(p), onEvaluate: handleEvaluate, evaluating: evaluating === p.id })))))),
+        deleting && (React.createElement("div", { className: "modal-overlay", onClick: () => setDeleting(null) },
+            React.createElement("div", { className: "modal-box", onClick: e => e.stopPropagation() },
+                React.createElement("h3", null, "Delete retirement policy?"),
+                React.createElement("p", null,
+                    "This permanently removes ",
+                    React.createElement("strong", null, deleting.name),
+                    ". Devices already tagged by this policy will retain their tags."),
+                saveError && React.createElement("div", { className: "banner error" }, saveError),
+                React.createElement("div", { className: "modal-actions" },
+                    React.createElement("button", { className: "btn ghost", onClick: () => setDeleting(null), disabled: saving }, "Cancel"),
+                    React.createElement("button", { className: "btn danger", onClick: handleDelete, disabled: saving },
+                        saving ? React.createElement("span", { className: "search-spinner" }) : null,
+                        " Delete policy"))))),
+        React.createElement(RetirementEvalModal, { result: evalResult, onClose: () => setEvalResult(null) })));
+}
+function AdminSettingsPage({ initialTab = 'policy' }) {
+    return (React.createElement("div", { className: "page" },
+        initialTab === 'policy' && React.createElement(TenantPolicySettings, null),
+        initialTab === 'users' && React.createElement(AccessSettings, null),
+        initialTab === 'permissions' && React.createElement(PermissionSettings, null),
+        initialTab === 'siem' && React.createElement(SiemPage, null),
+        initialTab === 'sso' && React.createElement(SsoSettingsPage, null),
+        initialTab === 'posture' && React.createElement(SecurityPosturePage, null),
+        initialTab === 'retirement' && React.createElement(RetirementPoliciesPage, null)));
 }
 Object.assign(window, {
     OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage
@@ -5575,7 +6549,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/ {
 } /*EDITMODE-END*/;
 const CATEGORY_IDS = [
     "overview", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
-    "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture",
+    "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture", "admin-retirement",
 ];
 const LEGACY_CATEGORY_MAP = {
     admin: "admin-policy",
@@ -5590,6 +6564,7 @@ const ADMIN_TAB_TO_CATEGORY = {
     siem: "admin-siem",
     sso: "admin-sso",
     posture: "admin-posture",
+    retirement: "admin-retirement",
 };
 const SEARCH_TYPES = ["device", "group", "app", "package", "rule", "task", "node", "alarm", "audit"];
 const SEARCH_ALIASES = {
@@ -5973,6 +6948,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
         { id: "admin-siem", label: "SIEM", icon: Icon.audit },
         { id: "admin-sso", label: "SSO", icon: Icon.settings },
         { id: "admin-posture", label: "Posture", icon: Icon.shield },
+        { id: "admin-retirement", label: "Retirement", icon: Icon.shield },
     ];
     const NAV = [...OPERATE_NAV, ...CATALOG_NAV, ...ACTIVITY_NAV, ...(canAdmin ? ADMIN_NAV : [])];
     /**
@@ -5988,7 +6964,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
         return SEARCH_TYPE_TO_CATEGORY[parsed.type] === category ? parsed.term : "";
     };
     const adminPage = (initialTab) => canAdmin
-        ? React.createElement(AdminSettingsPage, { initialTab: initialTab, onAdminTabChange: (adminTab) => setTab(ADMIN_TAB_TO_CATEGORY[adminTab] || "admin-policy") })
+        ? React.createElement(AdminSettingsPage, { initialTab: initialTab })
         : (React.createElement("div", { className: "page" },
             React.createElement("div", { className: "card" },
                 React.createElement("div", { className: "card-body" },
@@ -6011,6 +6987,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
         "admin-siem": adminPage('siem'),
         "admin-sso": adminPage('sso'),
         "admin-posture": adminPage('posture'),
+        "admin-retirement": adminPage('retirement'),
     }[tab];
     const current = NAV.find(n => n.id === tab) || {
         label: tab.startsWith('admin-') ? 'Admin' : 'Overview',

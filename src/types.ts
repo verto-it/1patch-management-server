@@ -17,13 +17,7 @@ export interface SsoProvider {
   updatedAt: string;
 }
 
-export type Role =
-  | 'owner'
-  | 'admin'
-  | 'patch_manager'
-  | 'viewer'
-  | 'auditor'
-  | 'node_operator';
+export type Role = string;
 
   
 export type Permission =
@@ -45,6 +39,16 @@ export type Permission =
   | 'tasks:sign'
   | 'kill_switch:manage'
   | 'audit:read';
+
+export interface RoleDefinition {
+  id: Role;
+  name: string;
+  description?: string;
+  permissions: Permission[];
+  builtIn: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 /** Signing scope — each key is scoped to exactly one payload type */
 export type SigningScope =
@@ -430,7 +434,7 @@ export interface InstalledApp {
   productCode?: string;
 }
 
-export type PackageManager = 'winget' | 'chocolatey' | 'scoop' | 'apt' | 'msi';
+export type PackageManager = 'winget' | 'chocolatey' | 'scoop' | 'apt' | 'snap' | 'flatpak' | 'brew' | 'dnf' | 'pacman' | 'msi' | 'exe';
 export type PackageScope = 'system' | 'global' | 'user';
 
 export interface PatchRule {
@@ -625,6 +629,7 @@ export interface PackageArtifact {
   fileName?: string;
   storagePath?: string;
   sourceUrl?: string;
+  managementSourceUrl?: string;
   sha256?: string;
   signatureStatus: 'unknown' | 'valid' | 'invalid' | 'unsigned';
   fileReputation?: FileReputationReport;
@@ -637,6 +642,8 @@ export interface PackageArtifact {
     manufacturer?: string;
     productCode?: string;
   };
+  catalogSource?: 'central' | 'custom';
+  catalogCategory?: string;
   createdAt: string;
 }
 
@@ -690,6 +697,7 @@ export interface UpdateTask {
   packageScope?: PackageScope;
   productCode?: string;
   sourceUrl?: string;
+  managementSourceUrl?: string;
   sha256?: string;
   requiredCapabilities?: NodeCapability[];
   routingPolicyId?: string;
@@ -848,6 +856,53 @@ export interface SigningKeyMetadata {
   isDev: boolean;
   algorithm: 'ES256';
   allowedTenants?: string[];
+}
+
+// ── Device Retirement Policies ────────────────────────────────────────────────
+
+export type RetirementCriterionType =
+  | 'inactive_days'        // device not seen for N days
+  | 'os_pattern'           // OS name contains pattern (case-insensitive)
+  | 'trust_score_below'    // deviceTrustScore < threshold
+  | 'risk_score_above'     // riskScore > threshold
+  | 'has_tag'              // device has this tag
+  | 'missing_tag'          // device lacks this tag
+  | 'in_group'             // device belongs to this group
+  | 'os_family';           // 'windows' | 'linux'
+
+export type RetirementPolicyCriterion =
+  | { type: 'inactive_days'; days: number }
+  | { type: 'os_pattern'; pattern: string }
+  | { type: 'trust_score_below'; score: number }
+  | { type: 'risk_score_above'; score: number }
+  | { type: 'has_tag'; tag: string }
+  | { type: 'missing_tag'; tag: string }
+  | { type: 'in_group'; group: string }
+  | { type: 'os_family'; os: 'windows' | 'linux' };
+
+export type RetirementPolicyAction =
+  | { type: 'tag_device'; tag: string }
+  | { type: 'create_alarm'; severity: 'info' | 'warning' | 'critical'; message: string }
+  | { type: 'notify'; channel: 'siem' | 'webhook' | 'email'; message?: string };
+
+export interface DeviceRetirementPolicy {
+  id: string;
+  tenantId: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  /** Logical combinator for conditions */
+  conditionCombinator: 'AND' | 'OR';
+  conditions: RetirementPolicyCriterion[];
+  actions: RetirementPolicyAction[];
+  /** Lower number = evaluated first */
+  priority: number;
+  /** Cached count from last evaluation */
+  matchCount?: number;
+  lastEvaluatedAt?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ── SIEM ──────────────────────────────────────────────────────────────────────

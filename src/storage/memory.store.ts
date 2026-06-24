@@ -3,10 +3,10 @@ import { v4 as uuid } from 'uuid';
 import { computeEventHash } from '../audit/audit.hash';
 import {
   Alarm, AuditEvent, BackendNode, ClientEnrollment, Device,
-  CacheArtifactAttestation, CrossNodeProbeReport, FileReputationReport,
+  CacheArtifactAttestation, CrossNodeProbeReport, DeviceRetirementPolicy, FileReputationReport,
   InstalledApp, KillSwitchState, NodeChallengeNonce, NodeHealthReport, NodeQuarantineEvent, NodeRoutingPolicy,
   NodeTrustSnapshot, NodeUpdateCampaign, NodeVersionAttestation, PackageArtifact,
-  PatchRule, RouteDecision, RuleTemplate, SsoProvider, TaskLedgerEntry, TenantPolicy, UpdateTask, User,
+  PatchRule, RoleDefinition, RouteDecision, RuleTemplate, SsoProvider, TaskLedgerEntry, TenantPolicy, UpdateTask, User,
 } from '../types';
 import { DragonflyService } from './dragonfly.service';
 import { normalizeSnapshot, PostgresService, StoreSnapshot } from './postgres.service';
@@ -28,6 +28,7 @@ export class MemoryStore implements OnModuleInit {
   ) {}
 
   users: User[] = [];
+  roleDefinitions: RoleDefinition[] = [];
   backendNodes: BackendNode[] = [];
   clientEnrollments: ClientEnrollment[] = [];
   devices: Device[] = [];
@@ -53,6 +54,7 @@ export class MemoryStore implements OnModuleInit {
   nodeQuarantineEvents: NodeQuarantineEvent[] = [];
   nodeUpdateCampaigns: NodeUpdateCampaign[] = [];
   nodeVersionAttestations: NodeVersionAttestation[] = [];
+  deviceRetirementPolicies: DeviceRetirementPolicy[] = [];
 
   /**
    * Handles the on module init operation for MemoryStore.
@@ -62,6 +64,7 @@ export class MemoryStore implements OnModuleInit {
     if (!loaded) return;
     const snapshot = normalizeSnapshot({
       users: loaded.users ?? [],
+      roleDefinitions: (loaded as any).roleDefinitions ?? [],
       backendNodes: loaded.backendNodes ?? [],
       clientEnrollments: loaded.clientEnrollments ?? [],
       devices: loaded.devices ?? [],
@@ -86,8 +89,10 @@ export class MemoryStore implements OnModuleInit {
       nodeQuarantineEvents: (loaded as any).nodeQuarantineEvents ?? [],
       nodeUpdateCampaigns: (loaded as any).nodeUpdateCampaigns ?? [],
       nodeVersionAttestations: (loaded as any).nodeVersionAttestations ?? [],
+      deviceRetirementPolicies: (loaded as any).deviceRetirementPolicies ?? [],
     });
     this.users = snapshot.users;
+    this.roleDefinitions = (snapshot as any).roleDefinitions ?? [];
     this.backendNodes = snapshot.backendNodes;
     this.clientEnrollments = snapshot.clientEnrollments;
     this.devices = snapshot.devices;
@@ -113,6 +118,7 @@ export class MemoryStore implements OnModuleInit {
     this.nodeQuarantineEvents = (snapshot as any).nodeQuarantineEvents ?? [];
     this.nodeUpdateCampaigns = (snapshot as any).nodeUpdateCampaigns ?? [];
     this.nodeVersionAttestations = (snapshot as any).nodeVersionAttestations ?? [];
+    this.deviceRetirementPolicies = (snapshot as any).deviceRetirementPolicies ?? [];
   }
 
   /**
@@ -146,6 +152,7 @@ export class MemoryStore implements OnModuleInit {
   async persist() {
     const snapshot = normalizeSnapshot({
       users: this.users,
+      roleDefinitions: this.roleDefinitions,
       backendNodes: this.backendNodes,
       clientEnrollments: this.clientEnrollments,
       devices: this.devices,
@@ -171,6 +178,7 @@ export class MemoryStore implements OnModuleInit {
       nodeQuarantineEvents: this.nodeQuarantineEvents,
       nodeUpdateCampaigns: this.nodeUpdateCampaigns,
       nodeVersionAttestations: this.nodeVersionAttestations,
+      deviceRetirementPolicies: this.deviceRetirementPolicies,
     } as any);
     await this.postgres.saveSnapshot(snapshot);
     try {

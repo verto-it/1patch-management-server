@@ -12,7 +12,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 
 const CATEGORY_IDS = [
   "overview", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
-  "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture",
+  "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture", "admin-retirement",
 ];
 const LEGACY_CATEGORY_MAP = {
   admin: "admin-policy",
@@ -27,6 +27,7 @@ const ADMIN_TAB_TO_CATEGORY = {
   siem: "admin-siem",
   sso: "admin-sso",
   posture: "admin-posture",
+  retirement: "admin-retirement",
 };
 const SEARCH_TYPES = ["device", "group", "app", "package", "rule", "task", "node", "alarm", "audit"];
 const SEARCH_ALIASES = {
@@ -416,6 +417,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
     { id:"admin-siem",        label:"SIEM",        icon: Icon.audit },
     { id:"admin-sso",         label:"SSO",         icon: Icon.settings },
     { id:"admin-posture",     label:"Posture",     icon: Icon.shield },
+    { id:"admin-retirement",  label:"Retirement",  icon: Icon.shield },
   ];
   const NAV = [...OPERATE_NAV, ...CATALOG_NAV, ...ACTIVITY_NAV, ...(canAdmin ? ADMIN_NAV : [])];
 
@@ -432,7 +434,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
   };
 
   const adminPage = (initialTab) => canAdmin
-    ? <AdminSettingsPage initialTab={initialTab} onAdminTabChange={(adminTab) => setTab(ADMIN_TAB_TO_CATEGORY[adminTab] || "admin-policy")}/>
+    ? <AdminSettingsPage initialTab={initialTab}/>
     : (
       <div className="page">
         <div className="card">
@@ -461,6 +463,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
     "admin-siem": adminPage('siem'),
     "admin-sso": adminPage('sso'),
     "admin-posture": adminPage('posture'),
+    "admin-retirement": adminPage('retirement'),
   }[tab];
 
   const current = NAV.find(n => n.id === tab) || {
