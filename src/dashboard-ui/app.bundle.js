@@ -1210,6 +1210,11 @@ const DEMO_API = DEMO_MODE ? {
     ruleAudit: () => demoResolve(DEMO_DATA.audit.slice(0, 10)),
     tasks: () => demoResolve(DEMO_DATA.tasks),
     cancelTask: (id) => demoResolve({ id, status: 'cancelled' }),
+    scanTask: (id) => demoResolve({ id, status: 'security_scanned' }),
+    approveTask: (id) => demoResolve({ id, status: 'mfa_approved' }),
+    signTask: (id) => demoResolve({ id, status: 'signed' }),
+    issueMfaChallenge: () => demoResolve({ challengeId: 'demo-challenge-id' }),
+    verifyMfaChallenge: () => demoResolve({ verified: true }),
     nodes: () => demoResolve(DEMO_DATA.nodes),
     nodeTrustCenter: () => demoResolve(DEMO_DATA.nodes),
     nodeTrustDetail: (id) => demoResolve(DEMO_DATA.nodes.find(n => n.id === id) || DEMO_DATA.nodes[0]),
@@ -1361,6 +1366,11 @@ const LIVE_API = {
      * @param id Identifier used to locate the target record.
      */
     cancelTask: (id) => api(`/tasks/${id}`, { method: 'DELETE' }),
+    scanTask: (id) => api(`/tasks/${id}/scan`, { method: 'POST', body: '{}' }),
+    approveTask: (id, mfaChallengeId) => api(`/tasks/${id}/approve`, { method: 'POST', body: JSON.stringify({ mfaChallengeId: mfaChallengeId || '' }) }),
+    signTask: (id) => api(`/tasks/${id}/sign`, { method: 'POST', body: '{}' }),
+    issueMfaChallenge: () => api('/tasks/mfa-challenge/issue', { method: 'POST', body: '{}' }),
+    verifyMfaChallenge: (challengeId, totpCode) => api('/tasks/mfa-challenge/verify', { method: 'POST', body: JSON.stringify({ challengeId, totpCode }) }),
     /**
      * Handles the nodes operation.
      */
@@ -1686,6 +1696,12 @@ function StatusPill({ status }) {
     const map = {
         online: { cls: "ok", label: "Online" },
         offline: { cls: "", label: "Offline" },
+        draft: { cls: "", label: "Draft" },
+        security_scanned: { cls: "warn", label: "Needs Approval" },
+        mfa_approved: { cls: "accent", label: "Needs Signing" },
+        signed: { cls: "accent", label: "Signed" },
+        executable: { cls: "accent", label: "Queued" },
+        revoked: { cls: "crit", label: "Revoked" },
         pending: { cls: "", label: "Pending" },
         dispatched: { cls: "accent", label: "Dispatched" },
         completed: { cls: "ok", label: "Completed" },
@@ -3979,8 +3995,20 @@ function TasksPage({ globalSearch = "" }) {
     const tasks = useResource(() => PatchAPI.tasks());
     useLiveResource(tasks, 2500);
     const [cancelling, setCancelling] = useState(new Set());
-    const [outputTask, setOutputTask] = useState(null);
+    const [actionLoading, setActionLoading] = useState(new Set());
+    const [actionError, setActionError] = useState(null);
+    const [mfaDialog, setMfaDialog] = useState(null); // { taskId, challengeId }
+    const [mfaCode, setMfaCode] = useState("");
+    const [mfaError, setMfaError] = useState("");
+    const [outputTaskId, setOutputTaskId] = useState(null);
+    const outputTask = outputTaskId ? (tasks.data || []).find(t => t.id === outputTaskId) ?? null : null;
     const [copied, setCopied] = useState(false);
+    // Ticker so fmtAgo values stay fresh when no task data changes
+    const [, setTimeTick] = useState(0);
+    useEffect(() => {
+        const id = setInterval(() => setTimeTick(n => n + 1), 30000);
+        return () => clearInterval(id);
+    }, []);
     /**
      * Handles the cancel operation.
      *
@@ -3995,6 +4023,78 @@ function TasksPage({ globalSearch = "" }) {
         catch (e) { /* task may have already moved past pending */ }
         finally {
             setCancelling(prev => { const s = new Set(prev); s.delete(id); return s; });
+        }
+    };
+    const markLoading = (key) => setActionLoading(prev => new Set([...prev, key]));
+    const clearLoading = (key) => setActionLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
+    const scanTask = async (id) => {
+        markLoading(`scan-${id}`);
+        setActionError(null);
+        try {
+            await PatchAPI.scanTask(id);
+            tasks.reload(true);
+        }
+        catch (e) {
+            setActionError(e?.message || "Scan failed");
+        }
+        finally {
+            clearLoading(`scan-${id}`);
+        }
+    };
+    const approveTask = async (id) => {
+        markLoading(`approve-${id}`);
+        setActionError(null);
+        try {
+            await PatchAPI.approveTask(id, '');
+            tasks.reload(true);
+        }
+        catch (e) {
+            if (e?.message?.toLowerCase().includes('mfa') || e?.message?.toLowerCase().includes('challenge')) {
+                try {
+                    const { challengeId } = await PatchAPI.issueMfaChallenge();
+                    setMfaDialog({ taskId: id, challengeId });
+                    setMfaCode("");
+                    setMfaError("");
+                }
+                catch (mfaErr) {
+                    setActionError(mfaErr?.message || "Could not issue MFA challenge");
+                }
+            }
+            else {
+                setActionError(e?.message || "Approval failed");
+            }
+        }
+        finally {
+            clearLoading(`approve-${id}`);
+        }
+    };
+    const submitMfaApproval = async () => {
+        if (!mfaDialog)
+            return;
+        setMfaError("");
+        try {
+            await PatchAPI.verifyMfaChallenge(mfaDialog.challengeId, mfaCode);
+            await PatchAPI.approveTask(mfaDialog.taskId, mfaDialog.challengeId);
+            setMfaDialog(null);
+            setMfaCode("");
+            tasks.reload(true);
+        }
+        catch (e) {
+            setMfaError(e?.message || "MFA approval failed");
+        }
+    };
+    const signTask = async (id) => {
+        markLoading(`sign-${id}`);
+        setActionError(null);
+        try {
+            await PatchAPI.signTask(id);
+            tasks.reload(true);
+        }
+        catch (e) {
+            setActionError(e?.message || "Signing failed");
+        }
+        finally {
+            clearLoading(`sign-${id}`);
         }
     };
     /**
@@ -4012,11 +4112,13 @@ function TasksPage({ globalSearch = "" }) {
         React.createElement("div", { className: "page-head" },
             React.createElement("div", null,
                 React.createElement("h2", null, "Tasks"),
-                React.createElement("p", null, tasks.loading ? "…" : `${(tasks.data || []).length} update jobs`))),
+                React.createElement("p", null, tasks.loading ? "…" : `${(tasks.data || []).length} update jobs`)),
+            React.createElement("button", { className: "btn", onClick: () => tasks.reload() }, "Refresh")),
         React.createElement("div", { className: "card" },
-            React.createElement("div", { className: "filterbar" }, [["all", "All"], ["pending", "Pending"], ["dispatched", "Dispatched"], ["completed", "Completed"], ["failed", "Failed"], ["cancelled", "Cancelled"]].map(([k, l]) => (React.createElement("button", { key: k, className: "chip " + (filter === k ? "active" : ""), onClick: () => setFilter(k) }, l)))),
+            React.createElement("div", { className: "filterbar" }, [["all", "All"], ["security_scanned", "Needs Approval"], ["mfa_approved", "Needs Signing"], ["pending", "Pending"], ["dispatched", "Dispatched"], ["completed", "Completed"], ["failed", "Failed"], ["cancelled", "Cancelled"]].map(([k, l]) => (React.createElement("button", { key: k, className: "chip " + (filter === k ? "active" : ""), onClick: () => setFilter(k) }, l)))),
             tasks.error && React.createElement("div", { style: { padding: 16 } },
                 React.createElement(ErrorAlert, { error: tasks.error, onRetry: tasks.reload })),
+            actionError && React.createElement("div", { style: { padding: "8px 16px", color: "var(--crit)", fontSize: 13 } }, actionError),
             React.createElement("div", { style: { overflowX: "auto" } },
                 React.createElement("table", { className: "tbl" },
                     React.createElement("thead", null,
@@ -4041,21 +4143,40 @@ function TasksPage({ globalSearch = "" }) {
                             React.createElement("td", { className: "mono muted" }, t.nodeId),
                             React.createElement("td", null,
                                 React.createElement(StatusPill, { status: t.status })),
-                            React.createElement("td", { className: "mono muted", style: { maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: t.output ? "pointer" : "default" }, title: t.output ? "Click to view full output" : undefined, onClick: () => t.output && setOutputTask(t) }, t.output || "—"),
+                            React.createElement("td", { className: "mono muted", style: { maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: t.output ? "pointer" : "default" }, title: t.output ? "Click to view full output" : undefined, onClick: () => t.output && setOutputTaskId(t.id) }, t.output || "—"),
                             React.createElement("td", { className: "muted" }, fmtAgo(t.createdAt)),
-                            React.createElement("td", null, t.status === "pending" && (React.createElement("button", { className: "btn sm", disabled: cancelling.has(t.id), onClick: () => cancel(t.id) }, cancelling.has(t.id) ? "…" : "Cancel")))))))))),
+                            React.createElement("td", null,
+                                t.status === "pending" && (React.createElement("button", { className: "btn sm", disabled: cancelling.has(t.id), onClick: () => cancel(t.id) }, cancelling.has(t.id) ? "…" : "Cancel")),
+                                t.status === "draft" && (React.createElement("button", { className: "btn sm", disabled: actionLoading.has(`scan-${t.id}`), onClick: () => scanTask(t.id) }, actionLoading.has(`scan-${t.id}`) ? "…" : "Scan")),
+                                t.status === "security_scanned" && (React.createElement("button", { className: "btn sm", disabled: actionLoading.has(`approve-${t.id}`), onClick: () => approveTask(t.id) }, actionLoading.has(`approve-${t.id}`) ? "…" : "Approve")),
+                                t.status === "mfa_approved" && (React.createElement("button", { className: "btn sm", disabled: actionLoading.has(`sign-${t.id}`), onClick: () => signTask(t.id) }, actionLoading.has(`sign-${t.id}`) ? "…" : "Sign")))))))))),
         outputTask && (React.createElement(React.Fragment, null,
-            React.createElement("div", { className: "drawer-backdrop", onClick: () => setOutputTask(null) }),
+            React.createElement("div", { className: "drawer-backdrop", onClick: () => setOutputTaskId(null) }),
             React.createElement("div", { className: "output-dialog" },
                 React.createElement("div", { className: "output-dialog-box" },
                     React.createElement("div", { className: "output-dialog-head" },
                         React.createElement("h4", null, taskLabel(outputTask)),
                         React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
                             React.createElement("button", { className: "btn sm", onClick: copyOutput }, copied ? "Copied!" : "Copy"),
-                            React.createElement("button", { className: "icon-btn", onClick: () => setOutputTask(null) },
+                            React.createElement("button", { className: "icon-btn", onClick: () => setOutputTaskId(null) },
                                 React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.close)))),
                     React.createElement("div", { className: "output-dialog-body" },
-                        React.createElement("pre", null, outputTask.output))))))));
+                        React.createElement("pre", null, outputTask.output)))))),
+        mfaDialog && (React.createElement(React.Fragment, null,
+            React.createElement("div", { className: "drawer-backdrop", onClick: () => setMfaDialog(null) }),
+            React.createElement("div", { className: "output-dialog" },
+                React.createElement("div", { className: "output-dialog-box" },
+                    React.createElement("div", { className: "output-dialog-head" },
+                        React.createElement("h4", null, "MFA Approval Required"),
+                        React.createElement("button", { className: "icon-btn", onClick: () => setMfaDialog(null) },
+                            React.createElement("span", { style: { width: 14, height: 14, display: "inline-flex" } }, Icon.close))),
+                    React.createElement("div", { className: "output-dialog-body", style: { padding: 24, display: "flex", flexDirection: "column", gap: 16 } },
+                        React.createElement("p", { style: { margin: 0, fontSize: 14 } }, "Enter your authenticator code to approve this task."),
+                        React.createElement("input", { className: "input", value: mfaCode, onChange: e => { setMfaCode(e.target.value); setMfaError(""); }, onKeyDown: e => e.key === "Enter" && submitMfaApproval(), placeholder: "6-digit code", maxLength: 6, autoFocus: true, style: { letterSpacing: "0.2em", width: 140, textAlign: "center" } }),
+                        mfaError && React.createElement("div", { style: { color: "var(--crit)", fontSize: 13 } }, mfaError),
+                        React.createElement("div", { style: { display: "flex", gap: 8 } },
+                            React.createElement("button", { className: "btn", onClick: submitMfaApproval, disabled: mfaCode.length < 6 }, "Approve"),
+                            React.createElement("button", { className: "btn ghost", onClick: () => setMfaDialog(null) }, "Cancel")))))))));
 }
 // ---------- Nodes ----------
 const FINDING_SEVERITY_COLOR = {
@@ -6533,8 +6654,215 @@ function AdminSettingsPage({ initialTab = 'policy' }) {
         initialTab === 'posture' && React.createElement(SecurityPosturePage, null),
         initialTab === 'retirement' && React.createElement(RetirementPoliciesPage, null)));
 }
+// ---------- Quick Actions ----------
+/**
+ * Triggers a client-side file download from a string payload.
+ *
+ * @param data File contents.
+ * @param filename Suggested download filename.
+ * @param mimeType MIME type for the blob.
+ */
+function downloadBlob(data, filename, mimeType) {
+    const blob = new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+/**
+ * Serialises an array of objects to RFC-4180 CSV.
+ *
+ * @param rows Array of plain objects.
+ * @param keys Column names (used as header row and property accessors).
+ */
+function toCSV(rows, keys) {
+    const esc = (v) => {
+        const s = v == null ? '' : String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? '"' + s.replace(/"/g, '""') + '"'
+            : s;
+    };
+    return [keys.join(','), ...rows.map(r => keys.map(k => esc(r[k])).join(','))].join('\n');
+}
+/** ISO timestamp slug safe for filenames. */
+const exportStamp = () => new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+/**
+ * A single quick-action card with run / confirm / result / error states.
+ *
+ * @param props.icon SVG icon element.
+ * @param props.title Card heading.
+ * @param props.description One-line subtitle.
+ * @param props.onRun Async function that performs the action and returns a result string or object.
+ * @param props.confirmText When set a confirmation step is shown before the action fires.
+ */
+function ActionCard({ icon, title, description, onRun, confirmText }) {
+    const [status, setStatus] = useState('idle');
+    const [result, setResult] = useState(null);
+    const [error, setError] = useState(null);
+    const [confirming, setConfirming] = useState(false);
+    const execute = async () => {
+        setConfirming(false);
+        setStatus('running');
+        setResult(null);
+        setError(null);
+        try {
+            setResult(await onRun());
+            setStatus('done');
+        }
+        catch (err) {
+            setError(err?.message || String(err));
+            setStatus('error');
+        }
+    };
+    const handleRun = () => {
+        if (confirmText && !confirming) {
+            setConfirming(true);
+            return;
+        }
+        execute();
+    };
+    return (React.createElement("div", { className: 'qa-card' + (status === 'error' ? ' qa-card--err' : status === 'done' ? ' qa-card--done' : '') },
+        React.createElement("div", { className: "qa-card-icon" }, icon),
+        React.createElement("div", { className: "qa-card-body" },
+            React.createElement("div", { className: "qa-card-head" },
+                React.createElement("strong", { className: "qa-card-title" }, title),
+                React.createElement("span", { className: "qa-card-desc" }, description)),
+            status === 'done' && result !== null && (React.createElement("div", { className: "qa-card-result" },
+                typeof result === 'string' && (React.createElement("span", { className: "qa-ok" },
+                    Icon.check,
+                    " ",
+                    result)),
+                result?.type === 'nodes' && (React.createElement("div", { className: "qa-node-grid" }, result.nodes.map(n => (React.createElement("div", { key: n.id, className: "qa-node-row" },
+                    React.createElement("span", { className: `qa-dot ${n.healthState === 'healthy' ? 'ok' : n.healthState === 'degraded' ? 'warn' : 'err'}` }),
+                    React.createElement("span", { className: "qa-node-name" }, n.name || n.id),
+                    React.createElement("span", { className: "qa-node-score" },
+                        "Trust ",
+                        n.trust?.trustScore ?? '--'),
+                    React.createElement("span", { className: "qa-node-state muted" },
+                        n.healthState,
+                        " \u00B7 ",
+                        n.status)))))),
+                result?.type === 'stale' && (React.createElement("div", { className: "qa-stale" },
+                    React.createElement("span", { className: "qa-ok" },
+                        Icon.check,
+                        " ",
+                        result.count,
+                        " device",
+                        result.count !== 1 ? 's' : '',
+                        " with inventory older than 7 days"),
+                    result.devices.length > 0 && (React.createElement("div", { className: "qa-stale-list" },
+                        result.devices.slice(0, 10).map(d => (React.createElement("span", { key: d.id, className: "tag" }, d.hostname || d.id))),
+                        result.devices.length > 10 && (React.createElement("span", { className: "muted" },
+                            "+",
+                            result.devices.length - 10,
+                            " more")))))))),
+            status === 'error' && (React.createElement("div", { className: "qa-card-result" },
+                React.createElement("span", { className: "qa-err" }, error))),
+            confirming && (React.createElement("div", { className: "qa-confirm" },
+                React.createElement("span", { className: "qa-confirm-text" }, confirmText),
+                React.createElement("div", { className: "qa-confirm-btns" },
+                    React.createElement("button", { className: "btn sm danger", onClick: execute }, "Confirm"),
+                    React.createElement("button", { className: "btn sm ghost", onClick: () => setConfirming(false) }, "Cancel"))))),
+        React.createElement("div", { className: "qa-card-actions" }, status === 'running' ? (React.createElement("span", { className: "search-spinner" })) : !confirming && (React.createElement("button", { className: "btn sm accent", onClick: handleRun }, status === 'done' ? 'Run again' : 'Run')))));
+}
+/**
+ * A labelled group of action cards.
+ *
+ * @param props.label Section heading.
+ * @param props.children ActionCard elements.
+ */
+function ActionGroup({ label, children }) {
+    return (React.createElement("div", { className: "qa-group" },
+        React.createElement("div", { className: "qa-group-label" }, label),
+        React.createElement("div", { className: "qa-group-cards" }, children)));
+}
+/**
+ * Renders the quick actions page UI.
+ * @returns The result produced by the operation.
+ */
+function QuickActionsPage() {
+    return (React.createElement("div", { className: "page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h2", null, "Quick Actions"),
+                React.createElement("p", null, "Batch fleet operations \u2014 results appear inline after each run."))),
+        React.createElement(ActionGroup, { label: "Inventory" },
+            React.createElement(ActionCard, { icon: Icon.refresh, title: "Pull Inventory \u2014 All Devices", description: "Queue an inventory refresh for every enrolled device in the fleet.", onRun: async () => {
+                    const devices = await PatchAPI.devices();
+                    let queued = 0, failed = 0;
+                    await Promise.allSettled(devices.map(d => PatchAPI.refreshInventory(d.id).then(() => queued++, () => failed++)));
+                    return `Queued ${queued} refresh task${queued !== 1 ? 's' : ''}${failed ? ` · ${failed} skipped` : ''}`;
+                } }),
+            React.createElement(ActionCard, { icon: Icon.refresh, title: "Pull Inventory \u2014 Offline & Stale", description: "Refresh only devices that are offline or haven't checked in for over 24 hours.", onRun: async () => {
+                    const devices = await PatchAPI.devices();
+                    const cutoff = Date.now() - 24 * 60 * 60000;
+                    const stale = devices.filter(d => !d.online || new Date(d.lastSeenAt).getTime() < cutoff);
+                    if (stale.length === 0)
+                        return 'No offline or stale devices found.';
+                    let queued = 0, failed = 0;
+                    await Promise.allSettled(stale.map(d => PatchAPI.refreshInventory(d.id).then(() => queued++, () => failed++)));
+                    return `${stale.length} stale device${stale.length !== 1 ? 's' : ''} — queued ${queued}${failed ? ` · ${failed} skipped` : ''}`;
+                } })),
+        React.createElement(ActionGroup, { label: "Task Queue" },
+            React.createElement(ActionCard, { icon: Icon.tasks, title: "Cancel Pending Tasks", description: "Cancel all tasks waiting in the queue that have not yet been dispatched to a node.", confirmText: "Cancel all pending tasks?", onRun: async () => {
+                    const tasks = await PatchAPI.tasks();
+                    const pending = tasks.filter(t => t.status === 'pending');
+                    if (pending.length === 0)
+                        return 'No pending tasks found.';
+                    let cancelled = 0, failed = 0;
+                    await Promise.allSettled(pending.map(t => PatchAPI.cancelTask(t.id).then(() => cancelled++, () => failed++)));
+                    return `Cancelled ${cancelled} task${cancelled !== 1 ? 's' : ''}${failed ? ` · ${failed} skipped` : ''}`;
+                } }),
+            React.createElement(ActionCard, { icon: Icon.tasks, title: "Clear Failed Tasks", description: "Remove all failed tasks from the queue to declutter the task list.", confirmText: "Clear all failed tasks?", onRun: async () => {
+                    const tasks = await PatchAPI.tasks();
+                    const failed = tasks.filter(t => t.status === 'failed');
+                    if (failed.length === 0)
+                        return 'No failed tasks found.';
+                    let cleared = 0, errs = 0;
+                    await Promise.allSettled(failed.map(t => PatchAPI.cancelTask(t.id).then(() => cleared++, () => errs++)));
+                    return `Cleared ${cleared} failed task${cleared !== 1 ? 's' : ''}${errs ? ` · ${errs} skipped` : ''}`;
+                } })),
+        React.createElement(ActionGroup, { label: "Alarms" },
+            React.createElement(ActionCard, { icon: Icon.alarms, title: "Dismiss All Alarms", description: "Resolve every active alarm at once \u2014 use after investigating open alerts.", confirmText: "Dismiss all active alarms?", onRun: async () => {
+                    const res = await PatchAPI.resolveAllAlarms();
+                    const n = res?.resolved ?? 0;
+                    return `Dismissed ${n} alarm${n !== 1 ? 's' : ''}`;
+                } })),
+        React.createElement(ActionGroup, { label: "Fleet Insights" },
+            React.createElement(ActionCard, { icon: Icon.nodes, title: "Node Health Snapshot", description: "Fetch live health and trust scores for every backend node.", onRun: async () => {
+                    const nodes = await PatchAPI.nodeTrustCenter();
+                    return { type: 'nodes', nodes };
+                } }),
+            React.createElement(ActionCard, { icon: Icon.search, title: "Stale-Inventory Report", description: "List devices whose last recorded inventory is more than 7 days old.", onRun: async () => {
+                    const devices = await PatchAPI.devices();
+                    const cutoff = Date.now() - 7 * 24 * 60 * 60000;
+                    const stale = devices.filter(d => !d.lastSeenAt || new Date(d.lastSeenAt).getTime() < cutoff);
+                    return { type: 'stale', count: stale.length, devices: stale };
+                } })),
+        React.createElement(ActionGroup, { label: "Exports" },
+            React.createElement(ActionCard, { icon: Icon.download, title: "Device Roster (CSV)", description: "Download all enrolled devices as a spreadsheet-ready CSV.", onRun: async () => {
+                    const devices = await PatchAPI.devices();
+                    const keys = ['id', 'hostname', 'os', 'platform', 'site', 'group', 'online', 'lastSeenAt', 'installedAppCount', 'pendingTaskCount'];
+                    downloadBlob(toCSV(devices, keys), `1patch-devices-${exportStamp()}.csv`, 'text/csv');
+                    return `Exported ${devices.length} device${devices.length !== 1 ? 's' : ''}`;
+                } }),
+            React.createElement(ActionCard, { icon: Icon.download, title: "Audit Log (JSON)", description: "Download the last 500 audit entries as a JSON file.", onRun: async () => {
+                    const entries = await PatchAPI.audit(500);
+                    downloadBlob(JSON.stringify(entries, null, 2), `1patch-audit-${exportStamp()}.json`, 'application/json');
+                    return `Exported ${entries.length} audit entr${entries.length !== 1 ? 'ies' : 'y'}`;
+                } }),
+            React.createElement(ActionCard, { icon: Icon.download, title: "Task History (JSON)", description: "Download the full task list across all statuses as a JSON file.", onRun: async () => {
+                    const tasks = await PatchAPI.tasks();
+                    downloadBlob(JSON.stringify(tasks, null, 2), `1patch-tasks-${exportStamp()}.json`, 'application/json');
+                    return `Exported ${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
+                } }))));
+}
 Object.assign(window, {
-    OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage
+    OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage, QuickActionsPage
 });
 
 
@@ -6548,7 +6876,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/ {
     "sidebar": "labelled"
 } /*EDITMODE-END*/;
 const CATEGORY_IDS = [
-    "overview", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
+    "overview", "quick-actions", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
     "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture", "admin-retirement",
 ];
 const LEGACY_CATEGORY_MAP = {
@@ -6927,6 +7255,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
     const canAdmin = permissions.some((permission) => ['auth:manage', 'users:manage', 'roles:manage'].includes(permission));
     const OPERATE_NAV = [
         { id: "overview", label: "Overview", icon: Icon.dashboard },
+        { id: "quick-actions", label: "Quick Actions", icon: Icon.play },
         { id: "devices", label: "Devices", icon: Icon.devices, count: counts.devices },
     ];
     const CATALOG_NAV = [
@@ -6972,6 +7301,7 @@ function DashboardApp({ sessionInfo, onLogout }) {
                     React.createElement("p", { className: "sub" }, "You need an admin role with auth, user, or role management permission to open this area.")))));
     const Page = {
         overview: React.createElement(OverviewPage, { onNav: setTab, onOpenDevice: setOpenDevice }),
+        "quick-actions": React.createElement(QuickActionsPage, null),
         devices: React.createElement(DevicesPage, { onOpenDevice: setOpenDevice, globalSearch: pageSearchTerm("devices") }),
         "device-groups": React.createElement(DeviceGroupsPage, { onOpenDevice: setOpenDevice, globalSearch: pageSearchTerm("device-groups") }),
         apps: React.createElement(AppsPage, { globalSearch: pageSearchTerm("apps") }),

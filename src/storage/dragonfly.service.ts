@@ -88,6 +88,64 @@ export class DragonflyService implements OnModuleDestroy {
   }
 
   /**
+   * Atomically increments a counter and, on first creation, sets its TTL.
+   *
+   * Uses a single server-side script so concurrent callers cannot race between
+   * read and write (used for brute-force counters). When Dragonfly is not
+   * configured/available the operation fails open and returns undefined so the
+   * caller can decide how to degrade.
+   *
+   * @param key key supplied to the function.
+   * @param ttlSeconds TTL applied only when the counter is first created.
+   * @returns The new counter value, or undefined if the store is unavailable.
+   */
+  async increment(key: string, ttlSeconds: number): Promise<number | undefined> {
+    if (!this.client) return undefined;
+    if (!(await this.ensureConnected())) return undefined;
+    try {
+      const value = (await this.client.eval(
+        "local v = redis.call('INCR', KEYS[1]) if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return v",
+        1,
+        key,
+        String(ttlSeconds),
+      )) as number;
+      this.lastError = undefined;
+      return value;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Dragonfly is not available yet: ${this.lastError}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Sets a key with a TTL only if it does not already exist (SET NX EX).
+   *
+   * Returns true when the key was newly created, false when it already existed.
+   * Used for single-use tokens: the first caller wins, replays see false. When
+   * the store is unavailable the operation fails open and returns true so the
+   * primary action is not blocked.
+   *
+   * @param key key supplied to the function.
+   * @param value Value to store.
+   * @param ttlSeconds TTL for the key.
+   * @returns True if newly set (or the store is unavailable), false if it existed.
+   */
+  async setIfAbsent(key: string, value: unknown, ttlSeconds: number): Promise<boolean> {
+    if (!this.client) return true;
+    if (!(await this.ensureConnected())) return true;
+    try {
+      const result = await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds, 'NX');
+      this.lastError = undefined;
+      return result === 'OK';
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Dragonfly is not available yet: ${this.lastError}`);
+      return true;
+    }
+  }
+
+  /**
    * Handles the del operation for DragonflyService.
    *
    * @param key key supplied to the function.

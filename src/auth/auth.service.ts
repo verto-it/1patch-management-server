@@ -88,7 +88,7 @@ export class AuthService implements OnModuleInit {
    * @param ip ip supplied to the function.
    * @returns The result produced by the operation.
    */
-  async login(email: string, password: string, ip?: string) {
+  async login(email: string, password: string, ip?: string, geoCountry?: string) {
     const user = this.store.users.find((c) => c.email === email.toLowerCase());
     if (!user) {
       this.logger.warn(`Login attempt for unknown email ${email} from IP ${ip}`);
@@ -134,13 +134,14 @@ export class AuthService implements OnModuleInit {
     }
 
     user.failedAttempts = 0;
+    user.lockedUntil = undefined;
 
-    const country = countryFromIp(ip);
+    const country = normalizeCountry(geoCountry, ip);
     if (user.lastLoginCountry && country && user.lastLoginCountry !== country) {
       this.logger.warn(`Possible impossible travel for user ${user.id}: ${user.lastLoginCountry} -> ${country}`);
       this.audit.record(user.id, 'auth.impossible_travel_review', user.id, {
         previousCountry: user.lastLoginCountry, currentCountry: country,
-        note: 'country derived server-side from request IP', ip,
+        note: 'country derived server-side from trusted reverse-proxy geo header', ip,
       });
     }
     if (country) user.lastLoginCountry = country;
@@ -180,7 +181,8 @@ export class AuthService implements OnModuleInit {
     }
 
     const failureKey = this.mfaFailureKey(challengeToken);
-    const attempts = ((await this.dragonfly.getJson<number>(failureKey)) ?? 0) + 1;
+    // Atomic increment + first-write TTL so concurrent attempts can't race past the limit.
+    const attempts = (await this.dragonfly.increment(failureKey, MFA_FAILURE_TTL_SECONDS)) ?? 1;
     if (attempts > 5) {
       this.logger.warn(`MFA brute-force detected for user ${decoded.sub} — challenge invalidated after ${attempts} attempts`);
       throw new UnauthorizedException('Too many MFA attempts — please log in again');
@@ -188,7 +190,6 @@ export class AuthService implements OnModuleInit {
 
     const user = this.store.users.find((c) => c.id === decoded.sub);
     if (!user?.mfaSecret || !authenticator.check(code, user.mfaSecret)) {
-      await this.dragonfly.setJsonEx(failureKey, attempts, MFA_FAILURE_TTL_SECONDS);
       this.audit.record(decoded.sub, 'auth.mfa_failed', decoded.sub, { ip, attempts });
       this.siem.emit({
         tenantId: 'system', type: 'auth.mfa.failed', severity: attempts >= 3 ? 'high' : 'medium',
@@ -197,6 +198,15 @@ export class AuthService implements OnModuleInit {
       });
       this.logger.warn(`MFA code rejected for user ${decoded.sub} (attempt ${attempts}/5)`);
       throw new UnauthorizedException('Invalid MFA code');
+    }
+
+    // Single-use challenge: the first successful verification consumes the token so
+    // a captured (code, challengeToken) pair cannot be replayed within its 5m window.
+    const consumeKey = this.mfaConsumeKey(challengeToken);
+    const firstUse = await this.dragonfly.setIfAbsent(consumeKey, 1, MFA_FAILURE_TTL_SECONDS);
+    if (!firstUse) {
+      this.logger.warn(`MFA challenge replay blocked for user ${user.id} from IP ${ip}`);
+      throw new UnauthorizedException('MFA challenge has already been used — please log in again');
     }
 
     await this.dragonfly.del(failureKey);
@@ -218,6 +228,11 @@ export class AuthService implements OnModuleInit {
   enableMfa(userId: string) {
     const user = this.store.users.find((c) => c.id === userId);
     if (!user) throw new BadRequestException('Unknown user');
+    // Defense in depth: never silently rotate an existing secret. Re-enrolling MFA
+    // must go through an explicit disable so a stolen session can't reset the factor.
+    if (user.mfaEnabled) {
+      throw new BadRequestException('MFA is already enabled — disable it before re-enrolling');
+    }
     user.mfaSecret = authenticator.generateSecret();
     user.mfaEnabled = true;
     void this.store.persist();
@@ -294,13 +309,14 @@ export class AuthService implements OnModuleInit {
    */
   private assertPasswordPolicy(password: string) {
     if (
-      password.length < 12 ||
+      password.length < 16 ||
       !/[A-Z]/.test(password) ||
       !/[a-z]/.test(password) ||
-      !/[0-9]/.test(password)
+      !/[0-9]/.test(password) ||
+      !/[^A-Za-z0-9]/.test(password)
     ) {
       throw new BadRequestException(
-        'Password must be at least 12 characters and include uppercase, lowercase, and a number',
+        'Password must be at least 16 characters and include uppercase, lowercase, a number, and a special character',
       );
     }
   }
@@ -314,18 +330,35 @@ export class AuthService implements OnModuleInit {
   private mfaFailureKey(challengeToken: string): string {
     return `1patch:mfa-login-failures:${createHash('sha256').update(challengeToken).digest('hex')}`;
   }
+
+  /**
+   * Derives the single-use marker key for an MFA challenge token.
+   *
+   * @param challengeToken Token used to authenticate or authorize the operation.
+   * @returns The result produced by the operation.
+   */
+  private mfaConsumeKey(challengeToken: string): string {
+    return `1patch:mfa-challenge-consumed:${createHash('sha256').update(challengeToken).digest('hex')}`;
+  }
 }
 
 /**
- * Handles the country from ip operation.
+ * Normalizes the login country used for impossible-travel detection.
  *
+ * The country is sourced from a trusted reverse-proxy geo header (see
+ * resolveGeoCountry in the controller) — never from client-supplied input.
+ * Private/local source IPs return undefined to avoid false travel signals when
+ * a request did not traverse the geo-aware proxy.
+ *
+ * @param geoCountry ISO 3166-1 alpha-2 code from the trusted proxy header, if any.
  * @param ip ip supplied to the function.
- * @returns The result produced by the operation.
+ * @returns A normalized two-letter country code, or undefined.
  */
-function countryFromIp(ip?: string): string | undefined {
-  if (!ip) return undefined;
-  // Placeholder for real GeoIP integration. Do not trust client-supplied country.
-  // Private/local addresses intentionally return undefined to avoid false signals.
-  if (/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|::1$|fc|fd)/i.test(ip)) return undefined;
-  return undefined;
+function normalizeCountry(geoCountry?: string, ip?: string): string | undefined {
+  if (!geoCountry) return undefined;
+  if (ip && /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|::1$|fc|fd)/i.test(ip)) return undefined;
+  const code = geoCountry.trim().toUpperCase();
+  // Reject proxy placeholders such as Cloudflare's "XX" (unknown) / "T1" (Tor).
+  if (!/^[A-Z]{2}$/.test(code) || code === 'XX' || code === 'T1') return undefined;
+  return code;
 }

@@ -85,9 +85,80 @@ describe('NodeTrustService', () => {
 
     const snapshot = service.applyHealthReport(report({ securityFindings: [finding] }));
 
-    expect(snapshot?.trustScore).toBe(67);
+    // A standing OS posture finding caps the trust ceiling by its severity (high = -15)
+    // rather than subtracting on every report, so it can never compound the node to zero.
+    expect(snapshot?.trustScore).toBe(85);
+    expect(snapshot?.maxTrustScore).toBe(85);
     expect(snapshot?.reasons).toContain('No active firewall detected');
     expect(snapshot?.securityFindings).toContainEqual(finding);
+  });
+
+  it('does not decay or quarantine a node with a fixed insecure posture across repeated reports', () => {
+    const findings: NodeSecurityFinding[] = [
+      { code: 'NO_FIREWALL_DETECTED', severity: 'high', category: 'os_security', message: 'No active firewall (ufw/iptables) detected' },
+      { code: 'NO_AUTO_UPDATES', severity: 'medium', category: 'os_security', message: 'Automatic security updates not detected' },
+      { code: 'NO_MAC_FRAMEWORK', severity: 'medium', category: 'os_security', message: 'Neither AppArmor (enforcing) nor SELinux (Enforcing) is active' },
+    ];
+    // Brand-new node (age ceiling 60) with the exact posture from the production incident.
+    const { service, store } = createService(node({
+      trustScore: 80,
+      firstSeenAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    }));
+
+    let lastScore = 80;
+    for (let i = 0; i < 25; i++) {
+      const snapshot = service.applyHealthReport(report({ securityFindings: findings }));
+      lastScore = snapshot?.trustScore ?? lastScore;
+    }
+
+    // Score stabilises at the age ceiling and never decays toward the quarantine threshold.
+    expect(lastScore).toBe(60);
+    expect(store.backendNodes[0].quarantineState).toBe('none');
+    expect(store.backendNodes[0].trustScore).toBe(60);
+  });
+
+  it('auto-recovers a node that was quarantined only for low trust once it reports clean', () => {
+    const { service, store } = createService(node({
+      trustScore: 5,
+      healthState: 'quarantined',
+      quarantineState: 'quarantined',
+      quarantineReason: 'Trust score 0 fell below 30',
+    }));
+    (store.nodeQuarantineEvents as any[]).push({
+      id: 'event-1',
+      nodeId: 'node-1',
+      trigger: 'trust_score_low',
+      reason: 'Trust score 0 fell below 30',
+      createdAt: new Date().toISOString(),
+    });
+
+    service.applyHealthReport(report());
+
+    expect(store.backendNodes[0].quarantineState).toBe('none');
+    expect(store.backendNodes[0].quarantineReason).toBeUndefined();
+    expect((store.nodeQuarantineEvents as any[])[0].resolvedAt).toBeTruthy();
+    expect((store.nodeQuarantineEvents as any[])[0].resolvedBy).toBe('system:trust-recovery');
+  });
+
+  it('does not auto-recover a node quarantined for a security incident', () => {
+    const { service, store } = createService(node({
+      trustScore: 5,
+      healthState: 'quarantined',
+      quarantineState: 'quarantined',
+      quarantineReason: 'Node update signature attestation failed',
+    }));
+    (store.nodeQuarantineEvents as any[]).push({
+      id: 'event-1',
+      nodeId: 'node-1',
+      trigger: 'integrity_mismatch',
+      reason: 'Node update signature attestation failed',
+      createdAt: new Date().toISOString(),
+    });
+
+    service.applyHealthReport(report());
+
+    expect(store.backendNodes[0].quarantineState).toBe('quarantined');
+    expect((store.nodeQuarantineEvents as any[])[0].resolvedAt).toBeUndefined();
   });
 
   it('deducts trust for risky public URL and raw public IP reputation signals', () => {
@@ -99,7 +170,7 @@ describe('NodeTrustService', () => {
     const snapshot = service.applyHealthReport(report({ publicUrl: 'http://8.8.8.8:8080' }));
     const codes = snapshot?.securityFindings?.map((finding) => finding.code) ?? [];
 
-    expect(snapshot?.trustScore).toBe(59);
+    expect(snapshot?.trustScore).toBe(77);
     expect(codes).toEqual(expect.arrayContaining([
       'NODE_PUBLIC_URL_RAW_PUBLIC_IP',
       'NODE_PUBLIC_URL_NO_TLS',
@@ -116,7 +187,7 @@ describe('NodeTrustService', () => {
 
     const snapshot = service.applyHealthReport(report({ publicUrl: 'https://8.8.8.8' }));
 
-    expect(snapshot?.trustScore).toBe(39);
+    expect(snapshot?.trustScore).toBe(57);
     expect(snapshot?.securityFindings?.map((finding) => finding.code)).toContain('NODE_PUBLIC_IP_REPUTATION_DENYLISTED');
     expect(snapshot?.reasons).toContain('public IP reputation denylisted');
   });
@@ -129,7 +200,7 @@ describe('NodeTrustService', () => {
 
     const snapshot = service.applyHealthReport(report({ publicUrl: 'http://backend-node-1:4200' }));
 
-    expect(snapshot?.trustScore).toBe(82);
+    expect(snapshot?.trustScore).toBe(100);
     expect(snapshot?.securityFindings?.map((finding) => finding.code)).not.toContain('NODE_PUBLIC_URL_NO_TLS');
     expect(snapshot?.reasons).toEqual(['signed health report accepted']);
   });

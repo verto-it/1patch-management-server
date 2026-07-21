@@ -359,6 +359,11 @@ const DEMO_API = DEMO_MODE ? {
   ruleAudit: () => demoResolve(DEMO_DATA.audit.slice(0, 10)),
   tasks: () => demoResolve(DEMO_DATA.tasks),
   cancelTask: (id) => demoResolve({ id, status: 'cancelled' }),
+  scanTask: (id) => demoResolve({ id, status: 'security_scanned' }),
+  approveTask: (id) => demoResolve({ id, status: 'mfa_approved' }),
+  signTask: (id) => demoResolve({ id, status: 'signed' }),
+  issueMfaChallenge: () => demoResolve({ challengeId: 'demo-challenge-id' }),
+  verifyMfaChallenge: () => demoResolve({ verified: true }),
   nodes: () => demoResolve(DEMO_DATA.nodes),
   nodeTrustCenter: () => demoResolve(DEMO_DATA.nodes),
   nodeTrustDetail: (id) => demoResolve(DEMO_DATA.nodes.find(n => n.id === id) || DEMO_DATA.nodes[0]),
@@ -511,6 +516,11 @@ const LIVE_API = {
    * @param id Identifier used to locate the target record.
    */
   cancelTask:        (id)    => api(`/tasks/${id}`,                                 { method:'DELETE' }),
+  scanTask:          (id)    => api(`/tasks/${id}/scan`,                            { method:'POST', body:'{}' }),
+  approveTask:       (id, mfaChallengeId) => api(`/tasks/${id}/approve`,            { method:'POST', body: JSON.stringify({ mfaChallengeId: mfaChallengeId || '' }) }),
+  signTask:          (id)    => api(`/tasks/${id}/sign`,                            { method:'POST', body:'{}' }),
+  issueMfaChallenge: ()      => api('/tasks/mfa-challenge/issue',                   { method:'POST', body:'{}' }),
+  verifyMfaChallenge:(challengeId, totpCode) => api('/tasks/mfa-challenge/verify',  { method:'POST', body: JSON.stringify({ challengeId, totpCode }) }),
   /**
    * Handles the nodes operation.
    */

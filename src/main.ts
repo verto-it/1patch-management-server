@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { createServer, ServerOptions } from 'https';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
@@ -45,6 +46,12 @@ function printBanner(subtitle: string) {
 /**
  * Handles the bootstrap operation.
  */
+function listenHttps(server: ReturnType<typeof createServer>, port: number): Promise<void> {
+  return new Promise((resolve) => {
+    server.listen(port, () => resolve());
+  });
+}
+
 async function bootstrap() {
   printBanner('Management Server  ·  v0.9  ·  AGPL-3.0');
   // ── TLS ─────────────────────────────────────────────────────────────────
@@ -55,17 +62,26 @@ async function bootstrap() {
   const tlsKey  = process.env.TLS_KEY_PATH;
   const tlsCa   = process.env.TLS_CA_PATH;
 
-  const httpsOptions =
+  const tlsOptions: Pick<ServerOptions, 'cert' | 'key' | 'ca'> | undefined =
     tlsCert && tlsKey && tlsCa
       ? {
-          cert:               readFileSync(tlsCert),
-          key:                readFileSync(tlsKey),
-          ca:                 readFileSync(tlsCa),
-          requestCert:        true,   // ask every client for a certificate
-          rejectUnauthorized: false,  // we enforce this ourselves per-route so
-                                      // browser/API clients without certs still reach JWT-guarded endpoints
+          cert: readFileSync(tlsCert),
+          key:  readFileSync(tlsKey),
+          ca:   readFileSync(tlsCa),
         }
       : undefined;
+
+  const httpsOptions = tlsOptions
+    ? {
+        ...tlsOptions,
+        requestCert:        true,   // ask backend nodes for a certificate
+        rejectUnauthorized: false,  // guards enforce route-level client cert trust
+      }
+    : undefined;
+
+  const port = Number(process.env.PORT ?? 4100);
+  const mtlsPort = process.env.MTLS_PORT ? Number(process.env.MTLS_PORT) : undefined;
+  const useSplitTlsPorts = Boolean(tlsOptions && mtlsPort && mtlsPort !== port);
 
   if (!httpsOptions) {
     console.warn(
@@ -76,7 +92,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
-    { bodyParser: false, httpsOptions },
+    { bodyParser: false, httpsOptions: useSplitTlsPorts ? undefined : httpsOptions },
   );
   app.use(helmet());
 
@@ -113,7 +129,16 @@ async function bootstrap() {
     console.log('[INFO] Swagger docs disabled in production');
   }
 
-  const port = Number(process.env.PORT ?? 4100);
+  if (useSplitTlsPorts && tlsOptions && mtlsPort) {
+    await app.init();
+    const expressApp = app.getHttpAdapter().getInstance();
+    await listenHttps(createServer({ ...tlsOptions, requestCert: false, rejectUnauthorized: false }, expressApp), port);
+    await listenHttps(createServer({ ...tlsOptions, requestCert: true, rejectUnauthorized: false }, expressApp), mtlsPort);
+    console.log(`[INFO] 1Patch management server listening on https://0.0.0.0:${port}`);
+    console.log(`[INFO] mTLS node API listening on https://0.0.0.0:${mtlsPort}`);
+    return;
+  }
+
   await app.listen(port);
   const proto = httpsOptions ? 'https' : 'http';
   console.log(`[INFO] 1Patch management server listening on ${proto}://0.0.0.0:${port}`);
@@ -123,3 +148,5 @@ async function bootstrap() {
 }
 
 void bootstrap();
+
+

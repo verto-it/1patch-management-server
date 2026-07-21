@@ -337,6 +337,35 @@ export class TaskAuthorizationService implements OnModuleInit {
     return { task, ledgerEntry };
   }
 
+  // ── Auto-finalize a scanned task when policy allows (no MFA, no hard block) ──
+
+  /**
+   * Advance a freshly security-scanned task straight to a signed, executable
+   * state when the tenant policy does not require interactive MFA approval and
+   * the scan did not hard-block it. This mirrors how device update and package
+   * deploy paths sign tasks automatically, so tasks created through audited,
+   * authorized flows (rules engine, refresh-inventory) don't sit stuck at
+   * `security_scanned` waiting on a manual approval the operator never asked for.
+   *
+   * Tenants that opt into `requireMfaForTaskSigning` keep the manual
+   * scan → approve(MFA) → sign pipeline; this is a no-op for them.
+   *
+   * @param taskId Identifier used to locate the target record.
+   * @param actor User or system actor id responsible for the action.
+   * @returns The (possibly advanced) task.
+   */
+  autoFinalizeAfterScan(taskId: string, actor: User | string): UpdateTask {
+    const task = this.requireTask(taskId);
+    if (task.status !== 'security_scanned') return task;
+    if (task.securityScanResult?.hardBlock) return task; // genuinely unsafe — leave for review
+
+    const tenantId = task.tenantId ?? 'default';
+    if (this.policy.get(tenantId).requireMfaForTaskSigning) return task; // tenant requires manual MFA approval
+
+    const actorId = typeof actor === 'string' ? actor : actor.id;
+    return this.autoSignTask(task, actorId);
+  }
+
   // ── Step 5: Promote to executable ──────────────────────────────────────────
 
   /** Called at dispatch time — validates notBefore has passed and ledger is still valid */
@@ -404,13 +433,34 @@ export class TaskAuthorizationService implements OnModuleInit {
     const orphaned = this.store.tasks.filter(
       (t) => (t.status === 'pending' || t.status === 'executable') && !t.ledgerEntryId,
     );
-    if (orphaned.length === 0) return;
-    this.logger.log(`Migrating ${orphaned.length} unsigned task(s) — auto-signing with system actor`);
-    for (const task of orphaned) {
+    if (orphaned.length > 0) {
+      this.logger.log(`Migrating ${orphaned.length} unsigned task(s) — auto-signing with system actor`);
+      for (const task of orphaned) {
+        try {
+          this.autoSignTask(task, 'system:migration');
+        } catch (err) {
+          this.logger.warn(`Could not auto-sign task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    // Clear tasks already stuck at `security_scanned` for tenants that do not
+    // require interactive MFA approval. These were left behind by the rules
+    // engine / refresh-inventory before auto-finalize existed and would
+    // otherwise sit unactionable forever.
+    const stuck = this.store.tasks.filter(
+      (t) =>
+        t.status === 'security_scanned' &&
+        !t.securityScanResult?.hardBlock &&
+        !this.policy.get(t.tenantId ?? 'default').requireMfaForTaskSigning,
+    );
+    if (stuck.length === 0) return;
+    this.logger.log(`Auto-finalizing ${stuck.length} scanned task(s) stuck awaiting approval`);
+    for (const task of stuck) {
       try {
-        this.autoSignTask(task, 'system:migration');
+        this.autoFinalizeAfterScan(task.id, 'system:migration');
       } catch (err) {
-        this.logger.warn(`Could not auto-sign task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.warn(`Could not finalize task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }

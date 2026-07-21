@@ -156,16 +156,11 @@ export class TasksController {
       user,
     );
 
-    // Auto-advance refresh_inventory through the pipeline (low-risk, no external packages)
+    // Auto-advance refresh_inventory through the pipeline (low-risk, no external packages).
+    // When the tenant requires MFA this is a no-op and the task stays at
+    // `security_scanned` for manual approval; otherwise it is signed automatically.
     await this.authorization.runSecurityScan(task.id, user);
-    // Only call approve when MFA is not required for refresh_inventory — no fake challenge ID
-    const p = this.policy.get(task.tenantId ?? 'default');
-    if (!p.requireMfaForTaskSigning) {
-      await this.authorization.approve(task.id, user, '');
-      this.authorization.sign(task.id, user);
-      return this.authorization.promoteToExecutable(task.id);
-    }
-    return task;
+    return this.authorization.autoFinalizeAfterScan(task.id, user);
   }
 
   // -- MFA challenge: issue

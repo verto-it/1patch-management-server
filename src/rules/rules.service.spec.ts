@@ -47,6 +47,13 @@ function makeService() {
       task.securityScanResult = { riskScore: 10, severity: 'low', hardBlock: false, findings: [], humanReadableSummary: 'ok', scannedAt: new Date().toISOString(), taskId: id };
       return task;
     }),
+    autoFinalizeAfterScan: jest.fn((id) => {
+      const task = store.tasks.find((candidate: any) => candidate.id === id);
+      if (!task || task.status !== 'security_scanned' || task.securityScanResult?.hardBlock) return task;
+      task.status = 'signed';
+      task.ledgerEntryId = `ledger-${id}`;
+      return task;
+    }),
   };
   return { service: new RulesService(store, audit as any, siem as any, nodes as any, taskAuth as any), store, taskAuth, siem };
 }
@@ -77,7 +84,7 @@ describe('RulesService', () => {
     expect(service.simulate(rule.id, 'dev-2').wouldTrigger).toBe(false);
   });
 
-  it('generates scanned drafts through the task authorization pipeline', async () => {
+  it('generates scanned drafts and auto-finalizes them when MFA approval is not required', async () => {
     const { service, taskAuth, store } = makeService();
     const rule = service.create({
       name: 'Patch outdated Chrome',
@@ -89,9 +96,12 @@ describe('RulesService', () => {
 
     expect(taskAuth.createDraft).toHaveBeenCalledWith(expect.objectContaining({ type: 'update_package', appName: 'Google Chrome', packageManager: 'winget', packageScope: 'system' }), actor);
     expect(taskAuth.runSecurityScan).toHaveBeenCalledWith('task-1', actor);
+    expect(taskAuth.autoFinalizeAfterScan).toHaveBeenCalledWith('task-1', actor);
     expect(records[0].taskIds).toEqual(['task-1']);
-    expect(store.tasks[0].status).toBe('security_scanned');
-    expect(store.tasks[0].ledgerEntryId).toBeUndefined();
+    // Rule-created tasks must not sit stuck at `security_scanned`; they advance
+    // to a signed/executable state so an authorized rule run actually deploys.
+    expect(store.tasks[0].status).toBe('signed');
+    expect(store.tasks[0].ledgerEntryId).toBe('ledger-task-1');
   });
 
   it('does not mark Windows packages outdated from Linux-only newer versions', () => {

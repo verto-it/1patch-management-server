@@ -6,7 +6,11 @@ import { TenantPolicy } from '../types';
 const DEFAULT_POLICY: Omit<TenantPolicy, 'tenantId'> = {
   minimumExecutionDelaySeconds: 300,         // 5 minutes default
   allowEmergencyBypass: false,
-  requireMfaForTaskSigning: true,
+  // MFA-on-every-task-signing is opt-in. Defaulting this to true created an
+  // unresolvable deadlock for fresh owners without MFA configured: a task could
+  // not be approved without an MFA challenge, and a challenge could not be issued
+  // without an enrolled MFA secret. Tenants who want it can enable it in policy.
+  requireMfaForTaskSigning: false,
   requiredApprovalCount: 1,
   highRiskRequiredApprovalCount: 2,
   securityMode: 'normal',

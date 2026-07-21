@@ -310,6 +310,10 @@ export class RulesService {
       }, actor);
       (task as any).ruleId = rule.id;
       await this.tasks.runSecurityScan(task.id, actor);
+      // Advance straight to signed/executable unless the tenant requires manual
+      // MFA approval or the scan hard-blocked it — rule-created tasks should not
+      // sit stuck at `security_scanned` waiting on an approval nobody asked for.
+      this.tasks.autoFinalizeAfterScan(task.id, actor);
       created.push(task);
       recordRuleTask(rule);
     }

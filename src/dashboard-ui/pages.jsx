@@ -2183,8 +2183,20 @@ function TasksPage({ globalSearch = "" }) {
   const tasks = useResource(() => PatchAPI.tasks());
   useLiveResource(tasks, 2_500);
   const [cancelling, setCancelling] = useState(new Set());
-  const [outputTask, setOutputTask] = useState(null);
+  const [actionLoading, setActionLoading] = useState(new Set());
+  const [actionError, setActionError] = useState(null);
+  const [mfaDialog, setMfaDialog] = useState(null); // { taskId, challengeId }
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaError, setMfaError] = useState("");
+  const [outputTaskId, setOutputTaskId] = useState(null);
+  const outputTask = outputTaskId ? (tasks.data || []).find(t => t.id === outputTaskId) ?? null : null;
   const [copied, setCopied] = useState(false);
+  // Ticker so fmtAgo values stay fresh when no task data changes
+  const [, setTimeTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTimeTick(n => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   /**
    * Handles the cancel operation.
@@ -2196,6 +2208,52 @@ function TasksPage({ globalSearch = "" }) {
     try { await PatchAPI.cancelTask(id); tasks.reload(true); }
     catch (e) { /* task may have already moved past pending */ }
     finally { setCancelling(prev => { const s = new Set(prev); s.delete(id); return s; }); }
+  };
+
+  const markLoading = (key) => setActionLoading(prev => new Set([...prev, key]));
+  const clearLoading = (key) => setActionLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
+
+  const scanTask = async (id) => {
+    markLoading(`scan-${id}`); setActionError(null);
+    try { await PatchAPI.scanTask(id); tasks.reload(true); }
+    catch (e) { setActionError(e?.message || "Scan failed"); }
+    finally { clearLoading(`scan-${id}`); }
+  };
+
+  const approveTask = async (id) => {
+    markLoading(`approve-${id}`); setActionError(null);
+    try {
+      await PatchAPI.approveTask(id, '');
+      tasks.reload(true);
+    } catch (e) {
+      if (e?.message?.toLowerCase().includes('mfa') || e?.message?.toLowerCase().includes('challenge')) {
+        try {
+          const { challengeId } = await PatchAPI.issueMfaChallenge();
+          setMfaDialog({ taskId: id, challengeId });
+          setMfaCode(""); setMfaError("");
+        } catch (mfaErr) { setActionError(mfaErr?.message || "Could not issue MFA challenge"); }
+      } else {
+        setActionError(e?.message || "Approval failed");
+      }
+    } finally { clearLoading(`approve-${id}`); }
+  };
+
+  const submitMfaApproval = async () => {
+    if (!mfaDialog) return;
+    setMfaError("");
+    try {
+      await PatchAPI.verifyMfaChallenge(mfaDialog.challengeId, mfaCode);
+      await PatchAPI.approveTask(mfaDialog.taskId, mfaDialog.challengeId);
+      setMfaDialog(null); setMfaCode("");
+      tasks.reload(true);
+    } catch (e) { setMfaError(e?.message || "MFA approval failed"); }
+  };
+
+  const signTask = async (id) => {
+    markLoading(`sign-${id}`); setActionError(null);
+    try { await PatchAPI.signTask(id); tasks.reload(true); }
+    catch (e) { setActionError(e?.message || "Signing failed"); }
+    finally { clearLoading(`sign-${id}`); }
   };
 
   /**
@@ -2216,14 +2274,16 @@ function TasksPage({ globalSearch = "" }) {
     <div className="page">
       <div className="page-head">
         <div><h2>Tasks</h2><p>{tasks.loading ? "…" : `${(tasks.data || []).length} update jobs`}</p></div>
+        <button className="btn" onClick={() => tasks.reload()}>Refresh</button>
       </div>
       <div className="card">
         <div className="filterbar">
-          {[["all","All"],["pending","Pending"],["dispatched","Dispatched"],["completed","Completed"],["failed","Failed"],["cancelled","Cancelled"]].map(([k,l]) => (
+          {[["all","All"],["security_scanned","Needs Approval"],["mfa_approved","Needs Signing"],["pending","Pending"],["dispatched","Dispatched"],["completed","Completed"],["failed","Failed"],["cancelled","Cancelled"]].map(([k,l]) => (
             <button key={k} className={"chip " + (filter === k ? "active" : "")} onClick={() => setFilter(k)}>{l}</button>
           ))}
         </div>
         {tasks.error && <div style={{ padding:16 }}><ErrorAlert error={tasks.error} onRetry={tasks.reload}/></div>}
+        {actionError && <div style={{ padding:"8px 16px", color:"var(--crit)", fontSize:13 }}>{actionError}</div>}
         <div style={{ overflowX:"auto" }}>
           <table className="tbl">
             <thead><tr><th>App</th><th>Device</th><th>Version</th><th>Node</th><th>Status</th><th>Output</th><th>Created</th><th></th></tr></thead>
@@ -2239,13 +2299,30 @@ function TasksPage({ globalSearch = "" }) {
                   <td><StatusPill status={t.status}/></td>
                   <td className="mono muted" style={{ maxWidth:280, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", cursor: t.output ? "pointer" : "default" }}
                       title={t.output ? "Click to view full output" : undefined}
-                      onClick={() => t.output && setOutputTask(t)}>{t.output || "—"}</td>
+                      onClick={() => t.output && setOutputTaskId(t.id)}>{t.output || "—"}</td>
                   <td className="muted">{fmtAgo(t.createdAt)}</td>
-                  <td>{t.status === "pending" && (
-                    <button className="btn sm" disabled={cancelling.has(t.id)} onClick={() => cancel(t.id)}>
-                      {cancelling.has(t.id) ? "…" : "Cancel"}
-                    </button>
-                  )}</td>
+                  <td>
+                    {t.status === "pending" && (
+                      <button className="btn sm" disabled={cancelling.has(t.id)} onClick={() => cancel(t.id)}>
+                        {cancelling.has(t.id) ? "…" : "Cancel"}
+                      </button>
+                    )}
+                    {t.status === "draft" && (
+                      <button className="btn sm" disabled={actionLoading.has(`scan-${t.id}`)} onClick={() => scanTask(t.id)}>
+                        {actionLoading.has(`scan-${t.id}`) ? "…" : "Scan"}
+                      </button>
+                    )}
+                    {t.status === "security_scanned" && (
+                      <button className="btn sm" disabled={actionLoading.has(`approve-${t.id}`)} onClick={() => approveTask(t.id)}>
+                        {actionLoading.has(`approve-${t.id}`) ? "…" : "Approve"}
+                      </button>
+                    )}
+                    {t.status === "mfa_approved" && (
+                      <button className="btn sm" disabled={actionLoading.has(`sign-${t.id}`)} onClick={() => signTask(t.id)}>
+                        {actionLoading.has(`sign-${t.id}`) ? "…" : "Sign"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2255,20 +2332,54 @@ function TasksPage({ globalSearch = "" }) {
 
       {outputTask && (
         <React.Fragment>
-          <div className="drawer-backdrop" onClick={() => setOutputTask(null)}/>
+          <div className="drawer-backdrop" onClick={() => setOutputTaskId(null)}/>
           <div className="output-dialog">
             <div className="output-dialog-box">
               <div className="output-dialog-head">
                 <h4>{taskLabel(outputTask)}</h4>
                 <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                   <button className="btn sm" onClick={copyOutput}>{copied ? "Copied!" : "Copy"}</button>
-                  <button className="icon-btn" onClick={() => setOutputTask(null)}>
+                  <button className="icon-btn" onClick={() => setOutputTaskId(null)}>
                     <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span>
                   </button>
                 </div>
               </div>
               <div className="output-dialog-body">
                 <pre>{outputTask.output}</pre>
+              </div>
+            </div>
+          </div>
+        </React.Fragment>
+      )}
+
+      {mfaDialog && (
+        <React.Fragment>
+          <div className="drawer-backdrop" onClick={() => setMfaDialog(null)}/>
+          <div className="output-dialog">
+            <div className="output-dialog-box">
+              <div className="output-dialog-head">
+                <h4>MFA Approval Required</h4>
+                <button className="icon-btn" onClick={() => setMfaDialog(null)}>
+                  <span style={{ width:14, height:14, display:"inline-flex" }}>{Icon.close}</span>
+                </button>
+              </div>
+              <div className="output-dialog-body" style={{ padding:24, display:"flex", flexDirection:"column", gap:16 }}>
+                <p style={{ margin:0, fontSize:14 }}>Enter your authenticator code to approve this task.</p>
+                <input
+                  className="input"
+                  value={mfaCode}
+                  onChange={e => { setMfaCode(e.target.value); setMfaError(""); }}
+                  onKeyDown={e => e.key === "Enter" && submitMfaApproval()}
+                  placeholder="6-digit code"
+                  maxLength={6}
+                  autoFocus
+                  style={{ letterSpacing:"0.2em", width:140, textAlign:"center" }}
+                />
+                {mfaError && <div style={{ color:"var(--crit)", fontSize:13 }}>{mfaError}</div>}
+                <div style={{ display:"flex", gap:8 }}>
+                  <button className="btn" onClick={submitMfaApproval} disabled={mfaCode.length < 6}>Approve</button>
+                  <button className="btn ghost" onClick={() => setMfaDialog(null)}>Cancel</button>
+                </div>
               </div>
             </div>
           </div>
@@ -5402,7 +5513,327 @@ function AdminSettingsPage({ initialTab = 'policy' }) {
   );
 }
 
+// ---------- Quick Actions ----------
+
+/**
+ * Triggers a client-side file download from a string payload.
+ *
+ * @param data File contents.
+ * @param filename Suggested download filename.
+ * @param mimeType MIME type for the blob.
+ */
+function downloadBlob(data, filename, mimeType) {
+  const blob = new Blob([data], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Serialises an array of objects to RFC-4180 CSV.
+ *
+ * @param rows Array of plain objects.
+ * @param keys Column names (used as header row and property accessors).
+ */
+function toCSV(rows, keys) {
+  const esc = (v) => {
+    const s = v == null ? '' : String(v);
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? '"' + s.replace(/"/g, '""') + '"'
+      : s;
+  };
+  return [keys.join(','), ...rows.map(r => keys.map(k => esc(r[k])).join(','))].join('\n');
+}
+
+/** ISO timestamp slug safe for filenames. */
+const exportStamp = () => new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+
+/**
+ * A single quick-action card with run / confirm / result / error states.
+ *
+ * @param props.icon SVG icon element.
+ * @param props.title Card heading.
+ * @param props.description One-line subtitle.
+ * @param props.onRun Async function that performs the action and returns a result string or object.
+ * @param props.confirmText When set a confirmation step is shown before the action fires.
+ */
+function ActionCard({ icon, title, description, onRun, confirmText }) {
+  const [status, setStatus] = useState('idle');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const execute = async () => {
+    setConfirming(false);
+    setStatus('running');
+    setResult(null);
+    setError(null);
+    try {
+      setResult(await onRun());
+      setStatus('done');
+    } catch (err) {
+      setError(err?.message || String(err));
+      setStatus('error');
+    }
+  };
+
+  const handleRun = () => {
+    if (confirmText && !confirming) { setConfirming(true); return; }
+    execute();
+  };
+
+  return (
+    <div className={'qa-card' + (status === 'error' ? ' qa-card--err' : status === 'done' ? ' qa-card--done' : '')}>
+      <div className="qa-card-icon">{icon}</div>
+      <div className="qa-card-body">
+        <div className="qa-card-head">
+          <strong className="qa-card-title">{title}</strong>
+          <span className="qa-card-desc">{description}</span>
+        </div>
+
+        {status === 'done' && result !== null && (
+          <div className="qa-card-result">
+            {typeof result === 'string' && (
+              <span className="qa-ok">{Icon.check} {result}</span>
+            )}
+            {result?.type === 'nodes' && (
+              <div className="qa-node-grid">
+                {result.nodes.map(n => (
+                  <div key={n.id} className="qa-node-row">
+                    <span className={`qa-dot ${n.healthState === 'healthy' ? 'ok' : n.healthState === 'degraded' ? 'warn' : 'err'}`}/>
+                    <span className="qa-node-name">{n.name || n.id}</span>
+                    <span className="qa-node-score">Trust {n.trust?.trustScore ?? '--'}</span>
+                    <span className="qa-node-state muted">{n.healthState} · {n.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {result?.type === 'stale' && (
+              <div className="qa-stale">
+                <span className="qa-ok">
+                  {Icon.check} {result.count} device{result.count !== 1 ? 's' : ''} with inventory older than 7 days
+                </span>
+                {result.devices.length > 0 && (
+                  <div className="qa-stale-list">
+                    {result.devices.slice(0, 10).map(d => (
+                      <span key={d.id} className="tag">{d.hostname || d.id}</span>
+                    ))}
+                    {result.devices.length > 10 && (
+                      <span className="muted">+{result.devices.length - 10} more</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="qa-card-result">
+            <span className="qa-err">{error}</span>
+          </div>
+        )}
+
+        {confirming && (
+          <div className="qa-confirm">
+            <span className="qa-confirm-text">{confirmText}</span>
+            <div className="qa-confirm-btns">
+              <button className="btn sm danger" onClick={execute}>Confirm</button>
+              <button className="btn sm ghost" onClick={() => setConfirming(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="qa-card-actions">
+        {status === 'running' ? (
+          <span className="search-spinner"/>
+        ) : !confirming && (
+          <button className="btn sm accent" onClick={handleRun}>
+            {status === 'done' ? 'Run again' : 'Run'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A labelled group of action cards.
+ *
+ * @param props.label Section heading.
+ * @param props.children ActionCard elements.
+ */
+function ActionGroup({ label, children }) {
+  return (
+    <div className="qa-group">
+      <div className="qa-group-label">{label}</div>
+      <div className="qa-group-cards">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Renders the quick actions page UI.
+ * @returns The result produced by the operation.
+ */
+function QuickActionsPage() {
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h2>Quick Actions</h2>
+          <p>Batch fleet operations — results appear inline after each run.</p>
+        </div>
+      </div>
+
+      <ActionGroup label="Inventory">
+        <ActionCard
+          icon={Icon.refresh}
+          title="Pull Inventory — All Devices"
+          description="Queue an inventory refresh for every enrolled device in the fleet."
+          onRun={async () => {
+            const devices = await PatchAPI.devices();
+            let queued = 0, failed = 0;
+            await Promise.allSettled(devices.map(d =>
+              PatchAPI.refreshInventory(d.id).then(() => queued++, () => failed++)
+            ));
+            return `Queued ${queued} refresh task${queued !== 1 ? 's' : ''}${failed ? ` · ${failed} skipped` : ''}`;
+          }}
+        />
+        <ActionCard
+          icon={Icon.refresh}
+          title="Pull Inventory — Offline & Stale"
+          description="Refresh only devices that are offline or haven't checked in for over 24 hours."
+          onRun={async () => {
+            const devices = await PatchAPI.devices();
+            const cutoff = Date.now() - 24 * 60 * 60_000;
+            const stale = devices.filter(d => !d.online || new Date(d.lastSeenAt).getTime() < cutoff);
+            if (stale.length === 0) return 'No offline or stale devices found.';
+            let queued = 0, failed = 0;
+            await Promise.allSettled(stale.map(d =>
+              PatchAPI.refreshInventory(d.id).then(() => queued++, () => failed++)
+            ));
+            return `${stale.length} stale device${stale.length !== 1 ? 's' : ''} — queued ${queued}${failed ? ` · ${failed} skipped` : ''}`;
+          }}
+        />
+      </ActionGroup>
+
+      <ActionGroup label="Task Queue">
+        <ActionCard
+          icon={Icon.tasks}
+          title="Cancel Pending Tasks"
+          description="Cancel all tasks waiting in the queue that have not yet been dispatched to a node."
+          confirmText="Cancel all pending tasks?"
+          onRun={async () => {
+            const tasks = await PatchAPI.tasks();
+            const pending = tasks.filter(t => t.status === 'pending');
+            if (pending.length === 0) return 'No pending tasks found.';
+            let cancelled = 0, failed = 0;
+            await Promise.allSettled(pending.map(t =>
+              PatchAPI.cancelTask(t.id).then(() => cancelled++, () => failed++)
+            ));
+            return `Cancelled ${cancelled} task${cancelled !== 1 ? 's' : ''}${failed ? ` · ${failed} skipped` : ''}`;
+          }}
+        />
+        <ActionCard
+          icon={Icon.tasks}
+          title="Clear Failed Tasks"
+          description="Remove all failed tasks from the queue to declutter the task list."
+          confirmText="Clear all failed tasks?"
+          onRun={async () => {
+            const tasks = await PatchAPI.tasks();
+            const failed = tasks.filter(t => t.status === 'failed');
+            if (failed.length === 0) return 'No failed tasks found.';
+            let cleared = 0, errs = 0;
+            await Promise.allSettled(failed.map(t =>
+              PatchAPI.cancelTask(t.id).then(() => cleared++, () => errs++)
+            ));
+            return `Cleared ${cleared} failed task${cleared !== 1 ? 's' : ''}${errs ? ` · ${errs} skipped` : ''}`;
+          }}
+        />
+      </ActionGroup>
+
+      <ActionGroup label="Alarms">
+        <ActionCard
+          icon={Icon.alarms}
+          title="Dismiss All Alarms"
+          description="Resolve every active alarm at once — use after investigating open alerts."
+          confirmText="Dismiss all active alarms?"
+          onRun={async () => {
+            const res = await PatchAPI.resolveAllAlarms();
+            const n = res?.resolved ?? 0;
+            return `Dismissed ${n} alarm${n !== 1 ? 's' : ''}`;
+          }}
+        />
+      </ActionGroup>
+
+      <ActionGroup label="Fleet Insights">
+        <ActionCard
+          icon={Icon.nodes}
+          title="Node Health Snapshot"
+          description="Fetch live health and trust scores for every backend node."
+          onRun={async () => {
+            const nodes = await PatchAPI.nodeTrustCenter();
+            return { type: 'nodes', nodes };
+          }}
+        />
+        <ActionCard
+          icon={Icon.search}
+          title="Stale-Inventory Report"
+          description="List devices whose last recorded inventory is more than 7 days old."
+          onRun={async () => {
+            const devices = await PatchAPI.devices();
+            const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+            const stale = devices.filter(d => !d.lastSeenAt || new Date(d.lastSeenAt).getTime() < cutoff);
+            return { type: 'stale', count: stale.length, devices: stale };
+          }}
+        />
+      </ActionGroup>
+
+      <ActionGroup label="Exports">
+        <ActionCard
+          icon={Icon.download}
+          title="Device Roster (CSV)"
+          description="Download all enrolled devices as a spreadsheet-ready CSV."
+          onRun={async () => {
+            const devices = await PatchAPI.devices();
+            const keys = ['id', 'hostname', 'os', 'platform', 'site', 'group', 'online', 'lastSeenAt', 'installedAppCount', 'pendingTaskCount'];
+            downloadBlob(toCSV(devices, keys), `1patch-devices-${exportStamp()}.csv`, 'text/csv');
+            return `Exported ${devices.length} device${devices.length !== 1 ? 's' : ''}`;
+          }}
+        />
+        <ActionCard
+          icon={Icon.download}
+          title="Audit Log (JSON)"
+          description="Download the last 500 audit entries as a JSON file."
+          onRun={async () => {
+            const entries = await PatchAPI.audit(500);
+            downloadBlob(JSON.stringify(entries, null, 2), `1patch-audit-${exportStamp()}.json`, 'application/json');
+            return `Exported ${entries.length} audit entr${entries.length !== 1 ? 'ies' : 'y'}`;
+          }}
+        />
+        <ActionCard
+          icon={Icon.download}
+          title="Task History (JSON)"
+          description="Download the full task list across all statuses as a JSON file."
+          onRun={async () => {
+            const tasks = await PatchAPI.tasks();
+            downloadBlob(JSON.stringify(tasks, null, 2), `1patch-tasks-${exportStamp()}.json`, 'application/json');
+            return `Exported ${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
+          }}
+        />
+      </ActionGroup>
+    </div>
+  );
+}
+
 Object.assign(window, {
-  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage
+  OverviewPage, DevicesPage, AppsPage, PackagesPage, RulesPage, TasksPage, NodesPage, AlarmsPage, AuditPage, SiemPage, SecurityPosturePage, DeviceDrawer, SsoSettingsPage, AdminSettingsPage, QuickActionsPage
 });
 

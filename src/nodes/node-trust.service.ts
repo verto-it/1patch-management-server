@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { AuditService } from '../audit/audit.service';
 import { SiemEventService } from '../siem/siem-event.service';
 import { MemoryStore } from '../storage/memory.store';
-import { NodeHealthReport, NodeHealthState, NodeQueueLag, NodeSecurityFinding, NodeTrustSnapshot } from '../types';
+import { BackendNode, NodeHealthReport, NodeHealthState, NodeQueueLag, NodeSecurityFinding, NodeTrustSnapshot } from '../types';
 
 const DEFAULT_TRUST_SCORE = 80;
 const QUARANTINE_TRUST_THRESHOLD = Number(process.env.NODE_QUARANTINE_TRUST_THRESHOLD ?? 30);
@@ -26,26 +26,49 @@ export class NodeTrustService {
     const previous = node.trustScore ?? DEFAULT_TRUST_SCORE;
     const reasons: string[] = [];
     const securityFindings: NodeSecurityFinding[] = [];
-    let delta = 2;
+
+    // ── Transient operational health ──
+    // These are real-time conditions that come and go, so they accumulate against the
+    // previous score: a node that stays broken keeps losing trust and is eventually
+    // quarantined, while a node that recovers climbs back up.
+    let transientDelta = 2;
+    let transientPenalty = 0;
+    const deductHealth = (amount: number, reason: string) => {
+      transientDelta -= amount;
+      transientPenalty += amount;
+      reasons.push(reason);
+    };
 
     const unhealthyCount = report.components.filter((component) => component.status === 'unhealthy').length;
     const degradedCount = report.components.filter((component) => component.status === 'degraded').length;
-    if (unhealthyCount > 0) { delta -= 25; reasons.push(`${unhealthyCount} unhealthy component(s)`); }
-    if (degradedCount > 0) { delta -= 8; reasons.push(`${degradedCount} degraded component(s)`); }
-    if (!report.scannerHealthy) { delta -= 12; reasons.push('scanner unhealthy'); }
-    if (!report.cacheHealthy) { delta -= 8; reasons.push('cache unhealthy'); }
-    if (!report.packageVerifierHealthy) { delta -= 20; reasons.push('package verifier unhealthy'); }
-    if (!report.updateSourceReachable) { delta -= 6; reasons.push('update source unreachable'); }
-    if ((report.clockSkewMs ?? 0) > 60_000) { delta -= 15; reasons.push('clock skew above 60s'); }
-    if (report.queueLag === 'high') { delta -= 8; reasons.push('high queue lag'); }
-    if ((report.latencyMs ?? 0) > 1500) { delta -= 6; reasons.push('high latency'); }
+    if (unhealthyCount > 0) deductHealth(25, `${unhealthyCount} unhealthy component(s)`);
+    if (degradedCount > 0) deductHealth(8, `${degradedCount} degraded component(s)`);
+    if (!report.scannerHealthy) deductHealth(12, 'scanner unhealthy');
+    if (!report.cacheHealthy) deductHealth(8, 'cache unhealthy');
+    if (!report.packageVerifierHealthy) deductHealth(20, 'package verifier unhealthy');
+    if (!report.updateSourceReachable) deductHealth(6, 'update source unreachable');
+    if ((report.clockSkewMs ?? 0) > 60_000) deductHealth(15, 'clock skew above 60s');
+    if (report.queueLag === 'high') deductHealth(8, 'high queue lag');
+    if ((report.latencyMs ?? 0) > 1500) deductHealth(6, 'high latency');
 
-    // ── Node age penalty — new nodes are trusted less until they prove stability ──
+    // ── Standing posture (node age, OS hardening, IP reputation) ──
+    // These conditions are static and unchanging across reports. They cap the *maximum*
+    // achievable trust rather than subtracting on every cycle. Subtracting them per report
+    // (the old behaviour) compounded the same fixed deductions until every node hit 0 and
+    // was quarantined — e.g. a Docker node with no firewall / no unattended-upgrades / no
+    // AppArmor would decay to 0 within a few health reports regardless of actual behaviour.
+    // Age and security posture are independent dimensions, each imposing its own cap on
+    // the maximum trust. The effective ceiling is the tightest single cap — they are not
+    // summed, so an unproven *and* unhardened node is not double-penalised down toward the
+    // quarantine threshold.
+    let ageCeiling = 100;
+    let postureCeiling = 100;
+
+    // Node age — new nodes are trusted less until they prove stability.
     const firstSeen = node.firstSeenAt ? Date.now() - new Date(node.firstSeenAt).getTime() : null;
-    let ageTrustCeiling = 100;
     if (firstSeen !== null) {
       const agePenalty = ageBasedPenalty(firstSeen);
-      ageTrustCeiling = agePenalty.maxTrustScore;
+      ageCeiling = agePenalty.maxTrustScore;
       if (agePenalty.delta < 0) {
         reasons.push(agePenalty.reason);
         securityFindings.push({ code: 'NODE_AGE_NEW', severity: agePenalty.severity, category: 'node_age',
@@ -54,19 +77,26 @@ export class NodeTrustService {
       }
     }
 
-    // ── OS security findings forwarded from the node ──
+    // OS security findings forwarded from the node cap the posture ceiling by severity.
     for (const finding of (report.securityFindings ?? [])) {
       const penalty = osFindingPenalty(finding.severity);
-      if (penalty > 0) { delta -= penalty; reasons.push(finding.message); }
+      if (penalty > 0) { postureCeiling -= penalty; reasons.push(finding.message); }
       securityFindings.push(finding);
     }
 
-    // ── Server-side IP reputation heuristics based on publicUrl ──
-    applyIpReputationFindings(report.publicUrl ?? node.publicUrl, securityFindings, reasons, (p) => { delta -= p; });
+    // Server-side IP reputation heuristics based on publicUrl also cap the posture ceiling.
+    applyIpReputationFindings(report.publicUrl ?? node.publicUrl, securityFindings, reasons, (p) => { postureCeiling -= p; });
 
+    const trustCeiling = clamp(Math.min(ageCeiling, postureCeiling), 0, 100);
     if (reasons.length === 0) reasons.push('signed health report accepted');
 
-    const next = clamp(previous + delta, 0, ageTrustCeiling);
+    // With no active operational problems the node has earned its full posture ceiling.
+    // This is idempotent for unchanging conditions (no decay) and lets a node that was
+    // previously driven down recover as soon as it reports clean. With operational
+    // problems we accumulate against the previous score so persistent failures still sink.
+    const next = transientPenalty === 0
+      ? trustCeiling
+      : clamp(previous + transientDelta, 0, trustCeiling);
     const healthState = this.resolveHealthState(report, next);
 
     node.lastSeenAt = report.reportedAt;
@@ -89,7 +119,7 @@ export class NodeTrustService {
       previousTrustScore: previous,
       trustScore: next,
       scoreDelta: next - previous,
-      maxTrustScore: ageTrustCeiling,
+      maxTrustScore: trustCeiling,
       reasons,
       securityFindings,
       createdAt: new Date().toISOString(),
@@ -111,6 +141,8 @@ export class NodeTrustService {
 
     if (next < QUARANTINE_TRUST_THRESHOLD) {
       this.quarantine(node.id, 'trust_score_low', trustThresholdReason(next, reasons, securityFindings));
+    } else if (node.quarantineState === 'quarantined') {
+      this.autoRecoverTrustQuarantine(node, next);
     }
 
     void this.store.persist();
@@ -181,6 +213,36 @@ export class NodeTrustService {
     });
     void this.store.persist();
     return node;
+  }
+
+  /**
+   * Lifts a quarantine that was raised purely because trust fell below the threshold,
+   * once the node has recovered above it again. Quarantines raised by genuine security
+   * incidents (invalid signature, replay, integrity mismatch, manual, …) are left in
+   * place and still require an operator to clear them.
+   */
+  private autoRecoverTrustQuarantine(node: BackendNode, trustScore: number) {
+    const openEvents = this.store.nodeQuarantineEvents.filter((event) => event.nodeId === node.id && !event.resolvedAt);
+    if (openEvents.length === 0) return;
+    if (openEvents.some((event) => event.trigger !== 'trust_score_low')) return;
+
+    node.quarantineState = 'none';
+    node.quarantineReason = undefined;
+    const resolvedAt = new Date().toISOString();
+    for (const event of openEvents) {
+      event.resolvedAt = resolvedAt;
+      event.resolvedBy = 'system:trust-recovery';
+    }
+    this.audit.record('system', 'node.quarantine.auto_recovered', node.id, { trustScore });
+    this.siem.emit({
+      tenantId: 'system',
+      type: 'node.quarantine.cleared',
+      severity: 'medium',
+      actor: { userId: null, nodeId: node.id, ip: null },
+      target: { taskId: null, deviceId: null, nodeId: node.id },
+      metadata: { reason: 'trust_recovered', trustScore },
+    });
+    this.logger.log(`Node auto-recovered from trust quarantine nodeId=${node.id} trustScore=${trustScore}`);
   }
 
   private resolveHealthState(report: NodeHealthReport, trustScore: number): NodeHealthState {

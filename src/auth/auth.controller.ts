@@ -11,11 +11,14 @@ import { AuthService } from './auth.service';
 
 class SetupOwnerDto {
   @IsEmail() email!: string;
-  @IsString() @MinLength(12) password!: string;
+  @IsString() @MinLength(16) password!: string;
 }
 
-class LoginDto extends SetupOwnerDto {
-  /** Deprecated: ignored. Country is derived server-side from the request IP. */
+class LoginDto {
+  @IsEmail() email!: string;
+  /** No length policy at login — the creation-time policy applies; bcrypt validates the value. */
+  @IsString() password!: string;
+  /** Deprecated: ignored. Country is derived server-side from a trusted reverse-proxy geo header. */
   @IsOptional() @IsString() country?: string;
 }
 
@@ -60,7 +63,7 @@ export class AuthController {
   login(@Body() dto: LoginDto, @Req() req: Request) {
     const ip = requestIp(req);
     this.logger.log(`Login attempt for ${dto.email} from IP ${ip}`);
-    return this.auth.login(dto.email, dto.password, ip);
+    return this.auth.login(dto.email, dto.password, ip, resolveGeoCountry(req));
   }
 
   /**
@@ -131,4 +134,20 @@ export class AuthController {
  */
 function requestIp(req: Request): string | undefined {
   return req.ip ?? req.socket.remoteAddress ?? undefined;
+}
+
+/**
+ * Reads the visitor country from a trusted reverse-proxy header for
+ * impossible-travel detection. Opt-in: only active when GEO_COUNTRY_HEADER names
+ * the header set by the fronting proxy (e.g. "cf-ipcountry"). Disabled by default
+ * so a directly-reachable server never trusts a client-supplied value.
+ *
+ * @param req Incoming HTTP request context.
+ * @returns The raw header value, or undefined when the feature is off/absent.
+ */
+function resolveGeoCountry(req: Request): string | undefined {
+  const header = process.env.GEO_COUNTRY_HEADER;
+  if (!header) return undefined;
+  const value = req.header(header);
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }

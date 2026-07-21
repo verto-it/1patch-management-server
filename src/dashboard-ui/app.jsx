@@ -11,7 +11,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 const CATEGORY_IDS = [
-  "overview", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
+  "overview", "quick-actions", "devices", "device-groups", "apps", "packages", "rules", "tasks", "nodes", "alarms", "audit",
   "admin-policy", "admin-users", "admin-permissions", "admin-siem", "admin-sso", "admin-posture", "admin-retirement",
 ];
 const LEGACY_CATEGORY_MAP = {
@@ -395,8 +395,9 @@ function DashboardApp({ sessionInfo, onLogout }) {
   const permissions = sessionInfo.user?.permissions || [];
   const canAdmin = permissions.some((permission) => ['auth:manage', 'users:manage', 'roles:manage'].includes(permission));
   const OPERATE_NAV = [
-    { id:"overview", label:"Overview",  icon: Icon.dashboard },
-    { id:"devices",  label:"Devices",   icon: Icon.devices,  count: counts.devices },
+    { id:"overview",      label:"Overview",       icon: Icon.dashboard },
+    { id:"quick-actions", label:"Quick Actions",  icon: Icon.play },
+    { id:"devices",       label:"Devices",        icon: Icon.devices,  count: counts.devices },
   ];
   const CATALOG_NAV = [
     { id:"device-groups", label:"Groups", icon: Icon.groups },
@@ -447,8 +448,9 @@ function DashboardApp({ sessionInfo, onLogout }) {
     );
 
   const Page = {
-    overview: <OverviewPage onNav={setTab} onOpenDevice={setOpenDevice}/>,
-    devices:  <DevicesPage onOpenDevice={setOpenDevice} globalSearch={pageSearchTerm("devices")}/>,
+    overview:       <OverviewPage onNav={setTab} onOpenDevice={setOpenDevice}/>,
+    "quick-actions": <QuickActionsPage/>,
+    devices:        <DevicesPage onOpenDevice={setOpenDevice} globalSearch={pageSearchTerm("devices")}/>,
     "device-groups": <DeviceGroupsPage onOpenDevice={setOpenDevice} globalSearch={pageSearchTerm("device-groups")}/>,
     apps:     <AppsPage globalSearch={pageSearchTerm("apps")}/>,
     packages: <PackagesPage globalSearch={pageSearchTerm("packages")}/>,

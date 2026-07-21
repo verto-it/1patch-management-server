@@ -101,13 +101,27 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Sidebar */
 .sidebar {
-  background: var(--sidebar-bg);
+  background:
+    linear-gradient(180deg,
+      oklch(0.93 0.05 140) 0%,
+      oklch(0.96 0.02 140) 18%,
+      var(--sidebar-bg) 52%
+    );
   border-right: 1px solid var(--line);
   padding: 18px 12px;
   display: flex; flex-direction: column; gap: 4px;
   position: sticky; top: 0; height: 100vh;
   overflow-y: auto;
 }
+[data-theme="dark"] .sidebar {
+  background:
+    linear-gradient(180deg,
+      oklch(0.24 0.07 140) 0%,
+      oklch(0.21 0.04 140) 18%,
+      var(--sidebar-bg) 52%
+    );
+}
+
 .sidebar-brand {
   display: flex; align-items: center; gap: 10px;
   padding: 4px 8px 18px;
@@ -3166,4 +3180,78 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 @media (max-width: 760px) {
   .pkg-store-sidebar { display: none; }
   .pkg-store-modal { width: 100vw; height: 100dvh; border-radius: 0; }
+}
+
+/* ---------- Quick Actions ---------- */
+.qa-group { display: flex; flex-direction: column; gap: 8px; }
+.qa-group-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-3); padding: 0 2px;
+}
+.qa-group-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+.qa-card {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 14px 16px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.qa-card:hover { border-color: var(--border-strong, var(--text-3)); box-shadow: var(--shadow-md); }
+.qa-card--done { border-color: var(--ok); background: var(--ok-soft); }
+.qa-card--err  { border-color: var(--crit); background: var(--crit-soft); }
+
+.qa-card-icon {
+  flex-shrink: 0; width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px; background: var(--bg-sub);
+  color: var(--text-2);
+  transition: background 0.15s, color 0.15s;
+}
+.qa-card:hover .qa-card-icon { background: var(--accent-soft); color: var(--accent-text); }
+.qa-card--done .qa-card-icon { background: var(--ok); color: #fff; }
+.qa-card--err  .qa-card-icon { background: var(--crit); color: #fff; }
+.qa-card-icon svg { width: 16px; height: 16px; }
+
+.qa-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.qa-card-head { display: flex; flex-direction: column; gap: 2px; }
+.qa-card-title { font-size: 13px; font-weight: 600; }
+.qa-card-desc  { font-size: 12px; color: var(--text-3); line-height: 1.4; }
+
+.qa-card-result { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.qa-ok  { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ok, #16a34a); font-weight: 500; }
+.qa-ok svg  { width: 13px; height: 13px; flex-shrink: 0; }
+.qa-err { font-size: 12px; color: var(--crit); font-weight: 500; }
+
+.qa-node-grid { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.qa-node-row  { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.qa-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.qa-dot.ok   { background: var(--ok, #16a34a); }
+.qa-dot.warn { background: var(--warn, #d97706); }
+.qa-dot.err  { background: var(--crit); }
+.qa-node-name  { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.qa-node-score { font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.qa-node-state { flex-shrink: 0; }
+
+.qa-stale { display: flex; flex-direction: column; gap: 6px; }
+.qa-stale-list { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.qa-card-actions {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end;
+  min-width: 76px; min-height: 28px; padding-top: 1px;
+}
+.qa-card-actions .search-spinner { margin: 0 6px; }
+
+.qa-confirm {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 4px; padding: 8px 10px; border-radius: 8px;
+  background: var(--crit-soft); border: 1px solid var(--crit);
+}
+.qa-confirm-text { font-size: 12px; font-weight: 500; color: var(--crit); }
+.qa-confirm-btns { display: flex; gap: 6px; flex-shrink: 0; }
+
+@media (max-width: 680px) {
+  .qa-group-cards { grid-template-columns: 1fr; }
+  .qa-card { flex-wrap: wrap; }
+  .qa-card-actions { width: 100%; justify-content: flex-end; }
 }

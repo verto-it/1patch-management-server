@@ -34,6 +34,14 @@ export class JwtAuthGuard implements CanActivate {
     }
     try {
       const payload = this.jwt.verify(token) as Record<string, unknown>;
+      // Reject non-session tokens. Challenge tokens (e.g. the MFA step-up token)
+      // are signed with the same secret but carry a `purpose` claim and must never
+      // be accepted as an authenticated session — otherwise a password-only actor
+      // could call session-guarded routes (e.g. /auth/mfa/enable) before MFA.
+      if (payload.purpose !== undefined) {
+        this.logger.warn(`Request rejected — non-session token (purpose=${String(payload.purpose)}) used as bearer`);
+        throw new UnauthorizedException('Invalid or expired token');
+      }
       const tokenHash = createHash('sha256').update(token).digest('hex');
       const revoked = await this.dragonfly.getJson<number>(`1patch:revoked-token:${tokenHash}`);
       if (revoked) {
